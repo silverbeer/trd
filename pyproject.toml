@@ -1,0 +1,42 @@
+[project]
+name = "trd"
+version = "0.1.0"
+description = "Local-first investment tracker: portfolio, watchlists, indicators, simulation"
+readme = "DESIGN.md"
+requires-python = ">=3.13"
+dependencies = [
+    "typer>=0.15",
+    "rich>=13.9",
+    "pydantic>=2.10",
+    "duckdb>=1.2",
+    "yfinance>=0.2.54",
+]
+
+[project.scripts]
+trd = "trd.cli.app:app"
+
+[dependency-groups]
+dev = [
+    "pytest>=8",
+    "pytest-cov>=6",
+    "ruff>=0.9",
+    "ty",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/trd"]
+
+[tool.ruff]
+line-length = 100
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"

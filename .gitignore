@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+dist/
+*.egg-info/
+
+# Tooling caches
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Data — DB lives in ~/.trd, but never commit one by accident
+*.duckdb
+*.duckdb.wal
+
+# OS
+.DS_Store
