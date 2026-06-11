@@ -8,9 +8,16 @@ import pytest
 
 from trd.db.connection import connect
 from trd.errors import ProviderError
-from trd.models import AccountType, DailyBar, InstrumentInfo, InstrumentType, Quote
+from trd.models import (
+    AccountType,
+    DailyBar,
+    EarningsDate,
+    InstrumentInfo,
+    InstrumentType,
+    Quote,
+)
 from trd.repos import AccountRepo
-from trd.services import PortfolioService, SyncService
+from trd.services import PortfolioService, SyncService, WatchlistService
 
 
 class FakeProvider:
@@ -20,6 +27,7 @@ class FakeProvider:
         self.infos: dict[str, InstrumentInfo] = {}
         self.quotes: dict[str, Quote] = {}
         self.bars: dict[str, list[DailyBar]] = {}
+        self.earnings: dict[str, list[EarningsDate]] = {}
 
     def add_symbol(
         self,
@@ -28,6 +36,10 @@ class FakeProvider:
         prev_close: str | None = None,
         type_: InstrumentType = InstrumentType.STOCK,
         name: str | None = None,
+        year_high: str | None = None,
+        year_low: str | None = None,
+        volume: int | None = None,
+        avg_volume: int | None = None,
     ) -> None:
         symbol = symbol.upper()
         self.infos[symbol] = InstrumentInfo(
@@ -37,6 +49,10 @@ class FakeProvider:
             symbol=symbol,
             price=Decimal(price),
             prev_close=Decimal(prev_close) if prev_close else None,
+            year_high=Decimal(year_high) if year_high else None,
+            year_low=Decimal(year_low) if year_low else None,
+            volume=volume,
+            avg_volume=avg_volume,
         )
 
     def drop_quote(self, symbol: str) -> None:
@@ -61,6 +77,9 @@ class FakeProvider:
         if symbol.upper() not in self.infos:
             raise ProviderError(f"Symbol {symbol} not found")
         return [b for b in self.bars.get(symbol.upper(), []) if start <= b.date < end]
+
+    def get_earnings_dates(self, symbol: str) -> list[EarningsDate]:
+        return self.earnings.get(symbol.upper(), [])
 
 
 @pytest.fixture
@@ -89,3 +108,8 @@ def portfolio(conn: duckdb.DuckDBPyConnection, provider: FakeProvider) -> Portfo
 @pytest.fixture
 def sync_service(conn: duckdb.DuckDBPyConnection, provider: FakeProvider) -> SyncService:
     return SyncService(conn, provider)
+
+
+@pytest.fixture
+def watchlist(conn: duckdb.DuckDBPyConnection, provider: FakeProvider) -> WatchlistService:
+    return WatchlistService(conn, provider)
