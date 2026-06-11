@@ -7,13 +7,20 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
-from trd.cli.render import fmt_money, fmt_signed_pct, positions_table
+from trd.cli.render import (
+    board_table,
+    earnings_table,
+    fmt_money,
+    fmt_signed_pct,
+    positions_table,
+)
 from trd.config import DEFAULT_ACCOUNT, get_settings
 from trd.db.connection import connect
 from trd.errors import TrdError
 from trd.models import AccountType, Side
 from trd.providers import YFinanceProvider
-from trd.services import PortfolioService, SyncService
+from trd.services import EarningsService, PortfolioService, SyncService, WatchlistService
+from trd.services.watchlist import DEFAULT_WATCHLIST
 
 app = typer.Typer(
     name="trd",
@@ -21,6 +28,8 @@ app = typer.Typer(
     no_args_is_help=True,
     pretty_exceptions_show_locals=False,
 )
+watch_app = typer.Typer(help="Manage watchlists and the quote board.", no_args_is_help=True)
+app.add_typer(watch_app, name="watch")
 console = Console()
 err_console = Console(stderr=True)
 
@@ -28,6 +37,11 @@ err_console = Console(stderr=True)
 def _portfolio_service() -> PortfolioService:
     settings = get_settings()
     return PortfolioService(connect(settings.db_path), YFinanceProvider())
+
+
+def _watchlist_service() -> WatchlistService:
+    settings = get_settings()
+    return WatchlistService(connect(settings.db_path), YFinanceProvider())
 
 
 def _fail(exc: TrdError) -> None:
@@ -89,7 +103,8 @@ def sync(
         result = service.sync(full=full)
     console.print(
         f"Synced [bold]{result.quotes}[/bold]/{result.instruments} quotes, "
-        f"[bold]{result.bars}[/bold] daily bars."
+        f"[bold]{result.bars}[/bold] daily bars, "
+        f"[bold]{result.earnings}[/bold] earnings dates."
     )
     if result.failures:
         err_console.print(f"[yellow]warning:[/yellow] failed: {', '.join(result.failures)}")
@@ -198,6 +213,79 @@ def sell(
 ) -> None:
     """Record a sell (validates you hold enough)."""
     _trade(Side.SELL, symbol, quantity, price, account, fees, date, note)
+
+
+WatchListOpt = Annotated[
+    str, typer.Option("--list", "-l", help=f"Watchlist name (default: {DEFAULT_WATCHLIST}).")
+]
+
+
+@watch_app.command("add")
+def watch_add(
+    symbol: Annotated[str, typer.Argument(help="Ticker to follow.")],
+    list_name: WatchListOpt = DEFAULT_WATCHLIST,
+) -> None:
+    """Add a symbol to a watchlist (creates the list if needed)."""
+    service = _watchlist_service()
+    try:
+        added = service.add(symbol, list_name)
+    except TrdError as exc:
+        _fail(exc)
+        return
+    if added:
+        console.print(f"Watching [bold]{symbol.upper()}[/bold] on '{list_name}'.")
+    else:
+        console.print(f"[dim]{symbol.upper()} already on '{list_name}'.[/dim]")
+
+
+@watch_app.command("rm")
+def watch_rm(
+    symbol: Annotated[str, typer.Argument(help="Ticker to stop following.")],
+    list_name: WatchListOpt = DEFAULT_WATCHLIST,
+) -> None:
+    """Remove a symbol from a watchlist."""
+    service = _watchlist_service()
+    try:
+        service.remove(symbol, list_name)
+    except TrdError as exc:
+        _fail(exc)
+        return
+    console.print(f"Removed [bold]{symbol.upper()}[/bold] from '{list_name}'.")
+
+
+@watch_app.command("ls")
+def watch_ls(
+    list_name: Annotated[
+        str | None, typer.Argument(help="Watchlist to show. Omit for all lists.")
+    ] = None,
+) -> None:
+    """Quote board: price, day change, 52-week range position, volume vs average."""
+    service = _watchlist_service()
+    try:
+        with console.status("Fetching quotes..."):
+            rows = service.board(list_name)
+    except TrdError as exc:
+        _fail(exc)
+        return
+    if not rows:
+        console.print("Nothing watched yet. Add with [bold]trd watch add SYMBOL[/bold].")
+        return
+    title = f"Watch — {list_name}" if list_name else "Watch — all lists"
+    console.print(board_table(rows, title, show_list_column=list_name is None))
+
+
+@app.command()
+def earnings(
+    days: Annotated[int, typer.Option("--days", "-d", help="Look-ahead window in days.")] = 14,
+) -> None:
+    """Upcoming earnings across portfolio and watchlists. Run 'trd sync' to refresh."""
+    settings = get_settings()
+    service = EarningsService(connect(settings.db_path))
+    events = service.upcoming(days)
+    if not events:
+        console.print(f"No earnings in the next {days} days. Run [bold]trd sync[/bold] to refresh.")
+        return
+    console.print(earnings_table(events, days))
 
 
 @app.command(name="import")

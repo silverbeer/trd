@@ -65,6 +65,10 @@ class Quote(BaseModel):
     symbol: str
     price: Decimal
     prev_close: Decimal | None = None
+    year_high: Decimal | None = None
+    year_low: Decimal | None = None
+    volume: int | None = None
+    avg_volume: int | None = None
 
     @property
     def day_change(self) -> Decimal | None:
@@ -77,6 +81,55 @@ class Quote(BaseModel):
         if self.prev_close is None or self.prev_close == 0:
             return None
         return (self.price - self.prev_close) / self.prev_close * 100
+
+    @property
+    def year_range_pct(self) -> Decimal | None:
+        """Where price sits in the 52-week range: 0 = at low, 100 = at high."""
+        if self.year_high is None or self.year_low is None:
+            return None
+        span = self.year_high - self.year_low
+        if span == 0:
+            return None
+        return (self.price - self.year_low) / span * 100
+
+    @property
+    def volume_ratio(self) -> Decimal | None:
+        """Today's volume vs average — >1 means heavier than usual."""
+        if not self.volume or not self.avg_volume:
+            return None
+        return Decimal(self.volume) / Decimal(self.avg_volume)
+
+
+class Watchlist(BaseModel):
+    id: int
+    name: str
+
+
+class EarningsDate(BaseModel):
+    """One earnings event as the provider reports it (instrument-agnostic)."""
+
+    date: date
+    eps_estimate: Decimal | None = None
+    eps_actual: Decimal | None = None
+
+
+class EarningsEvent(BaseModel):
+    """An earnings event tied to a tracked instrument."""
+
+    instrument: Instrument
+    date: date
+    eps_estimate: Decimal | None = None
+    eps_actual: Decimal | None = None
+
+
+class BoardRow(BaseModel):
+    """One line of the watch board: instrument + live market read."""
+
+    instrument: Instrument
+    watchlist: str
+    quote: Quote | None = None
+    price_stale: bool = False
+    next_earnings: date | None = None
 
 
 class DailyBar(BaseModel):

@@ -16,12 +16,16 @@ uv run ty check             # type checking
 
 ```bash
 trd init                              # create ~/.trd/trd.duckdb + 'main' account
-trd sync [--full]                     # refresh quotes + daily bars (--full = 2y backfill)
+trd sync [--full]                     # refresh quotes + daily bars + earnings (--full = 2y backfill)
 trd portfolio [--account NAME]        # holdings with live P&L
 trd quote AAPL                        # live quote for any symbol
 trd buy AAPL 10 [--price 213.50] [--account main] [--date 2026-06-10] [--fees 1] [--note ...]
 trd sell AAPL 5 [--price ...]         # validates held quantity
 trd import txns.csv                   # bulk-load transactions
+trd watch add NVDA [--list ai]        # follow a symbol (creates list if needed)
+trd watch rm NVDA [--list ai]
+trd watch ls [ai]                     # quote board: price, day Δ%, 52w pos, vol/avg, next earnings
+trd earnings [--days 14]              # upcoming earnings across everything tracked
 ```
 
 CSV import format (header required): `date,account,symbol,side,quantity,price[,fees,note]` — date is ISO, side is buy/sell.

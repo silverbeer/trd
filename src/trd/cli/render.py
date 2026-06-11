@@ -1,8 +1,9 @@
+from datetime import date
 from decimal import Decimal
 
 from rich.table import Table
 
-from trd.models import Position
+from trd.models import BoardRow, EarningsEvent, Position
 
 MONEY = "{:,.2f}"
 
@@ -80,5 +81,75 @@ def positions_table(positions: list[Position], title: str) -> Table:
             "",
             fmt_signed(total_pl),
             fmt_signed_pct(total_pl_pct),
+        )
+    return table
+
+
+def _fmt_year_range(pct: Decimal | None) -> str:
+    if pct is None:
+        return "—"
+    color = "green" if pct >= 50 else "yellow" if pct >= 20 else "red"
+    return f"[{color}]{pct:.0f}%[/{color}]"
+
+
+def _fmt_volume_ratio(ratio: Decimal | None) -> str:
+    if ratio is None:
+        return "—"
+    text = f"{ratio:.1f}x"
+    return f"[bold yellow]{text}[/bold yellow]" if ratio >= Decimal("1.5") else text
+
+
+def _fmt_earnings_date(when: date | None, today: date) -> str:
+    if when is None:
+        return "—"
+    days = (when - today).days
+    text = f"{when} ({days}d)"
+    return f"[bold red]{text}[/bold red]" if days <= 7 else text
+
+
+def board_table(rows: list[BoardRow], title: str, show_list_column: bool) -> Table:
+    today = date.today()
+    table = Table(title=title, title_justify="left")
+    if show_list_column:
+        table.add_column("List", style="dim")
+    table.add_column("Symbol", style="bold")
+    table.add_column("Price", justify="right")
+    table.add_column("Day Δ%", justify="right")
+    table.add_column("52w Pos", justify="right")
+    table.add_column("Vol/Avg", justify="right")
+    table.add_column("Earnings", justify="right")
+    for row in rows:
+        quote = row.quote
+        symbol = row.instrument.symbol + (" [dim](stale)[/dim]" if row.price_stale else "")
+        cells = [
+            symbol,
+            fmt_money(quote.price if quote else None),
+            fmt_signed_pct(quote.day_change_pct if quote else None),
+            _fmt_year_range(quote.year_range_pct if quote else None),
+            _fmt_volume_ratio(quote.volume_ratio if quote else None),
+            _fmt_earnings_date(row.next_earnings, today),
+        ]
+        if show_list_column:
+            cells.insert(0, row.watchlist)
+        table.add_row(*cells)
+    return table
+
+
+def earnings_table(events: list[EarningsEvent], days: int) -> Table:
+    today = date.today()
+    table = Table(title=f"Earnings — next {days} days", title_justify="left")
+    table.add_column("Date")
+    table.add_column("In", justify="right")
+    table.add_column("Symbol", style="bold")
+    table.add_column("Name")
+    table.add_column("EPS Est", justify="right")
+    for event in events:
+        days_out = (event.date - today).days
+        table.add_row(
+            str(event.date),
+            f"{days_out}d",
+            event.instrument.symbol,
+            event.instrument.name or "—",
+            f"{event.eps_estimate:.2f}" if event.eps_estimate is not None else "—",
         )
     return table

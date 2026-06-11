@@ -2,7 +2,7 @@ from collections.abc import Sequence
 from datetime import date
 from typing import Protocol
 
-from trd.models import DailyBar, InstrumentInfo, Quote
+from trd.models import DailyBar, EarningsDate, InstrumentInfo, Quote
 
 
 class MarketDataProvider(Protocol):
@@ -26,4 +26,9 @@ class MarketDataProvider(Protocol):
 
     def get_daily_bars(self, symbol: str, start: date, end: date) -> list[DailyBar]:
         """Daily OHLCV history, inclusive of start, exclusive of end."""
+        ...
+
+    def get_earnings_dates(self, symbol: str) -> list[EarningsDate]:
+        """Known earnings dates, past and upcoming. Empty for instruments without
+        earnings (crypto, most ETFs) — never raises for that case."""
         ...

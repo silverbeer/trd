@@ -72,3 +72,52 @@ def test_invalid_quantity_rejected(cli_env: FakeProvider) -> None:
     result = runner.invoke(app, ["buy", "AAPL", "ten", "--price", "150"])
     assert result.exit_code == 1
     assert "invalid quantity" in result.output
+
+
+def test_watch_add_ls_rm(cli_env: FakeProvider) -> None:
+    runner.invoke(app, ["init"])
+    result = runner.invoke(app, ["watch", "add", "NVDA", "--list", "ai"])
+    assert result.exit_code == 0, result.output
+    assert "Watching NVDA" in result.output
+
+    result = runner.invoke(app, ["watch", "ls", "ai"])
+    assert result.exit_code == 0, result.output
+    assert "NVDA" in result.output
+    assert "120.00" in result.output
+
+    result = runner.invoke(app, ["watch", "rm", "NVDA", "--list", "ai"])
+    assert result.exit_code == 0, result.output
+
+    result = runner.invoke(app, ["watch", "ls"])
+    assert "Nothing watched" in result.output
+
+
+def test_watch_rm_unknown_fails(cli_env: FakeProvider) -> None:
+    runner.invoke(app, ["init"])
+    result = runner.invoke(app, ["watch", "rm", "NVDA"])
+    assert result.exit_code == 1
+
+
+def test_earnings_empty(cli_env: FakeProvider) -> None:
+    runner.invoke(app, ["init"])
+    result = runner.invoke(app, ["earnings"])
+    assert result.exit_code == 0, result.output
+    assert "No earnings" in result.output
+
+
+def test_earnings_after_sync(cli_env: FakeProvider) -> None:
+    from datetime import date, timedelta
+
+    from trd.models import EarningsDate
+
+    runner.invoke(app, ["init"])
+    runner.invoke(app, ["watch", "add", "AAPL"])
+    cli_env.earnings["AAPL"] = [EarningsDate(date=date.today() + timedelta(days=4))]
+    result = runner.invoke(app, ["sync"])
+    assert result.exit_code == 0, result.output
+    assert "1 earnings dates" in result.output
+
+    result = runner.invoke(app, ["earnings", "--days", "7"])
+    assert result.exit_code == 0, result.output
+    assert "AAPL" in result.output
+    assert "4d" in result.output

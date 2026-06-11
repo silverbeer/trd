@@ -10,6 +10,7 @@ dependencies = [
     "pydantic>=2.10",
     "duckdb>=1.2",
     "yfinance>=0.2.54",
+    "lxml>=6.1.1",
 ]
 
 [project.scripts]
