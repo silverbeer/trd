@@ -105,6 +105,34 @@ def test_earnings_empty(cli_env: FakeProvider) -> None:
     assert "No earnings" in result.output
 
 
+def test_account_add_and_ls(cli_env: FakeProvider) -> None:
+    runner.invoke(app, ["init"])
+    result = runner.invoke(app, ["account", "add", "fidelity"])
+    assert result.exit_code == 0, result.output
+    assert "fidelity" in result.output
+
+    result = runner.invoke(app, ["account", "add", "fidelity"])
+    assert result.exit_code == 0
+    assert "already exists" in result.output
+
+    result = runner.invoke(app, ["account", "add", "paper", "--type", "simulation"])
+    assert result.exit_code == 0, result.output
+
+    result = runner.invoke(app, ["account", "ls"])
+    assert result.exit_code == 0, result.output
+    for name in ("main", "fidelity", "paper"):
+        assert name in result.output
+
+    result = runner.invoke(app, ["buy", "AAPL", "1", "--price", "100", "--account", "fidelity"])
+    assert result.exit_code == 0, result.output
+
+
+def test_account_add_bad_type(cli_env: FakeProvider) -> None:
+    runner.invoke(app, ["init"])
+    result = runner.invoke(app, ["account", "add", "x", "--type", "margin"])
+    assert result.exit_code == 1
+
+
 def test_earnings_after_sync(cli_env: FakeProvider) -> None:
     from datetime import date, timedelta
 
