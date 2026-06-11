@@ -19,6 +19,7 @@ from trd.db.connection import connect
 from trd.errors import TrdError
 from trd.models import AccountType, Side
 from trd.providers import YFinanceProvider
+from trd.repos import AccountRepo
 from trd.services import EarningsService, PortfolioService, SyncService, WatchlistService
 from trd.services.watchlist import DEFAULT_WATCHLIST
 
@@ -286,6 +287,51 @@ def earnings(
         console.print(f"No earnings in the next {days} days. Run [bold]trd sync[/bold] to refresh.")
         return
     console.print(earnings_table(events, days))
+
+
+account_app = typer.Typer(
+    help="Manage accounts (one per brokerage, plus simulation).", no_args_is_help=True
+)
+app.add_typer(account_app, name="account")
+
+
+@account_app.command("add")
+def account_add(
+    name: Annotated[str, typer.Argument(help="Account name, e.g. fidelity, robinhood.")],
+    type_: Annotated[
+        str, typer.Option("--type", "-t", help="Account type: real or simulation.")
+    ] = "real",
+) -> None:
+    """Create an account."""
+    settings = get_settings()
+    conn = connect(settings.db_path)
+    repo = AccountRepo(conn)
+    if type_ not in ("real", "simulation"):
+        err_console.print(f"[red]error:[/red] type must be 'real' or 'simulation', got {type_!r}")
+        raise typer.Exit(code=1)
+    if repo.get_by_name(name) is not None:
+        console.print(f"[dim]Account '{name}' already exists.[/dim]")
+        return
+    account = repo.create(name, AccountType(type_))
+    console.print(f"Account [bold]{account.name}[/bold] ({account.type.value}) created.")
+
+
+@account_app.command("ls")
+def account_ls() -> None:
+    """List accounts."""
+    settings = get_settings()
+    conn = connect(settings.db_path)
+    accounts = AccountRepo(conn).list_all()
+    if not accounts:
+        console.print("No accounts. Run [bold]trd init[/bold].")
+        return
+    table = Table(title="Accounts", title_justify="left")
+    table.add_column("Name", style="bold")
+    table.add_column("Type")
+    table.add_column("Currency")
+    for account in accounts:
+        table.add_row(account.name, account.type.value, account.currency)
+    console.print(table)
 
 
 @app.command(name="import")
