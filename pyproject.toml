@@ -38,6 +38,11 @@ src = ["src", "tests"]
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
 
+[tool.ruff.lint.per-file-ignores]
+# Indicator classes assign ClassVar attrs declared on the base; ruff can't see the
+# inherited annotation and flags every dict/list as a mutable class default.
+"src/trd/indicators/library.py" = ["RUF012"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"

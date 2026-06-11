@@ -191,6 +191,40 @@ def lots_table(lots: list[LotPosition], title: str) -> Table:
     return table
 
 
+def indicator_panel(rows: list, symbol: str) -> Table:
+    """Learning-mode panel: one row per followed indicator with a plain-English read."""
+    table = Table(title=f"Indicators — {symbol}", title_justify="left")
+    table.add_column("Indicator", style="bold")
+    table.add_column("Params", style="dim")
+    table.add_column("Value", justify="right")
+    table.add_column("Reading")
+    category_styles = {
+        "trend": "cyan",
+        "momentum": "magenta",
+        "volatility": "yellow",
+        "volume": "green",
+    }
+    last_category = None
+    for row in rows:
+        if row.category != last_category:
+            style = category_styles.get(row.category, "white")
+            table.add_section()
+            table.add_row(f"[{style}]{row.category.upper()}[/{style}]", "", "", "")
+            last_category = row.category
+        params = ", ".join(f"{k}={v}" for k, v in row.config.params.items()) or "—"
+        if not row.values:
+            value_text = "—"
+        elif len(row.values) == 1:
+            v = next(iter(row.values.values()))
+            value_text = f"{v:,.2f}" if v is not None else "—"
+        else:
+            value_text = " / ".join(
+                f"{v:,.2f}" if v is not None else "—" for v in row.values.values()
+            )
+        table.add_row(f"  {row.name}", params, value_text, row.reading)
+    return table
+
+
 def earnings_table(events: list[EarningsEvent], days: int) -> Table:
     today = date.today()
     table = Table(title=f"Earnings — next {days} days", title_justify="left")
