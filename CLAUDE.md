@@ -16,6 +16,8 @@ uv run ty check             # type checking
 
 ```bash
 trd init                              # create ~/.trd/trd.duckdb + 'main' account
+trd account add fidelity              # one account per brokerage (--type simulation for paper)
+trd account ls
 trd sync [--full]                     # refresh quotes + daily bars + earnings (--full = 2y backfill)
 trd portfolio [--account NAME]        # holdings with live P&L
 trd quote AAPL                        # live quote for any symbol
