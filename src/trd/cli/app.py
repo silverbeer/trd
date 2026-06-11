@@ -12,6 +12,7 @@ from trd.cli.render import (
     earnings_table,
     fmt_money,
     fmt_signed_pct,
+    indicator_panel,
     lots_table,
     positions_table,
 )
@@ -21,7 +22,14 @@ from trd.errors import TrdError
 from trd.models import AccountType, Side
 from trd.providers import YFinanceProvider
 from trd.repos import AccountRepo
-from trd.services import EarningsService, PortfolioService, SyncService, WatchlistService
+from trd.services import (
+    EarningsService,
+    IndicatorService,
+    PortfolioService,
+    SyncService,
+    WatchlistService,
+)
+from trd.services.indicators import seed_defaults
 from trd.services.watchlist import DEFAULT_WATCHLIST
 
 app = typer.Typer(
@@ -32,6 +40,8 @@ app = typer.Typer(
 )
 watch_app = typer.Typer(help="Manage watchlists and the quote board.", no_args_is_help=True)
 app.add_typer(watch_app, name="watch")
+indicator_app = typer.Typer(help="Manage the followed-indicator list.", no_args_is_help=True)
+app.add_typer(indicator_app, name="indicator")
 console = Console()
 err_console = Console(stderr=True)
 
@@ -87,8 +97,11 @@ def init() -> None:
     conn = connect(settings.db_path)
     service = PortfolioService(conn, YFinanceProvider())
     account = service.accounts.get_or_create(DEFAULT_ACCOUNT, AccountType.REAL)
+    seeded = seed_defaults(conn)
     console.print(f"Database ready at [bold]{settings.db_path}[/bold]")
     console.print(f"Account [bold]{account.name}[/bold] ({account.type.value}) ready.")
+    if seeded:
+        console.print(f"Seeded [bold]{seeded}[/bold] default indicators (trd indicator ls).")
 
 
 @app.command()
@@ -359,6 +372,142 @@ def account_ls() -> None:
     for account in accounts:
         table.add_row(account.name, account.type.value, account.currency)
     console.print(table)
+
+
+def _indicator_service() -> IndicatorService:
+    settings = get_settings()
+    return IndicatorService(connect(settings.db_path))
+
+
+def _parse_params(params: list[str]) -> dict:
+    out: dict = {}
+    for raw in params:
+        if "=" not in raw:
+            err_console.print(f"[red]error:[/red] params look like name=value, got {raw!r}")
+            raise typer.Exit(code=1)
+        name, value = raw.split("=", 1)
+        try:
+            out[name.strip()] = int(value)
+        except ValueError:
+            try:
+                out[name.strip()] = float(value)
+            except ValueError:
+                err_console.print(f"[red]error:[/red] param {name} needs a number, got {value!r}")
+                raise typer.Exit(code=1) from None
+    return out
+
+
+ParamOpt = Annotated[
+    list[str] | None, typer.Option("--param", "-p", help="Override, e.g. -p period=21. Repeatable.")
+]
+
+
+@app.command()
+def indicators(symbol: Annotated[str, typer.Argument(help="Tracked ticker.")]) -> None:
+    """Indicator panel with plain-English readings (learning mode)."""
+    service = _indicator_service()
+    try:
+        rows = service.panel(symbol)
+    except TrdError as exc:
+        _fail(exc)
+        return
+    if not rows:
+        console.print("No indicators followed. Run [bold]trd init[/bold] to seed defaults.")
+        return
+    console.print(indicator_panel(rows, symbol.upper()))
+
+
+@indicator_app.command("ls")
+def indicator_ls() -> None:
+    """The followed-indicator list (your evolving set)."""
+    service = _indicator_service()
+    for warning in service.validate_configs():
+        err_console.print(f"[yellow]warning:[/yellow] {warning}")
+    configs = service.configs.list_all()
+    if not configs:
+        console.print(
+            "Nothing followed. Run [bold]trd init[/bold] or [bold]trd indicator add[/bold]."
+        )
+        return
+    table = Table(title="Followed indicators", title_justify="left")
+    table.add_column("Key", style="bold")
+    table.add_column("Params")
+    table.add_column("Enabled")
+    table.add_column("Note")
+    for config in configs:
+        params = ", ".join(f"{k}={v}" for k, v in config.params.items()) or "—"
+        table.add_row(
+            config.key,
+            params,
+            "[green]yes[/green]" if config.enabled else "[dim]no[/dim]",
+            config.note or "",
+        )
+    console.print(table)
+
+
+@indicator_app.command("catalog")
+def indicator_catalog() -> None:
+    """Everything available in the code registry."""
+    service = _indicator_service()
+    table = Table(title="Indicator catalog", title_justify="left")
+    table.add_column("Key", style="bold")
+    table.add_column("Name")
+    table.add_column("Category")
+    table.add_column("Default params")
+    for indicator in service.catalog():
+        params = ", ".join(f"{k}={v}" for k, v in indicator.default_params.items()) or "—"
+        table.add_row(indicator.key, indicator.name, indicator.category.value, params)
+    console.print(table)
+
+
+@indicator_app.command("add")
+def indicator_add(
+    key: Annotated[str, typer.Argument(help="Registry key, e.g. rsi. See 'indicator catalog'.")],
+    param: ParamOpt = None,
+    note: NoteOpt = None,
+) -> None:
+    """Follow an indicator (same key twice with different params is fine)."""
+    service = _indicator_service()
+    try:
+        config = service.add(key, _parse_params(param or []), note=note)
+    except TrdError as exc:
+        _fail(exc)
+        return
+    params = ", ".join(f"{k}={v}" for k, v in config.params.items()) or "defaults"
+    console.print(f"Following [bold]{config.key}[/bold] ({params}).")
+
+
+@indicator_app.command("rm")
+def indicator_rm(
+    key: Annotated[str, typer.Argument(help="Registry key to stop following.")],
+    param: ParamOpt = None,
+) -> None:
+    """Stop following (soft-disable — note and history kept)."""
+    service = _indicator_service()
+    try:
+        count = service.remove(key, _parse_params(param) if param else None)
+    except TrdError as exc:
+        _fail(exc)
+        return
+    console.print(f"Disabled [bold]{count}[/bold] config(s) for '{key}'. History kept.")
+
+
+@indicator_app.command("info")
+def indicator_info(
+    key: Annotated[str, typer.Argument(help="Registry key, e.g. macd.")],
+) -> None:
+    """Full description + interpretation guide for one indicator."""
+    from trd.indicators import REGISTRY
+
+    indicator = REGISTRY.get(key)
+    if indicator is None:
+        err_console.print(f"[red]error:[/red] no indicator '{key}'. See 'trd indicator catalog'.")
+        raise typer.Exit(code=1)
+    console.print(f"[bold]{indicator.name}[/bold] ({indicator.key}) — {indicator.category.value}")
+    params = ", ".join(f"{k}={v}" for k, v in indicator.default_params.items()) or "none"
+    console.print(f"[dim]Params:[/dim] {params}")
+    console.print(f"[dim]Components:[/dim] {', '.join(indicator.components)}")
+    console.print(indicator.description)
 
 
 @app.command(name="import")

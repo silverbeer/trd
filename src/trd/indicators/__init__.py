@@ -1,1 +1,4 @@
-# Phase 3: indicator code registry lives here. See DESIGN.md "Indicator Data Model".
+from trd.indicators import library  # noqa: F401 — importing populates the registry
+from trd.indicators.base import REGISTRY, Category, Indicator, register
+
+__all__ = ["REGISTRY", "Category", "Indicator", "register"]

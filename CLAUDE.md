@@ -29,6 +29,8 @@ trd watch add NVDA [--list ai]        # follow a symbol (creates list if needed)
 trd watch rm NVDA [--list ai]
 trd watch ls [ai]                     # quote board: price, day Δ%, 52w pos, vol/avg, next earnings
 trd earnings [--days 14]              # upcoming earnings across everything tracked
+trd indicators NVDA                   # indicator panel with plain-English readings
+trd indicator ls|catalog|add|rm|info  # manage followed indicators (trd indicator add ema -p period=8)
 ```
 
 CSV import format (header required): `date,account,symbol,side,quantity,price[,fees,note]` — date is ISO, side is buy/sell.
