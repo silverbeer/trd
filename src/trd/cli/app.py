@@ -12,6 +12,7 @@ from trd.cli.render import (
     earnings_table,
     fmt_money,
     fmt_signed_pct,
+    lots_table,
     positions_table,
 )
 from trd.config import DEFAULT_ACCOUNT, get_settings
@@ -130,6 +131,32 @@ def portfolio(
         return
     title = f"Portfolio — {account}" if account else "Portfolio — all accounts"
     console.print(positions_table(positions, title))
+
+
+@app.command()
+def lots(
+    symbol: Annotated[
+        str | None, typer.Argument(help="Limit to one ticker. Omit for all positions.")
+    ] = None,
+    account: Annotated[
+        str | None, typer.Option("--account", "-a", help="Limit to one account.")
+    ] = None,
+) -> None:
+    """Per-purchase detail: buy date, price paid per share, total cost, gain since."""
+    service = _portfolio_service()
+    try:
+        with console.status("Fetching quotes..."):
+            result = service.lots(account, symbol)
+    except TrdError as exc:
+        _fail(exc)
+        return
+    if not result:
+        target = symbol.upper() if symbol else "anything"
+        console.print(f"No open lots for {target}.")
+        return
+    parts = [p for p in (symbol.upper() if symbol else None, account) if p]
+    title = f"Lots — {', '.join(parts)}" if parts else "Lots — all accounts"
+    console.print(lots_table(result, title))
 
 
 @app.command()

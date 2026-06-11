@@ -20,6 +20,7 @@ trd account add fidelity              # one account per brokerage (--type simula
 trd account ls
 trd sync [--full]                     # refresh quotes + daily bars + earnings (--full = 2y backfill)
 trd portfolio [--account NAME]        # holdings with live P&L
+trd lots [SYMBOL] [--account NAME]    # per-purchase detail: buy date, paid/share, total cost, gain
 trd quote AAPL                        # live quote for any symbol
 trd buy AAPL 10 [--price 213.50] [--account main] [--date 2026-06-10] [--fees 1] [--note ...]
 trd sell AAPL 5 [--price ...]         # validates held quantity

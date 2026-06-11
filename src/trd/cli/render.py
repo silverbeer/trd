@@ -3,7 +3,7 @@ from decimal import Decimal
 
 from rich.table import Table
 
-from trd.models import BoardRow, EarningsEvent, Position
+from trd.models import BoardRow, EarningsEvent, LotPosition, Position
 
 MONEY = "{:,.2f}"
 
@@ -132,6 +132,62 @@ def board_table(rows: list[BoardRow], title: str, show_list_column: bool) -> Tab
         if show_list_column:
             cells.insert(0, row.watchlist)
         table.add_row(*cells)
+    return table
+
+
+def lots_table(lots: list[LotPosition], title: str) -> Table:
+    table = Table(title=title, title_justify="left")
+    table.add_column("Symbol", style="bold")
+    table.add_column("Bought", justify="right")
+    table.add_column("Qty", justify="right")
+    table.add_column("Paid/sh", justify="right")
+    table.add_column("Total Cost", justify="right")
+    table.add_column("Price", justify="right")
+    table.add_column("Value", justify="right")
+    table.add_column("Gain", justify="right")
+    table.add_column("Gain%", justify="right")
+
+    total_cost = Decimal(0)
+    total_value = Decimal(0)
+    any_value = False
+    last_symbol = None
+    for lot in lots:
+        symbol = lot.instrument.symbol
+        display = symbol if symbol != last_symbol else ""
+        last_symbol = symbol
+        if lot.price_stale and display:
+            display += " [dim](stale)[/dim]"
+        table.add_row(
+            display,
+            str(lot.bought_at.date()),
+            fmt_qty(lot.quantity),
+            fmt_money(lot.price_paid),
+            fmt_money(lot.cost),
+            fmt_money(lot.price),
+            fmt_money(lot.value),
+            fmt_signed(lot.gain),
+            fmt_signed_pct(lot.gain_pct),
+        )
+        total_cost += lot.cost
+        if lot.value is not None:
+            total_value += lot.value
+            any_value = True
+
+    if lots and any_value:
+        total_gain = total_value - total_cost
+        total_gain_pct = total_gain / total_cost * 100 if total_cost else None
+        table.add_section()
+        table.add_row(
+            "[bold]Total[/bold]",
+            "",
+            "",
+            "",
+            f"[bold]{fmt_money(total_cost)}[/bold]",
+            "",
+            f"[bold]{fmt_money(total_value)}[/bold]",
+            fmt_signed(total_gain),
+            fmt_signed_pct(total_gain_pct),
+        )
     return table
 
 
