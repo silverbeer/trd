@@ -100,6 +100,39 @@ class Quote(BaseModel):
         return Decimal(self.volume) / Decimal(self.avg_volume)
 
 
+class LotPosition(BaseModel):
+    """One surviving buy lot with live market context: the 'when did I buy,
+    what did I pay, what is it worth now' view."""
+
+    instrument: Instrument
+    bought_at: datetime
+    quantity: Decimal
+    price_paid: Decimal  # original per-share price
+    cost: Decimal  # remaining cost basis incl fees
+    price: Decimal | None = None
+    price_stale: bool = False
+
+    @property
+    def value(self) -> Decimal | None:
+        if self.price is None:
+            return None
+        return self.price * self.quantity
+
+    @property
+    def gain(self) -> Decimal | None:
+        value = self.value
+        if value is None:
+            return None
+        return value - self.cost
+
+    @property
+    def gain_pct(self) -> Decimal | None:
+        gain = self.gain
+        if gain is None or self.cost == 0:
+            return None
+        return gain / self.cost * 100
+
+
 class Watchlist(BaseModel):
     id: int
     name: str

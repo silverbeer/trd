@@ -7,10 +7,10 @@ from pathlib import Path
 import duckdb
 
 from trd.errors import InsufficientPositionError, TrdError, UnknownAccountError
-from trd.models import Instrument, Position, Side, Transaction
+from trd.models import Instrument, LotPosition, Position, Side, Transaction
 from trd.providers.base import MarketDataProvider
 from trd.repos import AccountRepo, InstrumentRepo, PriceRepo, TransactionRepo
-from trd.services.fifo import fifo_position
+from trd.services.fifo import fifo_position, open_lots
 
 CSV_COLUMNS = ["date", "account", "symbol", "side", "quantity", "price", "fees", "note"]
 
@@ -126,6 +126,58 @@ class PortfolioService:
             )
         positions.sort(key=lambda p: p.instrument.symbol)
         return positions
+
+    def lots(self, account_name: str | None = None, symbol: str | None = None) -> list[LotPosition]:
+        """Surviving buy lots with live prices: buy date, paid/share, cost, gain.
+
+        Same quote strategy as positions(): live fetch, snapshot fallback marked stale.
+        """
+        account_id: int | None = None
+        if account_name is not None:
+            account = self.accounts.get_by_name(account_name)
+            if account is None:
+                raise UnknownAccountError(account_name)
+            account_id = account.id
+
+        by_instrument: dict[int, list[Transaction]] = defaultdict(list)
+        for txn in self.txns.list_chronological(account_id):
+            by_instrument[txn.instrument_id].append(txn)
+
+        selected: list[tuple[Instrument, list]] = []
+        for instrument_id, txns in by_instrument.items():
+            instrument = self.instruments.get(instrument_id)
+            assert instrument is not None
+            if symbol is not None and instrument.symbol != symbol.upper():
+                continue
+            surviving = open_lots(txns)
+            if surviving:
+                selected.append((instrument, surviving))
+
+        quotes = self.provider.get_quotes([inst.symbol for inst, _ in selected])
+
+        result: list[LotPosition] = []
+        for instrument, surviving in selected:
+            quote = quotes.get(instrument.symbol)
+            if quote is not None:
+                self.prices.insert_snapshot(instrument.id, quote.price, quote.prev_close)
+                price, stale = quote.price, False
+            else:
+                snapshot = self.prices.latest_snapshot(instrument.id)
+                price, stale = (snapshot[0], True) if snapshot else (None, True)
+            for lot in surviving:
+                result.append(
+                    LotPosition(
+                        instrument=instrument,
+                        bought_at=lot.bought_at,
+                        quantity=lot.quantity,
+                        price_paid=lot.price,
+                        cost=lot.cost,
+                        price=price,
+                        price_stale=stale,
+                    )
+                )
+        result.sort(key=lambda lot: (lot.instrument.symbol, lot.bought_at))
+        return result
 
     def import_csv(self, path: Path) -> int:
         """Bulk-load transactions. Columns: date,account,symbol,side,quantity,price[,fees,note]."""
