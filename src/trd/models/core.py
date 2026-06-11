@@ -138,6 +138,17 @@ class Watchlist(BaseModel):
     name: str
 
 
+class IndicatorConfig(BaseModel):
+    """One row of the user's followed-indicator list."""
+
+    id: int
+    key: str
+    params: dict[str, float | int]
+    enabled: bool = True
+    display_order: int | None = None
+    note: str | None = None
+
+
 class EarningsDate(BaseModel):
     """One earnings event as the provider reports it (instrument-agnostic)."""
 

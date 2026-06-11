@@ -133,6 +133,77 @@ def test_account_add_bad_type(cli_env: FakeProvider) -> None:
     assert result.exit_code == 1
 
 
+def test_indicator_lifecycle(cli_env: FakeProvider) -> None:
+    result = runner.invoke(app, ["init"])
+    assert "Seeded" in result.output
+
+    result = runner.invoke(app, ["indicator", "ls"])
+    assert result.exit_code == 0, result.output
+    assert "rsi" in result.output and "macd" in result.output
+
+    result = runner.invoke(app, ["indicator", "catalog"])
+    assert result.exit_code == 0
+    assert "Bollinger" in result.output
+
+    result = runner.invoke(
+        app, ["indicator", "add", "ema", "--param", "period=8", "--note", "fast"]
+    )
+    assert result.exit_code == 0, result.output
+    assert "ema" in result.output
+
+    result = runner.invoke(app, ["indicator", "rm", "atr"])
+    assert result.exit_code == 0, result.output
+
+    result = runner.invoke(app, ["indicator", "info", "rsi"])
+    assert result.exit_code == 0
+    assert "overbought" in result.output.lower() or "Momentum" in result.output
+
+
+def test_indicator_add_unknown_fails(cli_env: FakeProvider) -> None:
+    runner.invoke(app, ["init"])
+    result = runner.invoke(app, ["indicator", "add", "vibes"])
+    assert result.exit_code == 1
+
+
+def test_indicators_panel(cli_env: FakeProvider) -> None:
+    from datetime import date, timedelta
+    from decimal import Decimal
+
+    from trd.config import get_settings
+    from trd.db.connection import connect
+    from trd.models import DailyBar
+    from trd.repos import InstrumentRepo, PriceRepo
+
+    runner.invoke(app, ["init"])
+    runner.invoke(app, ["watch", "add", "AAPL"])
+
+    conn = connect(get_settings().db_path)
+    instrument = InstrumentRepo(conn).get_by_symbol("AAPL")
+    assert instrument is not None
+    today = date.today()
+    bars = [
+        DailyBar(
+            date=today - timedelta(days=300 - i),
+            open=Decimal(100 + i),
+            high=Decimal(102 + i),
+            low=Decimal(99 + i),
+            close=Decimal(101 + i),
+            volume=1_000_000,
+        )
+        for i in range(300)
+    ]
+    PriceRepo(conn).upsert_daily(instrument.id, bars)
+    conn.close()
+
+    result = runner.invoke(app, ["indicators", "AAPL"])
+    assert result.exit_code == 0, result.output
+    assert "TREND" in result.output
+    assert "overbought" in result.output  # rising series
+
+    result = runner.invoke(app, ["indicators", "ZZZZ"])
+    assert result.exit_code == 1
+
+
 def test_earnings_after_sync(cli_env: FakeProvider) -> None:
     from datetime import date, timedelta
 
