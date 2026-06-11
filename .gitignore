@@ -15,5 +15,8 @@ htmlcov/
 *.duckdb
 *.duckdb.wal
 
+# Holdings exports — repo is public, never commit personal transaction data
+*.csv
+
 # OS
 .DS_Store
