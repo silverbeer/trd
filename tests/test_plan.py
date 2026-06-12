@@ -231,3 +231,33 @@ def test_plan_note_round_trip(plans: PlanService) -> None:
     )
     plan = plans.get_plan("sim")
     assert plan.note is not None and "QQQ tilt" in plan.note
+
+
+def test_day_of_month_round_trip_and_validation(plans: PlanService) -> None:
+    _sim(plans, day_of_month=15)
+    assert plans.get_plan("sim").day_of_month == 15
+    with pytest.raises(TrdError, match="1-31"):
+        plans.set_plan("sim2", Decimal(100), create_simulation=True, day_of_month=32)
+
+
+def test_update_plan_partial(plans: PlanService) -> None:
+    _sim(plans)
+    plan = plans.update_plan("sim", day_of_month=15)
+    assert plan.day_of_month == 15
+    assert plan.monthly_amount == Decimal(100)  # untouched
+    plan = plans.update_plan("sim", monthly=Decimal(250))
+    assert plan.monthly_amount == Decimal(250)
+    assert plan.day_of_month == 15  # untouched
+    with pytest.raises(TrdError, match="Nothing to update"):
+        plans.update_plan("sim")
+
+
+def test_pause_blocks_invest_resume_unblocks(plans: PlanService) -> None:
+    _sim(plans)
+    plans.pause("sim")
+    assert plans.get_plan("sim").active is False
+    with pytest.raises(TrdError, match="paused"):
+        plans.invest("sim")
+    plans.resume("sim")
+    [txn] = plans.invest("sim")
+    assert txn.quantity == Decimal("0.2")

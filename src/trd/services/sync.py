@@ -28,10 +28,12 @@ class SyncService:
         self.prices = PriceRepo(conn)
         self.earnings = EarningsRepo(conn)
 
-    def sync(self, full: bool = False) -> SyncResult:
+    def sync(self, full: bool = False, years: int | None = None) -> SyncResult:
         """Refresh quotes + daily bars for every tracked instrument.
 
-        Default pulls the last week of bars (gap-fill); --full backfills two years.
+        Default pulls the last week of bars (gap-fill); --full backfills two
+        years; years=N widens the backfill to N years (implies full) — needed
+        for DCA forecasting/backtesting over long windows.
         """
         instruments = self.instruments.list_all()
         symbols = [i.symbol for i in instruments]
@@ -41,7 +43,10 @@ class SyncService:
         earnings_count = 0
         failures: list[str] = []
         end = date.today() + timedelta(days=1)
-        start = end - timedelta(days=FULL_BACKFILL_DAYS if full else RECENT_DAYS)
+        if years is not None:
+            start = end - timedelta(days=int(years * 365.25))
+        else:
+            start = end - timedelta(days=FULL_BACKFILL_DAYS if full else RECENT_DAYS)
 
         for instrument in instruments:
             quote = quotes.get(instrument.symbol)

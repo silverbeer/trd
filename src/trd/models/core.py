@@ -185,6 +185,7 @@ class DailyBar(BaseModel):
     low: Decimal
     close: Decimal
     volume: int | None = None
+    adj_close: Decimal | None = None  # split/dividend-adjusted; analytics prefer it
 
 
 class Position(BaseModel):
