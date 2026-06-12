@@ -298,3 +298,27 @@ def test_earnings_after_sync(cli_env: FakeProvider) -> None:
     assert result.exit_code == 0, result.output
     assert "AAPL" in result.output
     assert "4d" in result.output
+
+
+def test_learn_list_and_term(cli_env: FakeProvider) -> None:
+    result = runner.invoke(app, ["learn"])
+    assert result.exit_code == 0, result.output
+    assert "xirr" in result.output and "dca" in result.output
+
+    result = runner.invoke(app, ["learn", "xirr"])
+    assert result.exit_code == 0, result.output
+    assert "Formula" in result.output
+    assert "bisection" in result.output
+
+    result = runner.invoke(app, ["learn", "moving"])
+    assert result.exit_code == 0
+    assert "Did you mean" in result.output
+
+    result = runner.invoke(app, ["learn", "zzzzz"])
+    assert result.exit_code == 1
+
+
+def test_dca_alias_and_plan_alias(cli_env: FakeProvider) -> None:
+    runner.invoke(app, ["init"])
+    assert runner.invoke(app, ["dca", "ls"]).exit_code == 0
+    assert runner.invoke(app, ["plan", "ls"]).exit_code == 0  # hidden back-compat alias

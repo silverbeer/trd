@@ -453,6 +453,7 @@ def indicators(symbol: Annotated[str, typer.Argument(help="Tracked ticker.")]) -
         console.print("No indicators followed. Run [bold]trd init[/bold] to seed defaults.")
         return
     console.print(indicator_panel(rows, symbol.upper()))
+    console.print("[dim]every reading explained: trd indicator info <key> · trd learn[/dim]")
 
 
 @indicator_app.command("ls")
@@ -702,6 +703,7 @@ def plan_status(account: PlanAccountOpt = None) -> None:
         _fail(exc)
         return
     _print_status(status, f"Plan — {name}")
+    console.print("[dim]terms: trd learn pl · benchmark · dca[/dim]")
 
 
 @plan_app.command("ls")
@@ -892,6 +894,56 @@ def sim_status(name: SimNameOpt = "sim") -> None:
         _fail(exc)
         return
     _print_status(status, f"Simulation — {name}")
+
+
+@app.command()
+def learn(
+    term: Annotated[
+        str | None,
+        typer.Argument(help="Term to explain, e.g. xirr, drift, fifo. Omit to list all."),
+    ] = None,
+) -> None:
+    """The investing dictionary: every term trd shows, every formula trd computes."""
+    from trd.learn import all_entries, lookup
+
+    if term is None:
+        table = Table(title="trd learn — investing dictionary", title_justify="left")
+        table.add_column("Term", style="bold")
+        table.add_column("Category", style="dim")
+        table.add_column("What it is")
+        last_category = None
+        for entry in all_entries():
+            if entry.category != last_category:
+                table.add_section()
+                last_category = entry.category
+            table.add_row(entry.key, entry.category.value, entry.term)
+        console.print(table)
+        console.print(
+            "[dim]trd learn <term> for the definition, formula, and a worked example.[/dim]"
+        )
+        return
+
+    result = lookup(term)
+    if isinstance(result, list):
+        if not result:
+            err_console.print(f"[red]error:[/red] no term '{term}'. See 'trd learn'.")
+            raise typer.Exit(code=1)
+        if len(result) > 1:
+            console.print(f"Did you mean: {', '.join(e.key for e in result)}")
+            return
+        result = result[0]
+    console.print(f"[bold]{result.term}[/bold] [dim]({result.category.value})[/dim]\n")
+    console.print(result.definition)
+    if result.formula:
+        console.print(
+            f"\n[bold]Formula (exactly what trd computes):[/bold]\n[cyan]{result.formula}[/cyan]"
+        )
+    if result.example:
+        console.print(f"\n[bold]Example:[/bold] {result.example}")
+    if result.used_in:
+        console.print(f"\n[dim]Appears in: {', '.join(result.used_in)}[/dim]")
+    if result.related:
+        console.print(f"[dim]Related: {', '.join(result.related)}[/dim]")
 
 
 @app.command(name="import")
