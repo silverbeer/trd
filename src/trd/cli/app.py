@@ -534,25 +534,46 @@ def sim_init(
         typer.Option(
             "--strategy",
             "-s",
-            help="'ticker' (fixed buy) or 'momentum' (best 3-month watchlist performer).",
+            help="'ticker' (fixed buy), 'momentum' (best 3-month watchlist performer), "
+            "or 'allocation' (implied by --alloc).",
         ),
     ] = "ticker",
     ticker: Annotated[
         str, typer.Option("--ticker", "-t", help="Symbol for the 'ticker' strategy.")
     ] = "SPY",
+    alloc: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--alloc",
+            "-a",
+            help="Split the monthly amount: --alloc SPY=30 --alloc QQQ=70 (weights sum to 100).",
+        ),
+    ] = None,
     name: SimNameOpt = "sim",
 ) -> None:
     """Create the simulation account."""
     service = _sim_service()
+    allocations: dict[str, Decimal] | None = None
+    if alloc:
+        allocations = {}
+        for raw in alloc:
+            if "=" not in raw:
+                err_console.print(
+                    f"[red]error:[/red] --alloc looks like SYMBOL=WEIGHT, got {raw!r}"
+                )
+                raise typer.Exit(code=1)
+            symbol, weight = raw.split("=", 1)
+            allocations[symbol.strip().upper()] = _parse_decimal(weight, "allocation weight")
     try:
-        config = service.init(_parse_decimal(monthly, "monthly amount"), strategy, ticker, name)
+        config = service.init(
+            _parse_decimal(monthly, "monthly amount"), strategy, ticker, name, allocations
+        )
     except TrdError as exc:
         _fail(exc)
         return
-    detail = config.strategy_ticker if config.strategy == "ticker" else "momentum pick"
     console.print(
         f"Simulation account [bold]{name}[/bold]: {fmt_money(config.monthly_amount)}/month "
-        f"into {detail}. Run [bold]trd sim invest[/bold] monthly."
+        f"into {config.strategy_label}. Run [bold]trd sim invest[/bold] monthly."
     )
 
 
@@ -572,14 +593,17 @@ def sim_invest(
     service = _sim_service()
     when = _parse_date(date_str)
     try:
-        txn, symbol = service.invest(name, when.date() if when else None)
+        txns = service.invest(name, when.date() if when else None)
     except TrdError as exc:
         _fail(exc)
         return
-    console.print(
-        f"Sim bought [bold]{txn.quantity.normalize():f} {symbol}[/bold] @ {fmt_money(txn.price)} "
-        f"({txn.executed_at.date()})."
-    )
+    for txn in txns:
+        instrument = service.instruments.get(txn.instrument_id)
+        symbol = instrument.symbol if instrument else "?"
+        console.print(
+            f"Sim bought [bold]{txn.quantity.normalize():f} {symbol}[/bold] "
+            f"@ {fmt_money(txn.price)} ({txn.executed_at.date()})."
+        )
 
 
 @sim_app.command("status")
@@ -595,12 +619,7 @@ def sim_status(name: SimNameOpt = "sim") -> None:
     table = Table(title=f"Simulation — {name}", title_justify="left")
     table.add_column("Metric", style="dim")
     table.add_column("Value", justify="right")
-    strategy = (
-        status.config.strategy_ticker
-        if status.config.strategy == "ticker"
-        else "momentum (watchlist)"
-    )
-    table.add_row("Strategy", strategy or "—")
+    table.add_row("Strategy", status.config.strategy_label)
     table.add_row("Monthly", fmt_money(status.config.monthly_amount))
     table.add_row("Months invested", str(status.months_invested))
     table.add_row("Total invested", fmt_money(status.invested))
