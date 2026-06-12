@@ -586,6 +586,8 @@ def _print_status(status: PlanStatus, title: str) -> None:
     table.add_column("Metric", style="dim")
     table.add_column("Value", justify="right")
     table.add_row("Strategy", status.plan.strategy_label)
+    if status.plan.note:
+        table.add_row("Goal", status.plan.note)
     table.add_row("Monthly", fmt_money(status.plan.monthly_amount))
     table.add_row("Months invested", str(status.months_invested))
     table.add_row("Total invested", fmt_money(status.invested))
@@ -609,6 +611,7 @@ def plan_set(
     strategy: StrategyOpt = "ticker",
     ticker: TickerOpt = "SPY",
     alloc: AllocOpt = None,
+    note: NoteOpt = None,
 ) -> None:
     """Attach a monthly contribution plan to an account.
 
@@ -622,6 +625,7 @@ def plan_set(
             strategy,
             ticker,
             _parse_allocs(alloc),
+            note=note,
         )
     except TrdError as exc:
         _fail(exc)
@@ -682,12 +686,14 @@ def plan_ls() -> None:
     table.add_column("Type")
     table.add_column("Monthly", justify="right")
     table.add_column("Strategy")
+    table.add_column("Goal")
     for plan in plans:
         table.add_row(
             plan.account.name,
             "paper" if plan.is_paper else "real",
             fmt_money(plan.monthly_amount),
             plan.strategy_label,
+            plan.note or "—",
         )
     console.print(table)
 
@@ -701,6 +707,7 @@ def sim_init(
     strategy: StrategyOpt = "ticker",
     ticker: TickerOpt = "SPY",
     alloc: AllocOpt = None,
+    note: NoteOpt = None,
     name: SimNameOpt = "sim",
 ) -> None:
     """Create a paper (simulation) account with a monthly plan."""
@@ -713,6 +720,7 @@ def sim_init(
             ticker,
             _parse_allocs(alloc),
             create_simulation=True,
+            note=note,
         )
     except TrdError as exc:
         _fail(exc)
