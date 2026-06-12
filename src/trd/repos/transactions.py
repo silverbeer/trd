@@ -5,7 +5,7 @@ import duckdb
 
 from trd.models import Side, Transaction
 
-_COLS = "id, account_id, instrument_id, side, quantity, price, fees, executed_at, note"
+_COLS = "id, account_id, instrument_id, side, quantity, price, fees, executed_at, note, plan_id"
 
 
 def _row_to_txn(row: tuple) -> Transaction:
@@ -19,6 +19,7 @@ def _row_to_txn(row: tuple) -> Transaction:
         fees=row[6],
         executed_at=row[7],
         note=row[8],
+        plan_id=row[9],
     )
 
 
@@ -36,15 +37,26 @@ class TransactionRepo:
         fees: Decimal,
         executed_at: datetime,
         note: str | None = None,
+        plan_id: int | None = None,
     ) -> Transaction:
         row = self.conn.execute(
             f"""
             INSERT INTO txn
-                (account_id, instrument_id, side, quantity, price, fees, executed_at, note)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                (account_id, instrument_id, side, quantity, price, fees, executed_at, note, plan_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             RETURNING {_COLS}
             """,
-            [account_id, instrument_id, side.value, quantity, price, fees, executed_at, note],
+            [
+                account_id,
+                instrument_id,
+                side.value,
+                quantity,
+                price,
+                fees,
+                executed_at,
+                note,
+                plan_id,
+            ],
         ).fetchone()
         assert row is not None
         return _row_to_txn(row)
@@ -58,4 +70,11 @@ class TransactionRepo:
                 f"SELECT {_COLS} FROM txn WHERE account_id = ? ORDER BY executed_at, id",
                 [account_id],
             ).fetchall()
+        return [_row_to_txn(r) for r in rows]
+
+    def list_for_plan(self, plan_id: int) -> list[Transaction]:
+        rows = self.conn.execute(
+            f"SELECT {_COLS} FROM txn WHERE plan_id = ? ORDER BY executed_at, id",
+            [plan_id],
+        ).fetchall()
         return [_row_to_txn(r) for r in rows]

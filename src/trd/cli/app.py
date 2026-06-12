@@ -26,12 +26,13 @@ from trd.repos import AccountRepo
 from trd.services import (
     EarningsService,
     IndicatorService,
+    PlanService,
     PortfolioService,
-    SimService,
     SyncService,
     WatchlistService,
 )
 from trd.services.indicators import seed_defaults
+from trd.services.plan import PlanStatus
 from trd.services.watchlist import DEFAULT_WATCHLIST
 
 app = typer.Typer(
@@ -48,6 +49,10 @@ sim_app = typer.Typer(
     help="Simulation account: paper-trade a monthly contribution.", no_args_is_help=True
 )
 app.add_typer(sim_app, name="sim")
+plan_app = typer.Typer(
+    help="Monthly contribution plans on any account (real or paper).", no_args_is_help=True
+)
+app.add_typer(plan_app, name="plan")
 console = Console()
 err_console = Console(stderr=True)
 
@@ -516,111 +521,72 @@ def indicator_info(
     console.print(indicator.description)
 
 
-def _sim_service() -> SimService:
+def _plan_service() -> PlanService:
     settings = get_settings()
-    return SimService(connect(settings.db_path), YFinanceProvider())
+    return PlanService(connect(settings.db_path), YFinanceProvider())
 
 
-SimNameOpt = Annotated[str, typer.Option("--name", help="Simulation account name.")]
+def _parse_allocs(alloc: list[str] | None) -> dict[str, Decimal] | None:
+    if not alloc:
+        return None
+    allocations: dict[str, Decimal] = {}
+    for raw in alloc:
+        if "=" not in raw:
+            err_console.print(f"[red]error:[/red] --alloc looks like SYMBOL=WEIGHT, got {raw!r}")
+            raise typer.Exit(code=1)
+        symbol, weight = raw.split("=", 1)
+        allocations[symbol.strip().upper()] = _parse_decimal(weight, "allocation weight")
+    return allocations
 
 
-@sim_app.command("init")
-def sim_init(
-    monthly: Annotated[
-        str, typer.Option("--monthly", "-m", help="Contribution per month.")
-    ] = "100",
-    strategy: Annotated[
-        str,
-        typer.Option(
-            "--strategy",
-            "-s",
-            help="'ticker' (fixed buy), 'momentum' (best 3-month watchlist performer), "
-            "or 'allocation' (implied by --alloc).",
-        ),
-    ] = "ticker",
-    ticker: Annotated[
-        str, typer.Option("--ticker", "-t", help="Symbol for the 'ticker' strategy.")
-    ] = "SPY",
-    alloc: Annotated[
-        list[str] | None,
-        typer.Option(
-            "--alloc",
-            "-a",
-            help="Split the monthly amount: --alloc SPY=30 --alloc QQQ=70 (weights sum to 100).",
-        ),
-    ] = None,
-    name: SimNameOpt = "sim",
-) -> None:
-    """Create the simulation account."""
-    service = _sim_service()
-    allocations: dict[str, Decimal] | None = None
-    if alloc:
-        allocations = {}
-        for raw in alloc:
-            if "=" not in raw:
-                err_console.print(
-                    f"[red]error:[/red] --alloc looks like SYMBOL=WEIGHT, got {raw!r}"
-                )
-                raise typer.Exit(code=1)
-            symbol, weight = raw.split("=", 1)
-            allocations[symbol.strip().upper()] = _parse_decimal(weight, "allocation weight")
-    try:
-        config = service.init(
-            _parse_decimal(monthly, "monthly amount"), strategy, ticker, name, allocations
-        )
-    except TrdError as exc:
-        _fail(exc)
-        return
-    console.print(
-        f"Simulation account [bold]{name}[/bold]: {fmt_money(config.monthly_amount)}/month "
-        f"into {config.strategy_label}. Run [bold]trd sim invest[/bold] monthly."
-    )
+MonthlyOpt = Annotated[str, typer.Option("--monthly", "-m", help="Contribution per month.")]
+StrategyOpt = Annotated[
+    str,
+    typer.Option(
+        "--strategy",
+        "-s",
+        help="'ticker' (fixed buy), 'momentum' (best 3-month watchlist performer), "
+        "or 'allocation' (implied by --alloc).",
+    ),
+]
+TickerOpt = Annotated[str, typer.Option("--ticker", "-t", help="Symbol for the 'ticker' strategy.")]
+AllocOpt = Annotated[
+    list[str] | None,
+    typer.Option(
+        "--alloc",
+        help="Split the monthly amount: --alloc SPY=30 --alloc QQQ=70 (weights sum to 100).",
+    ),
+]
+PlanAccountOpt = Annotated[
+    str | None,
+    typer.Option(
+        "--account", "-a", help="Account with the plan. Optional if only one plan exists."
+    ),
+]
+PlanDateOpt = Annotated[
+    str | None,
+    typer.Option(
+        "--date", "-d", help="Backdate (YYYY-MM-DD) using historical close — builds past months."
+    ),
+]
 
 
-@sim_app.command("invest")
-def sim_invest(
-    date_str: Annotated[
-        str | None,
-        typer.Option(
-            "--date",
-            "-d",
-            help="Backdate (YYYY-MM-DD) using historical close — builds past months.",
-        ),
-    ] = None,
-    name: SimNameOpt = "sim",
-) -> None:
-    """Execute this month's contribution (strategy-driven, once per month)."""
-    service = _sim_service()
-    when = _parse_date(date_str)
-    try:
-        txns = service.invest(name, when.date() if when else None)
-    except TrdError as exc:
-        _fail(exc)
-        return
+def _print_invest(service: PlanService, txns: list) -> None:
     for txn in txns:
         instrument = service.instruments.get(txn.instrument_id)
         symbol = instrument.symbol if instrument else "?"
         console.print(
-            f"Sim bought [bold]{txn.quantity.normalize():f} {symbol}[/bold] "
+            f"Recorded [bold]{txn.quantity.normalize():f} {symbol}[/bold] "
             f"@ {fmt_money(txn.price)} ({txn.executed_at.date()})."
         )
 
 
-@sim_app.command("status")
-def sim_status(name: SimNameOpt = "sim") -> None:
-    """Performance: invested vs value vs what SPY would have done."""
-    service = _sim_service()
-    try:
-        with console.status("Fetching quotes..."):
-            status = service.status(name)
-    except TrdError as exc:
-        _fail(exc)
-        return
-    table = Table(title=f"Simulation — {name}", title_justify="left")
+def _print_status(status: PlanStatus, title: str) -> None:
+    table = Table(title=title, title_justify="left")
     table.add_column("Metric", style="dim")
     table.add_column("Value", justify="right")
-    table.add_row("Strategy", status.config.strategy_label)
-    table.add_row("Monthly", fmt_money(status.config.monthly_amount))
+    table.add_row("Strategy", status.plan.strategy_label)
+    table.add_row("Monthly", fmt_money(status.plan.monthly_amount))
     table.add_row("Months invested", str(status.months_invested))
     table.add_row("Total invested", fmt_money(status.invested))
     table.add_row("Current value", fmt_money(status.value))
@@ -632,6 +598,158 @@ def sim_status(name: SimNameOpt = "sim") -> None:
     else:
         table.add_row("SPY same dates", "[dim]needs SPY history — trd sync --full[/dim]")
     console.print(table)
+
+
+@plan_app.command("set")
+def plan_set(
+    account: Annotated[
+        str, typer.Option("--account", "-a", help="Existing account (real or sim).")
+    ],
+    monthly: MonthlyOpt = "100",
+    strategy: StrategyOpt = "ticker",
+    ticker: TickerOpt = "SPY",
+    alloc: AllocOpt = None,
+) -> None:
+    """Attach a monthly contribution plan to an account.
+
+    For real accounts: you execute the buys at your broker; trd records and scores them.
+    """
+    service = _plan_service()
+    try:
+        plan = service.set_plan(
+            account,
+            _parse_decimal(monthly, "monthly amount"),
+            strategy,
+            ticker,
+            _parse_allocs(alloc),
+        )
+    except TrdError as exc:
+        _fail(exc)
+        return
+    kind = "paper" if plan.is_paper else "real money — execute at your broker, trd records"
+    console.print(
+        f"Plan on [bold]{account}[/bold]: {fmt_money(plan.monthly_amount)}/month "
+        f"into {plan.strategy_label} ({kind})."
+    )
+
+
+@plan_app.command("invest")
+def plan_invest(
+    account: PlanAccountOpt = None,
+    date_str: PlanDateOpt = None,
+) -> None:
+    """Record this month's contribution (once per month per plan)."""
+    service = _plan_service()
+    when = _parse_date(date_str)
+    try:
+        name = account or service.resolve_default_account()
+        txns = service.invest(name, when.date() if when else None)
+    except TrdError as exc:
+        _fail(exc)
+        return
+    _print_invest(service, txns)
+    plan = service.get_plan(name)
+    if not plan.is_paper:
+        console.print(
+            "[dim]Reminder: trd records only — make the matching buy at your broker.[/dim]"
+        )
+
+
+@plan_app.command("status")
+def plan_status(account: PlanAccountOpt = None) -> None:
+    """Plan performance: invested vs value vs what SPY would have done."""
+    service = _plan_service()
+    try:
+        name = account or service.resolve_default_account()
+        with console.status("Fetching quotes..."):
+            status = service.status(name)
+    except TrdError as exc:
+        _fail(exc)
+        return
+    _print_status(status, f"Plan — {name}")
+
+
+@plan_app.command("ls")
+def plan_ls() -> None:
+    """All contribution plans."""
+    service = _plan_service()
+    plans = service.list_plans()
+    if not plans:
+        console.print("No plans. Run [bold]trd plan set[/bold] or [bold]trd sim init[/bold].")
+        return
+    table = Table(title="Contribution plans", title_justify="left")
+    table.add_column("Account", style="bold")
+    table.add_column("Type")
+    table.add_column("Monthly", justify="right")
+    table.add_column("Strategy")
+    for plan in plans:
+        table.add_row(
+            plan.account.name,
+            "paper" if plan.is_paper else "real",
+            fmt_money(plan.monthly_amount),
+            plan.strategy_label,
+        )
+    console.print(table)
+
+
+SimNameOpt = Annotated[str, typer.Option("--name", help="Simulation account name.")]
+
+
+@sim_app.command("init")
+def sim_init(
+    monthly: MonthlyOpt = "100",
+    strategy: StrategyOpt = "ticker",
+    ticker: TickerOpt = "SPY",
+    alloc: AllocOpt = None,
+    name: SimNameOpt = "sim",
+) -> None:
+    """Create a paper (simulation) account with a monthly plan."""
+    service = _plan_service()
+    try:
+        plan = service.set_plan(
+            name,
+            _parse_decimal(monthly, "monthly amount"),
+            strategy,
+            ticker,
+            _parse_allocs(alloc),
+            create_simulation=True,
+        )
+    except TrdError as exc:
+        _fail(exc)
+        return
+    console.print(
+        f"Simulation account [bold]{name}[/bold]: {fmt_money(plan.monthly_amount)}/month "
+        f"into {plan.strategy_label}. Run [bold]trd sim invest[/bold] monthly."
+    )
+
+
+@sim_app.command("invest")
+def sim_invest(
+    date_str: PlanDateOpt = None,
+    name: SimNameOpt = "sim",
+) -> None:
+    """Execute this month's paper contribution (once per month)."""
+    service = _plan_service()
+    when = _parse_date(date_str)
+    try:
+        txns = service.invest(name, when.date() if when else None)
+    except TrdError as exc:
+        _fail(exc)
+        return
+    _print_invest(service, txns)
+
+
+@sim_app.command("status")
+def sim_status(name: SimNameOpt = "sim") -> None:
+    """Performance: invested vs value vs what SPY would have done."""
+    service = _plan_service()
+    try:
+        with console.status("Fetching quotes..."):
+            status = service.status(name)
+    except TrdError as exc:
+        _fail(exc)
+        return
+    _print_status(status, f"Simulation — {name}")
 
 
 @app.command(name="import")

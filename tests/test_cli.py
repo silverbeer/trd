@@ -216,7 +216,7 @@ def test_sim_lifecycle(cli_env: FakeProvider) -> None:
 
     result = runner.invoke(app, ["sim", "invest"])
     assert result.exit_code == 0, result.output
-    assert "0.2 SPY" in result.output
+    assert "Recorded 0.2 SPY" in result.output
 
     result = runner.invoke(app, ["sim", "invest"])
     assert result.exit_code == 1  # same month
@@ -230,6 +230,52 @@ def test_sim_lifecycle(cli_env: FakeProvider) -> None:
 def test_sim_status_without_init(cli_env: FakeProvider) -> None:
     runner.invoke(app, ["init"])
     result = runner.invoke(app, ["sim", "status"])
+    assert result.exit_code == 1
+
+
+def test_plan_on_real_account_lifecycle(cli_env: FakeProvider) -> None:
+    from trd.models import InstrumentType
+
+    cli_env.add_symbol("SPY", price="500.00", prev_close="495.00", type_=InstrumentType.ETF)
+    cli_env.add_symbol("QQQ", price="200.00", type_=InstrumentType.ETF)
+    runner.invoke(app, ["init"])
+    runner.invoke(app, ["account", "add", "sofi"])
+
+    result = runner.invoke(
+        app,
+        [
+            "plan",
+            "set",
+            "--account",
+            "sofi",
+            "--monthly",
+            "100",
+            "--alloc",
+            "SPY=30",
+            "--alloc",
+            "QQQ=70",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert "real money" in result.output
+
+    result = runner.invoke(app, ["plan", "invest"])  # single plan: --account optional
+    assert result.exit_code == 0, result.output
+    assert "Recorded" in result.output
+    assert "broker" in result.output  # real-account reminder
+
+    result = runner.invoke(app, ["plan", "status", "--account", "sofi"])
+    assert result.exit_code == 0, result.output
+    assert "Total invested" in result.output
+
+    result = runner.invoke(app, ["plan", "ls"])
+    assert result.exit_code == 0, result.output
+    assert "sofi" in result.output and "real" in result.output
+
+
+def test_plan_set_unknown_account_fails(cli_env: FakeProvider) -> None:
+    runner.invoke(app, ["init"])
+    result = runner.invoke(app, ["plan", "set", "--account", "nope"])
     assert result.exit_code == 1
 
 

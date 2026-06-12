@@ -59,6 +59,7 @@ class Transaction(BaseModel):
     fees: Decimal = Decimal(0)
     executed_at: datetime
     note: str | None = None
+    plan_id: int | None = None  # set when the txn was recorded by a contribution plan
 
 
 class Quote(BaseModel):
