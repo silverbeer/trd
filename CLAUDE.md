@@ -31,10 +31,14 @@ trd watch ls [ai]                     # quote board: price, day Δ%, 52w pos, vo
 trd earnings [--days 14]              # upcoming earnings across everything tracked
 trd indicators NVDA                   # indicator panel with plain-English readings
 trd indicator ls|catalog|add|rm|info  # manage followed indicators (trd indicator add ema -p period=8)
-trd sim init --monthly 100 [--strategy ticker|momentum] [--ticker SPY] [--name NAME]
-trd sim init --name split --alloc SPY=30 --alloc QQQ=70   # allocation strategy (weights sum to 100)
-trd sim invest [--date 2026-01-15]    # monthly contribution; --date backfills with historical close
-trd sim status                        # invested vs value vs SPY-same-dates benchmark
+trd plan set --account sofi --monthly 100 --alloc SPY=30 --alloc QQQ=70
+                                      # monthly contribution plan on ANY account; real accounts:
+                                      # you execute at the broker, trd records + scores vs SPY
+trd plan invest [--account NAME] [--date 2026-01-15]   # record the month (once/month/plan)
+trd plan status [--account NAME]      # plan-only P&L vs SPY-same-dates (ignores other holdings)
+trd plan ls
+trd sim init --monthly 100 [--strategy ticker|momentum] [--ticker SPY] [--alloc ...] [--name NAME]
+                                      # sim = plan on a paper (simulation) account; sim invest/status same
 ```
 
 CSV import format (header required): `date,account,symbol,side,quantity,price[,fees,note]` — date is ISO, side is buy/sell.
