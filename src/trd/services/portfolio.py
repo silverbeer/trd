@@ -42,6 +42,7 @@ class PortfolioService:
         fees: Decimal = Decimal(0),
         executed_at: datetime | None = None,
         note: str | None = None,
+        plan_id: int | None = None,
     ) -> Transaction:
         account = self.accounts.get_by_name(account_name)
         if account is None:
@@ -64,6 +65,7 @@ class PortfolioService:
             fees=fees,
             executed_at=executed_at or datetime.now(),
             note=note,
+            plan_id=plan_id,
         )
 
     def _held_quantity(self, account_id: int, instrument_id: int) -> Decimal:
