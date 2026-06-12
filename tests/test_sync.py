@@ -67,3 +67,14 @@ def test_sync_upsert_idempotent(
     sync_service.sync()  # re-sync must not duplicate rows
     row = sync_service.conn.execute("SELECT count(*) FROM price_daily").fetchone()
     assert row is not None and row[0] == 5
+
+
+def test_sync_years_widens_window(
+    portfolio: PortfolioService, sync_service: SyncService, provider
+) -> None:
+    portfolio.record_trade("main", "AAPL", Side.BUY, Decimal(1), Decimal(100))
+    provider.bars["AAPL"] = _bars(1500)  # ~4 years of daily bars
+    full = sync_service.sync(full=True)
+    assert full.bars <= 731
+    deep = sync_service.sync(years=4)
+    assert deep.bars > 1400

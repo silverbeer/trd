@@ -124,6 +124,7 @@ class YFinanceProvider:
                     volume=int(volume)
                     if volume is not None and not math.isnan(float(volume))
                     else None,
+                    adj_close=_dec(row.get("Adj Close")),
                 )
             )
         return bars

@@ -50,9 +50,11 @@ sim_app = typer.Typer(
 )
 app.add_typer(sim_app, name="sim")
 plan_app = typer.Typer(
-    help="Monthly contribution plans on any account (real or paper).", no_args_is_help=True
+    help="DCA: recurring monthly investing on any account (real or paper).",
+    no_args_is_help=True,
 )
-app.add_typer(plan_app, name="plan")
+app.add_typer(plan_app, name="dca")
+app.add_typer(plan_app, name="plan", hidden=True)  # back-compat alias
 console = Console()
 err_console = Console(stderr=True)
 
@@ -120,13 +122,17 @@ def sync(
     full: Annotated[
         bool, typer.Option("--full", help="Backfill 2 years of daily bars (default: last week).")
     ] = False,
+    years: Annotated[
+        int | None,
+        typer.Option("--years", help="Backfill N years of daily bars (implies --full)."),
+    ] = None,
 ) -> None:
     """Refresh quotes and daily price history for all tracked instruments."""
     settings = get_settings()
     conn = connect(settings.db_path)
     service = SyncService(conn, YFinanceProvider())
     with console.status("Syncing market data..."):
-        result = service.sync(full=full)
+        result = service.sync(full=full, years=years)
     console.print(
         f"Synced [bold]{result.quotes}[/bold]/{result.instruments} quotes, "
         f"[bold]{result.bars}[/bold] daily bars, "
@@ -628,8 +634,11 @@ def plan_set(
     ticker: TickerOpt = "SPY",
     alloc: AllocOpt = None,
     note: NoteOpt = None,
+    day: Annotated[
+        int | None, typer.Option("--day", help="Scheduled buy day of month (1-31), e.g. 15.")
+    ] = None,
 ) -> None:
-    """Attach a monthly contribution plan to an account.
+    """Attach a monthly DCA plan to an account.
 
     For real accounts: you execute the buys at your broker; trd records and scores them.
     """
@@ -642,6 +651,7 @@ def plan_set(
             ticker,
             _parse_allocs(alloc),
             note=note,
+            day_of_month=day,
         )
     except TrdError as exc:
         _fail(exc)
@@ -697,10 +707,12 @@ def plan_ls() -> None:
     if not plans:
         console.print("No plans. Run [bold]trd plan set[/bold] or [bold]trd sim init[/bold].")
         return
-    table = Table(title="Contribution plans", title_justify="left")
+    table = Table(title="DCA plans", title_justify="left")
     table.add_column("Account", style="bold")
     table.add_column("Type")
     table.add_column("Monthly", justify="right")
+    table.add_column("Day", justify="right")
+    table.add_column("Active")
     table.add_column("Strategy")
     table.add_column("Goal")
     for plan in plans:
@@ -708,10 +720,66 @@ def plan_ls() -> None:
             plan.account.name,
             "paper" if plan.is_paper else "real",
             fmt_money(plan.monthly_amount),
+            str(plan.day_of_month) if plan.day_of_month else "—",
+            "[green]yes[/green]" if plan.active else "[yellow]paused[/yellow]",
             plan.strategy_label,
             plan.note or "—",
         )
     console.print(table)
+
+
+@plan_app.command("edit")
+def plan_edit(
+    account: PlanAccountOpt = None,
+    monthly: Annotated[
+        str | None, typer.Option("--monthly", "-m", help="New contribution per month.")
+    ] = None,
+    day: Annotated[
+        int | None, typer.Option("--day", help="Scheduled buy day of month (1-31).")
+    ] = None,
+    note: NoteOpt = None,
+) -> None:
+    """Update an existing plan's amount, scheduled day, or goal note."""
+    service = _plan_service()
+    try:
+        name = account or service.resolve_default_account()
+        plan = service.update_plan(
+            name,
+            monthly=_parse_decimal(monthly, "monthly amount") if monthly else None,
+            day_of_month=day,
+            note=note,
+        )
+    except TrdError as exc:
+        _fail(exc)
+        return
+    day_text = f", day {plan.day_of_month}" if plan.day_of_month else ""
+    console.print(f"Plan on [bold]{name}[/bold]: {fmt_money(plan.monthly_amount)}/month{day_text}.")
+
+
+@plan_app.command("pause")
+def plan_pause(account: PlanAccountOpt = None) -> None:
+    """Pause a plan — invest is blocked until resumed. History kept."""
+    service = _plan_service()
+    try:
+        name = account or service.resolve_default_account()
+        service.pause(name)
+    except TrdError as exc:
+        _fail(exc)
+        return
+    console.print(f"Plan on [bold]{name}[/bold] paused.")
+
+
+@plan_app.command("resume")
+def plan_resume(account: PlanAccountOpt = None) -> None:
+    """Resume a paused plan."""
+    service = _plan_service()
+    try:
+        name = account or service.resolve_default_account()
+        service.resume(name)
+    except TrdError as exc:
+        _fail(exc)
+        return
+    console.print(f"Plan on [bold]{name}[/bold] active again.")
 
 
 SimNameOpt = Annotated[str, typer.Option("--name", help="Simulation account name.")]

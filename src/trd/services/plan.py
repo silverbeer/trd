@@ -1,5 +1,5 @@
 from collections import defaultdict
-from datetime import date, datetime, timedelta
+from datetime import date, datetime
 from decimal import ROUND_DOWN, Decimal
 
 import duckdb
@@ -8,7 +8,7 @@ from pydantic import BaseModel
 from trd.errors import TrdError
 from trd.models import Account, AccountType, Side, Transaction
 from trd.providers.base import MarketDataProvider
-from trd.repos import AccountRepo, InstrumentRepo, TransactionRepo, WatchlistRepo
+from trd.repos import AccountRepo, InstrumentRepo, PriceRepo, TransactionRepo, WatchlistRepo
 from trd.services.fifo import fifo_position
 from trd.services.portfolio import PortfolioService
 
@@ -24,6 +24,8 @@ class Plan(BaseModel):
     strategy_ticker: str | None = None
     allocations: dict[str, Decimal] = {}  # symbol -> weight in percent, sums to 100
     note: str | None = None  # the goal: why this plan exists
+    day_of_month: int | None = None  # scheduled buy day (e.g. 15); None = no fixed day
+    active: bool = True
 
     @property
     def strategy_label(self) -> str:
@@ -79,6 +81,7 @@ class PlanService:
         self.accounts = AccountRepo(conn)
         self.instruments = InstrumentRepo(conn)
         self.txns = TransactionRepo(conn)
+        self.prices = PriceRepo(conn)
         self.watchlists = WatchlistRepo(conn)
         self.portfolio = PortfolioService(conn, provider)
 
@@ -91,6 +94,7 @@ class PlanService:
         allocations: dict[str, Decimal] | None = None,
         create_simulation: bool = False,
         note: str | None = None,
+        day_of_month: int | None = None,
     ) -> Plan:
         if allocations:
             strategy = "allocation"
@@ -106,6 +110,7 @@ class PlanService:
                 raise TrdError(f"Allocation weights must sum to 100, got {total.normalize():f}.")
         if monthly <= 0:
             raise TrdError("Monthly amount must be positive.")
+        self._validate_day(day_of_month)
         account = self.accounts.get_by_name(account_name)
         if account is None:
             if not create_simulation:
@@ -118,8 +123,8 @@ class PlanService:
         self.conn.execute(
             """
             INSERT INTO contribution_plan
-                (account_id, monthly_amount, strategy, strategy_ticker, note)
-            VALUES (?, ?, ?, ?, ?)
+                (account_id, monthly_amount, strategy, strategy_ticker, note, day_of_month)
+            VALUES (?, ?, ?, ?, ?, ?)
             """,
             [
                 account.id,
@@ -127,6 +132,7 @@ class PlanService:
                 strategy,
                 ticker.upper() if ticker and strategy == "ticker" else None,
                 note,
+                day_of_month,
             ],
         )
         plan = self.get_plan(account_name)
@@ -138,12 +144,53 @@ class PlanService:
                 )
         return self.get_plan(account_name)
 
+    @staticmethod
+    def _validate_day(day_of_month: int | None) -> None:
+        if day_of_month is not None and not 1 <= day_of_month <= 31:
+            raise TrdError(f"--day must be 1-31, got {day_of_month}.")
+
     def _plan_row(self, account_id: int) -> tuple | None:
         return self.conn.execute(
-            "SELECT id, monthly_amount, strategy, strategy_ticker, note FROM contribution_plan "
-            "WHERE account_id = ?",
+            "SELECT id, monthly_amount, strategy, strategy_ticker, note, day_of_month, active "
+            "FROM contribution_plan WHERE account_id = ?",
             [account_id],
         ).fetchone()
+
+    def update_plan(
+        self,
+        account_name: str,
+        monthly: Decimal | None = None,
+        day_of_month: int | None = None,
+        note: str | None = None,
+    ) -> Plan:
+        """Partial update of an existing plan (set_plan rejects duplicates)."""
+        plan = self.get_plan(account_name)
+        if monthly is not None and monthly <= 0:
+            raise TrdError("Monthly amount must be positive.")
+        self._validate_day(day_of_month)
+        if monthly is None and day_of_month is None and note is None:
+            raise TrdError("Nothing to update — pass --monthly, --day, or --note.")
+        self.conn.execute(
+            """
+            UPDATE contribution_plan SET
+                monthly_amount = coalesce(?, monthly_amount),
+                day_of_month = coalesce(?, day_of_month),
+                note = coalesce(?, note)
+            WHERE id = ?
+            """,
+            [monthly, day_of_month, note, plan.id],
+        )
+        return self.get_plan(account_name)
+
+    def pause(self, account_name: str) -> Plan:
+        plan = self.get_plan(account_name)
+        self.conn.execute("UPDATE contribution_plan SET active = false WHERE id = ?", [plan.id])
+        return self.get_plan(account_name)
+
+    def resume(self, account_name: str) -> Plan:
+        plan = self.get_plan(account_name)
+        self.conn.execute("UPDATE contribution_plan SET active = true WHERE id = ?", [plan.id])
+        return self.get_plan(account_name)
 
     def get_plan(self, account_name: str) -> Plan:
         account = self.accounts.get_by_name(account_name)
@@ -167,6 +214,8 @@ class PlanService:
             strategy_ticker=row[3],
             allocations=allocations,
             note=row[4],
+            day_of_month=row[5],
+            active=row[6],
         )
 
     def list_plans(self) -> list[Plan]:
@@ -199,6 +248,8 @@ class PlanService:
         never places orders. Backdate with `when` to use historical closes.
         """
         plan = self.get_plan(account_name)
+        if not plan.active:
+            raise TrdError(f"Plan on '{account_name}' is paused — trd dca resume.")
         target = when or date.today()
         month = (target.year, target.month)
         for txn in self.txns.list_for_plan(plan.id):
@@ -269,19 +320,12 @@ class PlanService:
         if live_ok:
             return self.provider.get_quote(symbol).price
         instrument = self.portfolio.ensure_instrument(symbol)
-        row = self.conn.execute(
-            """
-            SELECT close FROM price_daily
-            WHERE instrument_id = ? AND date BETWEEN ? AND ?
-            ORDER BY date LIMIT 1
-            """,
-            [instrument.id, target, target + timedelta(days=7)],
-        ).fetchone()
-        if row is None:
+        close = self.prices.close_on_or_after(instrument.id, target)
+        if close is None:
             raise TrdError(
                 f"No price history for {symbol} near {target}. Run 'trd sync --full' first."
             )
-        return row[0]
+        return close
 
     def status(self, account_name: str) -> PlanStatus:
         """The plan's own performance — only plan-tagged transactions count,
@@ -326,22 +370,11 @@ class PlanService:
             return None
         shares = Decimal(0)
         for txn in txns:
-            when = txn.executed_at.date()
-            row = self.conn.execute(
-                """
-                SELECT close FROM price_daily
-                WHERE instrument_id = ? AND date BETWEEN ? AND ?
-                ORDER BY date LIMIT 1
-                """,
-                [benchmark.id, when, when + timedelta(days=7)],
-            ).fetchone()
-            if row is None or row[0] == 0:
+            close = self.prices.close_on_or_after(benchmark.id, txn.executed_at.date())
+            if close is None or close == 0:
                 return None
-            shares += (txn.quantity * txn.price + txn.fees) / row[0]
-        latest = self.conn.execute(
-            "SELECT close FROM price_daily WHERE instrument_id = ? ORDER BY date DESC LIMIT 1",
-            [benchmark.id],
-        ).fetchone()
+            shares += (txn.quantity * txn.price + txn.fees) / close
+        latest = self.prices.latest_close(benchmark.id)
         if latest is None:
             return None
-        return shares * latest[0]
+        return shares * latest
