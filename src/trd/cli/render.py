@@ -5,6 +5,7 @@ from rich.table import Table
 
 from trd.models import BoardRow, EarningsEvent, LotPosition, Position
 from trd.services.dca_detail import PlanDetail
+from trd.services.dca_projection import BacktestResult, ForecastResult
 
 MONEY = "{:,.2f}"
 
@@ -352,4 +353,52 @@ def dca_history_table(detail: PlanDetail, limit: int | None = None) -> Table:
             first = False
         table.add_row("", "", "", "[dim]total[/dim]", f"[bold]{fmt_money(event.total)}[/bold]")
         table.add_section()
+    return table
+
+
+def _fmt_f(value: float | None) -> str:
+    return f"{value:,.0f}" if value is not None else "—"
+
+
+def forecast_table(result: ForecastResult) -> Table:
+    table = Table(
+        title=f"Forecast — ${result.monthly:,.0f}/month for {result.months // 12} years",
+        title_justify="left",
+    )
+    table.add_column("Year", justify="right")
+    table.add_column("Contributed", justify="right")
+    table.add_column("Expected", justify="right")
+    table.add_column("Bad case (p10)", justify="right")
+    table.add_column("Median (p50)", justify="right")
+    table.add_column("Good case (p90)", justify="right")
+    for band in result.years:
+        table.add_row(
+            str(band.year),
+            _fmt_f(band.contributed),
+            _fmt_f(band.deterministic),
+            f"[red]{_fmt_f(band.p10)}[/red]",
+            _fmt_f(band.p50),
+            f"[green]{_fmt_f(band.p90)}[/green]",
+        )
+    return table
+
+
+def backtest_table(result: BacktestResult, account: str) -> Table:
+    table = Table(
+        title=f"Backtest — {account}, {result.start} to {result.end}", title_justify="left"
+    )
+    table.add_column("Metric", style="dim")
+    table.add_column("Value", justify="right")
+    table.add_row("Months invested", str(result.months))
+    if result.skipped_months:
+        table.add_row("Skipped months", f"[yellow]{result.skipped_months}[/yellow]")
+    table.add_row("Invested", _fmt_f(result.invested))
+    table.add_row("Ending value", _fmt_f(result.value))
+    pl_pct = f" ({result.pl_pct:+.1f}%)" if result.pl_pct is not None else ""
+    table.add_row("P&L", f"{result.pl:+,.0f}{pl_pct}")
+    table.add_row("XIRR (annualized)", fmt_pct_float(result.xirr))
+    table.add_row("SPY same cashflows", _fmt_f(result.spy_value))
+    table.add_row("SPY XIRR", fmt_pct_float(result.spy_xirr))
+    color = "green" if result.vs_spy >= 0 else "red"
+    table.add_row("vs SPY", f"[{color}]{result.vs_spy:+,.0f}[/{color}]")
     return table
