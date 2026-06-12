@@ -220,3 +220,14 @@ def test_resolve_default_account(plans: PlanService) -> None:
 def test_status_without_plan_raises(plans: PlanService) -> None:
     with pytest.raises(TrdError, match="No plan on account"):
         plans.status("sim")
+
+
+def test_plan_note_round_trip(plans: PlanService) -> None:
+    plans.set_plan(
+        "sim",
+        Decimal(100),
+        create_simulation=True,
+        note="QQQ tilt experiment: does 70/30 beat plain SPY over 12 months?",
+    )
+    plan = plans.get_plan("sim")
+    assert plan.note is not None and "QQQ tilt" in plan.note

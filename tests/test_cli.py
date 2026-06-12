@@ -254,6 +254,8 @@ def test_plan_on_real_account_lifecycle(cli_env: FakeProvider) -> None:
             "SPY=30",
             "--alloc",
             "QQQ=70",
+            "--note",
+            "real monthly DCA",
         ],
     )
     assert result.exit_code == 0, result.output
@@ -271,6 +273,7 @@ def test_plan_on_real_account_lifecycle(cli_env: FakeProvider) -> None:
     result = runner.invoke(app, ["plan", "ls"])
     assert result.exit_code == 0, result.output
     assert "sofi" in result.output and "real" in result.output
+    assert "DCA" in result.output  # goal column
 
 
 def test_plan_set_unknown_account_fails(cli_env: FakeProvider) -> None:
