@@ -7,7 +7,7 @@ from pathlib import Path
 import duckdb
 
 from trd.errors import InsufficientPositionError, TrdError, UnknownAccountError
-from trd.models import Instrument, LotPosition, Position, Side, Transaction
+from trd.models import AccountType, Instrument, LotPosition, Position, Side, Transaction
 from trd.providers.base import MarketDataProvider
 from trd.repos import AccountRepo, InstrumentRepo, PriceRepo, TransactionRepo
 from trd.services.fifo import fifo_position, open_lots
@@ -75,11 +75,14 @@ class PortfolioService:
         quantity, _ = fifo_position(txns)
         return quantity
 
-    def positions(self, account_name: str | None = None) -> list[Position]:
-        """Open positions with FIFO cost basis and current prices.
+    def _scope_txns(
+        self, account_name: str | None, include_simulation: bool
+    ) -> dict[tuple[int, int], list[Transaction]]:
+        """Transactions grouped per (account, instrument). FIFO must run per pair:
+        a sell in one account can never consume lots held in another.
 
-        Live quotes are fetched per call (and snapshotted); a symbol whose quote
-        fails falls back to its latest stored snapshot, marked stale.
+        The all-accounts view excludes simulation (paper) accounts unless
+        include_simulation; naming an account explicitly always includes it.
         """
         account_id: int | None = None
         if account_name is not None:
@@ -88,11 +91,26 @@ class PortfolioService:
                 raise UnknownAccountError(account_name)
             account_id = account.id
 
-        # FIFO must run per (account, instrument): a sell in one account can never
-        # consume lots held in another. Aggregate per instrument afterwards.
+        skip: set[int] = set()
+        if account_id is None and not include_simulation:
+            skip = {a.id for a in self.accounts.list_all() if a.type == AccountType.SIMULATION}
+
         by_pair: dict[tuple[int, int], list[Transaction]] = defaultdict(list)
         for txn in self.txns.list_chronological(account_id):
+            if txn.account_id in skip:
+                continue
             by_pair[(txn.account_id, txn.instrument_id)].append(txn)
+        return by_pair
+
+    def positions(
+        self, account_name: str | None = None, include_simulation: bool = False
+    ) -> list[Position]:
+        """Open positions with FIFO cost basis and current prices.
+
+        Live quotes are fetched per call (and snapshotted); a symbol whose quote
+        fails falls back to its latest stored snapshot, marked stale.
+        """
+        by_pair = self._scope_txns(account_name, include_simulation)
 
         totals: dict[int, tuple[Decimal, Decimal]] = defaultdict(lambda: (Decimal(0), Decimal(0)))
         for (_, instrument_id), txns in by_pair.items():
@@ -136,23 +154,17 @@ class PortfolioService:
         positions.sort(key=lambda p: p.instrument.symbol)
         return positions
 
-    def lots(self, account_name: str | None = None, symbol: str | None = None) -> list[LotPosition]:
+    def lots(
+        self,
+        account_name: str | None = None,
+        symbol: str | None = None,
+        include_simulation: bool = False,
+    ) -> list[LotPosition]:
         """Surviving buy lots with live prices: buy date, paid/share, cost, gain.
 
         Same quote strategy as positions(): live fetch, snapshot fallback marked stale.
         """
-        account_id: int | None = None
-        if account_name is not None:
-            account = self.accounts.get_by_name(account_name)
-            if account is None:
-                raise UnknownAccountError(account_name)
-            account_id = account.id
-
-        # Per (account, instrument): FIFO never crosses account boundaries, and each
-        # lot knows which broker holds it.
-        by_pair: dict[tuple[int, int], list[Transaction]] = defaultdict(list)
-        for txn in self.txns.list_chronological(account_id):
-            by_pair[(txn.account_id, txn.instrument_id)].append(txn)
+        by_pair = self._scope_txns(account_name, include_simulation)
 
         account_names = {a.id: a.name for a in self.accounts.list_all()}
         selected: list[tuple[str, Instrument, list]] = []
