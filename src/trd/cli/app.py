@@ -8,6 +8,7 @@ from rich.console import Console
 from rich.table import Table
 
 from trd.cli.render import (
+    backtest_table,
     board_table,
     dca_cadence_table,
     dca_history_table,
@@ -17,6 +18,7 @@ from trd.cli.render import (
     fmt_money,
     fmt_signed,
     fmt_signed_pct,
+    forecast_table,
     indicator_panel,
     lots_table,
     positions_table,
@@ -29,6 +31,7 @@ from trd.providers import YFinanceProvider
 from trd.repos import AccountRepo
 from trd.services import (
     DcaDetailService,
+    DcaProjectionService,
     EarningsService,
     IndicatorService,
     PlanService,
@@ -778,6 +781,75 @@ def plan_history(
         console.print("No contributions yet. Run [bold]trd dca invest[/bold].")
         return
     console.print(dca_history_table(detail, limit))
+
+
+def _projection_service() -> DcaProjectionService:
+    settings = get_settings()
+    return DcaProjectionService(connect(settings.db_path), YFinanceProvider())
+
+
+@plan_app.command("forecast")
+def plan_forecast(
+    account: PlanAccountOpt = None,
+    years: Annotated[int, typer.Option("--years", "-y", help="Projection horizon.")] = 10,
+    monthly: Annotated[
+        str | None, typer.Option("--monthly", "-m", help="Override the monthly amount.")
+    ] = None,
+    trials: Annotated[int, typer.Option("--trials", help="Monte Carlo trials.")] = 1000,
+    seed: Annotated[
+        int | None, typer.Option("--seed", help="Random seed (reproducible bands).")
+    ] = None,
+) -> None:
+    """Project the plan forward from its own price history: expected path + bands."""
+    service = _projection_service()
+    try:
+        name = account or service.plans.resolve_default_account()
+        with console.status("Simulating..."):
+            result = service.forecast(
+                name,
+                years=years,
+                monthly_override=float(_parse_decimal(monthly, "monthly")) if monthly else None,
+                trials=trials,
+                seed=seed,
+            )
+    except TrdError as exc:
+        _fail(exc)
+        return
+    console.print(
+        f"Based on [bold]{result.window_months}[/bold] monthly returns since "
+        f"{result.window_start:%Y-%m} (window limited by {result.limiting_symbol}). "
+        f"Historical CAGR of this mix: [bold]{result.cagr * 100:+.1f}%/yr[/bold]."
+    )
+    console.print(forecast_table(result))
+    console.print(
+        "[dim]Expected = steady growth at historical CAGR. Bands = "
+        f"{result.trials} Monte Carlo resamples of your mix's actual months. "
+        "Past performance doesn't promise the future — bands only show what your "
+        "window contained. terms: trd learn cagr · monte-carlo · percentiles[/dim]"
+    )
+
+
+@plan_app.command("backtest")
+def plan_backtest(
+    account: PlanAccountOpt = None,
+    years: Annotated[int, typer.Option("--years", "-y", help="How far back to replay.")] = 10,
+) -> None:
+    """Replay this exact plan against real history: what would have happened."""
+    service = _projection_service()
+    try:
+        name = account or service.plans.resolve_default_account()
+        with console.status("Replaying history..."):
+            result = service.backtest(name, years=years)
+    except TrdError as exc:
+        _fail(exc)
+        return
+    if result.window_limited_by:
+        console.print(
+            f"[yellow]Window shortened to {result.start} — "
+            f"{result.window_limited_by} has no earlier history.[/yellow]"
+        )
+    console.print(backtest_table(result, name))
+    console.print("[dim]terms: trd learn backtest · xirr · benchmark · adjusted-close[/dim]")
 
 
 @plan_app.command("edit")
