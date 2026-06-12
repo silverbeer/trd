@@ -112,6 +112,32 @@ def test_sell_never_consumes_other_accounts_lots(portfolio: PortfolioService) ->
     assert position.cost_basis == Decimal(250)  # fidelity basis, not main's
 
 
+def test_simulation_accounts_excluded_by_default(portfolio: PortfolioService) -> None:
+    from trd.models import AccountType
+
+    portfolio.accounts.create("paper", AccountType.SIMULATION)
+    portfolio.record_trade(
+        "main", "AAPL", Side.BUY, Decimal(1), Decimal(100), executed_at=datetime(2025, 1, 1)
+    )
+    portfolio.record_trade(
+        "paper", "AAPL", Side.BUY, Decimal(9), Decimal(100), executed_at=datetime(2025, 1, 2)
+    )
+
+    # default: real money only
+    [position] = portfolio.positions()
+    assert position.quantity == Decimal(1)
+    assert [lot.account for lot in portfolio.lots()] == ["main"]
+
+    # --all includes paper
+    [position_all] = portfolio.positions(include_simulation=True)
+    assert position_all.quantity == Decimal(10)
+    assert {lot.account for lot in portfolio.lots(include_simulation=True)} == {"main", "paper"}
+
+    # naming the sim account explicitly always works
+    [paper_position] = portfolio.positions("paper")
+    assert paper_position.quantity == Decimal(9)
+
+
 def test_service_lots_sold_out_position_absent(portfolio: PortfolioService) -> None:
     portfolio.record_trade(
         "main", "AAPL", Side.BUY, Decimal(5), Decimal(100), executed_at=datetime(2025, 1, 1)
