@@ -5,39 +5,11 @@ import duckdb
 import pytest
 
 from tests.conftest import FakeProvider
+from tests.conftest import seed_bars as _seed_bars
 from trd.errors import TrdError
-from trd.models import AccountType, DailyBar, InstrumentInfo, InstrumentType, Side
-from trd.repos import AccountRepo, InstrumentRepo, PriceRepo
+from trd.models import AccountType, InstrumentType, Side
+from trd.repos import AccountRepo
 from trd.services import PlanService, PortfolioService, WatchlistService
-
-
-def _seed_bars(
-    conn: duckdb.DuckDBPyConnection,
-    symbol: str,
-    days: int,
-    start_price: float,
-    daily_gain: float,
-) -> None:
-    repo = InstrumentRepo(conn)
-    instrument = repo.get_by_symbol(symbol) or repo.insert(
-        InstrumentInfo(symbol=symbol, name=symbol, type=InstrumentType.ETF)
-    )
-    today = date.today()
-    bars = []
-    price = start_price
-    for i in range(days):
-        bars.append(
-            DailyBar(
-                date=today - timedelta(days=days - i),
-                open=Decimal(str(round(price, 4))),
-                high=Decimal(str(round(price * 1.01, 4))),
-                low=Decimal(str(round(price * 0.99, 4))),
-                close=Decimal(str(round(price, 4))),
-                volume=1_000_000,
-            )
-        )
-        price += daily_gain
-    PriceRepo(conn).upsert_daily(instrument.id, bars)
 
 
 @pytest.fixture

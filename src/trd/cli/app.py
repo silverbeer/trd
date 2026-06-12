@@ -9,6 +9,10 @@ from rich.table import Table
 
 from trd.cli.render import (
     board_table,
+    dca_cadence_table,
+    dca_history_table,
+    dca_summary_table,
+    dca_symbols_table,
     earnings_table,
     fmt_money,
     fmt_signed,
@@ -24,6 +28,7 @@ from trd.models import AccountType, Side
 from trd.providers import YFinanceProvider
 from trd.repos import AccountRepo
 from trd.services import (
+    DcaDetailService,
     EarningsService,
     IndicatorService,
     PlanService,
@@ -726,6 +731,51 @@ def plan_ls() -> None:
             plan.note or "—",
         )
     console.print(table)
+
+
+def _dca_detail_service() -> DcaDetailService:
+    settings = get_settings()
+    return DcaDetailService(connect(settings.db_path), YFinanceProvider())
+
+
+@plan_app.command("show")
+def plan_show(account: PlanAccountOpt = None) -> None:
+    """The full picture: summary + XIRR, per-symbol stats with drift, cadence."""
+    service = _dca_detail_service()
+    try:
+        name = account or service.plans.resolve_default_account()
+        with console.status("Fetching quotes..."):
+            detail = service.detail(name)
+    except TrdError as exc:
+        _fail(exc)
+        return
+    console.print(dca_summary_table(detail))
+    if detail.symbol_stats:
+        console.print(dca_symbols_table(detail))
+        console.print(dca_cadence_table(detail))
+    console.print("[dim]terms: trd learn xirr · drift · cost-basis · dca[/dim]")
+
+
+@plan_app.command("history")
+def plan_history(
+    account: PlanAccountOpt = None,
+    limit: Annotated[
+        int | None, typer.Option("--limit", "-n", help="Show only the last N months.")
+    ] = None,
+) -> None:
+    """Every contribution event: date, legs, prices paid."""
+    service = _dca_detail_service()
+    try:
+        name = account or service.plans.resolve_default_account()
+        with console.status("Loading..."):
+            detail = service.detail(name)
+    except TrdError as exc:
+        _fail(exc)
+        return
+    if not detail.events:
+        console.print("No contributions yet. Run [bold]trd dca invest[/bold].")
+        return
+    console.print(dca_history_table(detail, limit))
 
 
 @plan_app.command("edit")
