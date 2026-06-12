@@ -19,6 +19,15 @@ class SimConfig(BaseModel):
     monthly_amount: Decimal
     strategy: str
     strategy_ticker: str | None = None
+    allocations: dict[str, Decimal] = {}  # symbol -> weight in percent, sums to 100
+
+    @property
+    def strategy_label(self) -> str:
+        if self.strategy == "ticker":
+            return self.strategy_ticker or "—"
+        if self.strategy == "allocation":
+            return " / ".join(f"{w.normalize():f}% {s}" for s, w in self.allocations.items())
+        return "momentum (watchlist)"
 
 
 class SimStatus(BaseModel):
@@ -63,11 +72,20 @@ class SimService:
         strategy: str = "ticker",
         ticker: str | None = "SPY",
         name: str = "sim",
+        allocations: dict[str, Decimal] | None = None,
     ) -> SimConfig:
-        if strategy not in ("ticker", "momentum"):
-            raise TrdError("Strategy must be 'ticker' or 'momentum'.")
+        if allocations:
+            strategy = "allocation"
+        if strategy not in ("ticker", "momentum", "allocation"):
+            raise TrdError("Strategy must be 'ticker', 'momentum', or 'allocation'.")
         if strategy == "ticker" and not ticker:
             raise TrdError("The 'ticker' strategy needs --ticker.")
+        if strategy == "allocation":
+            if not allocations:
+                raise TrdError("The 'allocation' strategy needs --alloc SYMBOL=WEIGHT entries.")
+            total = sum(allocations.values(), Decimal(0))
+            if total != 100:
+                raise TrdError(f"Allocation weights must sum to 100, got {total.normalize():f}.")
         if monthly <= 0:
             raise TrdError("Monthly amount must be positive.")
         existing = self.accounts.get_by_name(name)
@@ -79,8 +97,19 @@ class SimService:
             INSERT INTO sim_config (account_id, monthly_amount, strategy, strategy_ticker)
             VALUES (?, ?, ?, ?)
             """,
-            [account.id, monthly, strategy, ticker.upper() if ticker else None],
+            [
+                account.id,
+                monthly,
+                strategy,
+                ticker.upper() if ticker and strategy == "ticker" else None,
+            ],
         )
+        if allocations:
+            for symbol, weight in allocations.items():
+                self.conn.execute(
+                    "INSERT INTO sim_allocation (account_id, symbol, weight) VALUES (?, ?, ?)",
+                    [account.id, symbol.upper(), weight],
+                )
         return self.get_config(name)
 
     def _config_row(self, account_id: int) -> tuple | None:
@@ -94,15 +123,28 @@ class SimService:
         row = self._config_row(account.id) if account else None
         if account is None or row is None:
             raise TrdError(f"No simulation account '{name}'. Run 'trd sim init' first.")
+        allocations = {
+            r[0]: r[1]
+            for r in self.conn.execute(
+                "SELECT symbol, weight FROM sim_allocation WHERE account_id = ? "
+                "ORDER BY weight DESC",
+                [account.id],
+            ).fetchall()
+        }
         return SimConfig(
-            account=account, monthly_amount=row[0], strategy=row[1], strategy_ticker=row[2]
+            account=account,
+            monthly_amount=row[0],
+            strategy=row[1],
+            strategy_ticker=row[2],
+            allocations=allocations,
         )
 
     def _sim_txns(self, account_id: int) -> list[Transaction]:
         return self.txns.list_chronological(account_id)
 
-    def invest(self, name: str = "sim", when: date | None = None) -> tuple[Transaction, str]:
-        """Execute one month's contribution. Backdate with `when` to build history."""
+    def invest(self, name: str = "sim", when: date | None = None) -> list[Transaction]:
+        """Execute one month's contribution (one buy, or several for 'allocation').
+        Backdate with `when` to build history."""
         config = self.get_config(name)
         target = when or date.today()
         month = (target.year, target.month)
@@ -112,21 +154,29 @@ class SimService:
                     f"Already invested for {target.year}-{target.month:02d} "
                     f"({txn.executed_at.date()})."
                 )
-        symbol = self._pick_symbol(config, target)
-        price = self._price_for(symbol, target, live_ok=when is None)
-        quantity = (config.monthly_amount / price).quantize(
-            Decimal("0.00000001"), rounding=ROUND_DOWN
-        )
-        txn = self.portfolio.record_trade(
-            account_name=name,
-            symbol=symbol,
-            side=Side.BUY,
-            quantity=quantity,
-            price=price,
-            executed_at=datetime(target.year, target.month, target.day, 16, 0),
-            note=f"sim monthly invest ({config.strategy})",
-        )
-        return txn, symbol
+        if config.strategy == "allocation":
+            buys = [
+                (symbol, config.monthly_amount * weight / 100)
+                for symbol, weight in config.allocations.items()
+            ]
+        else:
+            buys = [(self._pick_symbol(config, target), config.monthly_amount)]
+        txns: list[Transaction] = []
+        for symbol, amount in buys:
+            price = self._price_for(symbol, target, live_ok=when is None)
+            quantity = (amount / price).quantize(Decimal("0.00000001"), rounding=ROUND_DOWN)
+            txns.append(
+                self.portfolio.record_trade(
+                    account_name=name,
+                    symbol=symbol,
+                    side=Side.BUY,
+                    quantity=quantity,
+                    price=price,
+                    executed_at=datetime(target.year, target.month, target.day, 16, 0),
+                    note=f"sim monthly invest ({config.strategy})",
+                )
+            )
+        return txns
 
     def _pick_symbol(self, config: SimConfig, target: date) -> str:
         if config.strategy == "ticker":
@@ -187,9 +237,10 @@ class SimService:
         values = [p.market_value for p in positions]
         value = None if any(v is None for v in values) else sum(values, Decimal(0))
         benchmark_value = self._benchmark_value(txns)
+        months = {(t.executed_at.year, t.executed_at.month) for t in txns}
         return SimStatus(
             config=config,
-            months_invested=len(txns),
+            months_invested=len(months),
             invested=invested,
             value=value,
             benchmark_value=benchmark_value,

@@ -62,14 +62,13 @@ def test_init_twice_rejected(sim: SimService) -> None:
 def test_init_validates(sim: SimService) -> None:
     with pytest.raises(TrdError, match="positive"):
         sim.init(Decimal(0))
-    with pytest.raises(TrdError, match="ticker' or 'momentum"):
+    with pytest.raises(TrdError, match="'momentum', or 'allocation'"):
         sim.init(Decimal(100), strategy="vibes")
 
 
 def test_invest_buys_fraction_at_live_price(sim: SimService) -> None:
     sim.init(Decimal(100))
-    txn, symbol = sim.invest()
-    assert symbol == "SPY"
+    [txn] = sim.invest()
     assert txn.price == Decimal("500.00")
     assert txn.quantity == Decimal("0.2")
 
@@ -85,11 +84,11 @@ def test_backdated_invest_uses_historical_close(sim: SimService) -> None:
     sim.init(Decimal(100))
     _seed_bars(sim.conn, "SPY", days=400, start_price=400.0, daily_gain=0.25)
     when = date.today() - timedelta(days=90)
-    txn, _ = sim.invest(when=when)
+    [txn] = sim.invest(when=when)
     assert txn.executed_at.date() >= when - timedelta(days=1)
     assert txn.price != Decimal("500.00")  # historical close, not live quote
     # backdated month and current month are independent
-    txn2, _ = sim.invest()
+    [txn2] = sim.invest()
     assert txn2.price == Decimal("500.00")
 
 
@@ -117,8 +116,9 @@ def test_momentum_picks_strongest(sim: SimService, provider: FakeProvider) -> No
     _seed_bars(sim.conn, "HOT", days=100, start_price=100.0, daily_gain=0.5)  # rising
     _seed_bars(sim.conn, "COLD", days=100, start_price=100.0, daily_gain=-0.4)  # falling
     sim.init(Decimal(100), strategy="momentum", ticker=None)
-    _, symbol = sim.invest()
-    assert symbol == "HOT"
+    [txn] = sim.invest()
+    hot = sim.instruments.get_by_symbol("HOT")
+    assert hot is not None and txn.instrument_id == hot.id
 
 
 def test_momentum_needs_watchlist(sim: SimService) -> None:
@@ -130,3 +130,44 @@ def test_momentum_needs_watchlist(sim: SimService) -> None:
 def test_status_without_init_raises(sim: SimService) -> None:
     with pytest.raises(TrdError, match="No simulation account"):
         sim.status()
+
+
+def test_allocation_init_validates_weights(sim: SimService, provider: FakeProvider) -> None:
+    provider.add_symbol("QQQ", price="300.00", type_=InstrumentType.ETF)
+    with pytest.raises(TrdError, match="sum to 100"):
+        sim.init(Decimal(100), allocations={"SPY": Decimal(30), "QQQ": Decimal(60)})
+    with pytest.raises(TrdError, match="needs --alloc"):
+        sim.init(Decimal(100), strategy="allocation")
+
+
+def test_allocation_invest_splits_monthly(sim: SimService, provider: FakeProvider) -> None:
+    provider.add_symbol("QQQ", price="200.00", type_=InstrumentType.ETF)
+    config = sim.init(Decimal(100), allocations={"SPY": Decimal(30), "QQQ": Decimal(70)})
+    assert config.strategy == "allocation"
+    assert "30% SPY" in config.strategy_label and "70% QQQ" in config.strategy_label
+
+    txns = sim.invest()
+    assert len(txns) == 2
+    by_symbol = {}
+    for txn in txns:
+        instrument = sim.instruments.get(txn.instrument_id)
+        assert instrument is not None
+        by_symbol[instrument.symbol] = txn
+    assert by_symbol["SPY"].quantity == Decimal("0.06")  # $30 @ 500
+    assert by_symbol["QQQ"].quantity == Decimal("0.35")  # $70 @ 200
+
+    # monthly guard covers the whole contribution event
+    with pytest.raises(TrdError, match="Already invested"):
+        sim.invest()
+
+
+def test_allocation_status_counts_months_not_txns(sim: SimService, provider: FakeProvider) -> None:
+    provider.add_symbol("QQQ", price="200.00", type_=InstrumentType.ETF)
+    sim.init(Decimal(100), allocations={"SPY": Decimal(50), "QQQ": Decimal(50)})
+    _seed_bars(sim.conn, "SPY", days=400, start_price=400.0, daily_gain=0.25)
+    _seed_bars(sim.conn, "QQQ", days=400, start_price=150.0, daily_gain=0.10)
+    sim.invest(when=date.today() - timedelta(days=60))
+    sim.invest()
+    status = sim.status()
+    assert status.months_invested == 2  # 4 txns, 2 months
+    assert Decimal(199) < status.invested < Decimal(201)
