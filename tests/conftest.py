@@ -1,5 +1,5 @@
 from collections.abc import Sequence
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal
 from pathlib import Path
 
@@ -113,3 +113,37 @@ def sync_service(conn: duckdb.DuckDBPyConnection, provider: FakeProvider) -> Syn
 @pytest.fixture
 def watchlist(conn: duckdb.DuckDBPyConnection, provider: FakeProvider) -> WatchlistService:
     return WatchlistService(conn, provider)
+
+
+def seed_bars(
+    conn: duckdb.DuckDBPyConnection,
+    symbol: str,
+    days: int,
+    start_price: float,
+    daily_gain: float,
+) -> None:
+    """Populate price_daily with synthetic bars (close = adj_close = price)."""
+    from trd.repos import InstrumentRepo, PriceRepo
+
+    repo = InstrumentRepo(conn)
+    instrument = repo.get_by_symbol(symbol) or repo.insert(
+        InstrumentInfo(symbol=symbol, name=symbol, type=InstrumentType.ETF)
+    )
+    today = date.today()
+    bars = []
+    price = start_price
+    for i in range(days):
+        value = Decimal(str(round(price, 4)))
+        bars.append(
+            DailyBar(
+                date=today - timedelta(days=days - i),
+                open=value,
+                high=Decimal(str(round(price * 1.01, 4))),
+                low=Decimal(str(round(price * 0.99, 4))),
+                close=value,
+                volume=1_000_000,
+                adj_close=value,
+            )
+        )
+        price += daily_gain
+    PriceRepo(conn).upsert_daily(instrument.id, bars)

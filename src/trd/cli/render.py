@@ -4,6 +4,7 @@ from decimal import Decimal
 from rich.table import Table
 
 from trd.models import BoardRow, EarningsEvent, LotPosition, Position
+from trd.services.dca_detail import PlanDetail
 
 MONEY = "{:,.2f}"
 
@@ -245,4 +246,110 @@ def earnings_table(events: list[EarningsEvent], days: int) -> Table:
             event.instrument.name or "—",
             f"{event.eps_estimate:.2f}" if event.eps_estimate is not None else "—",
         )
+    return table
+
+
+def fmt_pct_float(value: float | None) -> str:
+    """XIRR/CAGR are floats (signals, not ledger values)."""
+    if value is None:
+        return "—"
+    color = "green" if value >= 0 else "red"
+    return f"[{color}]{'+' if value >= 0 else ''}{value * 100:.2f}%[/{color}]"
+
+
+def dca_summary_table(detail: PlanDetail) -> Table:
+    status = detail.status
+    plan = detail.plan
+    table = Table(title=f"DCA — {plan.account.name}", title_justify="left")
+    table.add_column("Metric", style="dim")
+    table.add_column("Value", justify="right")
+    table.add_row("Strategy", plan.strategy_label)
+    if plan.note:
+        table.add_row("Goal", plan.note)
+    day = f"the {plan.day_of_month}th" if plan.day_of_month else "—"
+    table.add_row("Schedule", f"{fmt_money(plan.monthly_amount)}/month on {day}")
+    table.add_row("State", "active" if plan.active else "[yellow]paused[/yellow]")
+    table.add_row("Months invested", str(status.months_invested))
+    table.add_row("Total invested", fmt_money(status.invested))
+    table.add_row("Current value", fmt_money(status.value))
+    table.add_row("P&L", fmt_signed(status.pl))
+    table.add_row("P&L %", fmt_signed_pct(status.pl_pct))
+    table.add_row("XIRR (annualized)", fmt_pct_float(detail.xirr))
+    if status.benchmark_value is not None:
+        table.add_row("SPY same dates", fmt_money(status.benchmark_value))
+        table.add_row("vs SPY", fmt_signed(status.vs_benchmark))
+    return table
+
+
+def dca_symbols_table(detail: PlanDetail) -> Table:
+    table = Table(title="Per symbol", title_justify="left")
+    table.add_column("Symbol", style="bold")
+    table.add_column("Invested", justify="right")
+    table.add_column("Qty", justify="right")
+    table.add_column("Avg Cost", justify="right")
+    table.add_column("Price", justify="right")
+    table.add_column("Value", justify="right")
+    table.add_column("P&L", justify="right")
+    table.add_column("P&L%", justify="right")
+    table.add_column("Target", justify="right")
+    table.add_column("Actual", justify="right")
+    table.add_column("Drift", justify="right")
+    for stat in detail.symbol_stats:
+        drift = stat.drift
+        drift_text = "—"
+        if drift is not None:
+            color = "yellow" if abs(drift) >= 5 else "dim"
+            drift_text = f"[{color}]{'+' if drift >= 0 else ''}{drift:.1f}pp[/{color}]"
+        table.add_row(
+            stat.symbol,
+            fmt_money(stat.invested),
+            fmt_qty(stat.quantity),
+            fmt_money(stat.avg_cost),
+            fmt_money(stat.price),
+            fmt_money(stat.value),
+            fmt_signed(stat.pl),
+            fmt_signed_pct(stat.pl_pct),
+            f"{stat.target_weight.normalize():f}%" if stat.target_weight is not None else "—",
+            f"{stat.actual_weight:.1f}%" if stat.actual_weight is not None else "—",
+            drift_text,
+        )
+    return table
+
+
+def dca_cadence_table(detail: PlanDetail) -> Table:
+    cadence = detail.cadence
+    table = Table(title="Cadence", title_justify="left")
+    table.add_column("Metric", style="dim")
+    table.add_column("Value", justify="right")
+    table.add_row("Streak", f"{cadence.streak} month(s)")
+    missed = cadence.missed
+    table.add_row("Missed months", f"[red]{missed}[/red]" if missed else "0")
+    table.add_row("Last invested", str(cadence.last_invested) if cadence.last_invested else "—")
+    table.add_row("Next due", str(cadence.next_due) if cadence.next_due else "—")
+    return table
+
+
+def dca_history_table(detail: PlanDetail, limit: int | None = None) -> Table:
+    table = Table(title=f"Contributions — {detail.plan.account.name}", title_justify="left")
+    table.add_column("Date")
+    table.add_column("Symbol", style="bold")
+    table.add_column("Qty", justify="right")
+    table.add_column("Price", justify="right")
+    table.add_column("Amount", justify="right")
+    events = detail.events
+    if limit is not None:
+        events = events[-limit:]
+    for event in events:
+        first = True
+        for leg in event.legs:
+            table.add_row(
+                str(event.date) if first else "",
+                leg.symbol,
+                fmt_qty(leg.quantity),
+                fmt_money(leg.price),
+                fmt_money(leg.amount),
+            )
+            first = False
+        table.add_row("", "", "", "[dim]total[/dim]", f"[bold]{fmt_money(event.total)}[/bold]")
+        table.add_section()
     return table
