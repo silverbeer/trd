@@ -67,6 +67,51 @@ def test_service_lots_symbol_filter(portfolio: PortfolioService) -> None:
     assert [lot.instrument.symbol for lot in lots] == ["NVDA"]
 
 
+def test_lots_carry_account_name(portfolio: PortfolioService) -> None:
+    from trd.models import AccountType
+
+    portfolio.accounts.create("fidelity", AccountType.REAL)
+    portfolio.record_trade(
+        "main", "AAPL", Side.BUY, Decimal(1), Decimal(100), executed_at=datetime(2025, 1, 1)
+    )
+    portfolio.record_trade(
+        "fidelity", "AAPL", Side.BUY, Decimal(2), Decimal(110), executed_at=datetime(2025, 2, 1)
+    )
+    lots = portfolio.lots()
+    assert [(lot.account, lot.quantity) for lot in lots] == [
+        ("main", Decimal(1)),
+        ("fidelity", Decimal(2)),
+    ]
+
+
+def test_sell_never_consumes_other_accounts_lots(portfolio: PortfolioService) -> None:
+    """FIFO is per account: selling at one broker must not touch lots at another,
+    even when the other account's lot is older."""
+    from trd.models import AccountType
+
+    portfolio.accounts.create("fidelity", AccountType.REAL)
+    # fidelity holds the OLDEST lot — merged FIFO would wrongly consume it
+    portfolio.record_trade(
+        "fidelity", "AAPL", Side.BUY, Decimal(5), Decimal(50), executed_at=datetime(2024, 1, 1)
+    )
+    portfolio.record_trade(
+        "main", "AAPL", Side.BUY, Decimal(5), Decimal(150), executed_at=datetime(2025, 1, 1)
+    )
+    portfolio.record_trade(
+        "main", "AAPL", Side.SELL, Decimal(5), Decimal(180), executed_at=datetime(2025, 6, 1)
+    )
+
+    lots = portfolio.lots()
+    assert len(lots) == 1
+    assert lots[0].account == "fidelity"
+    assert lots[0].quantity == Decimal(5)
+    assert lots[0].price_paid == Decimal(50)  # untouched original lot
+
+    [position] = portfolio.positions()
+    assert position.quantity == Decimal(5)
+    assert position.cost_basis == Decimal(250)  # fidelity basis, not main's
+
+
 def test_service_lots_sold_out_position_absent(portfolio: PortfolioService) -> None:
     portfolio.record_trade(
         "main", "AAPL", Side.BUY, Decimal(5), Decimal(100), executed_at=datetime(2025, 1, 1)

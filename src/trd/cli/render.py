@@ -138,6 +138,7 @@ def board_table(rows: list[BoardRow], title: str, show_list_column: bool) -> Tab
 def lots_table(lots: list[LotPosition], title: str) -> Table:
     table = Table(title=title, title_justify="left")
     table.add_column("Symbol", style="bold")
+    table.add_column("Account", style="dim")
     table.add_column("Bought", justify="right")
     table.add_column("Qty", justify="right")
     table.add_column("Paid/sh", justify="right")
@@ -159,6 +160,7 @@ def lots_table(lots: list[LotPosition], title: str) -> Table:
             display += " [dim](stale)[/dim]"
         table.add_row(
             display,
+            lot.account,
             str(lot.bought_at.date()),
             fmt_qty(lot.quantity),
             fmt_money(lot.price_paid),
@@ -179,6 +181,7 @@ def lots_table(lots: list[LotPosition], title: str) -> Table:
         table.add_section()
         table.add_row(
             "[bold]Total[/bold]",
+            "",
             "",
             "",
             "",

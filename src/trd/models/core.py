@@ -106,6 +106,7 @@ class LotPosition(BaseModel):
     what did I pay, what is it worth now' view."""
 
     instrument: Instrument
+    account: str = "?"  # which account/broker holds this lot
     bought_at: datetime
     quantity: Decimal
     price_paid: Decimal  # original per-share price

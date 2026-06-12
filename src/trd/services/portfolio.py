@@ -88,13 +88,20 @@ class PortfolioService:
                 raise UnknownAccountError(account_name)
             account_id = account.id
 
-        by_instrument: dict[int, list[Transaction]] = defaultdict(list)
+        # FIFO must run per (account, instrument): a sell in one account can never
+        # consume lots held in another. Aggregate per instrument afterwards.
+        by_pair: dict[tuple[int, int], list[Transaction]] = defaultdict(list)
         for txn in self.txns.list_chronological(account_id):
-            by_instrument[txn.instrument_id].append(txn)
+            by_pair[(txn.account_id, txn.instrument_id)].append(txn)
+
+        totals: dict[int, tuple[Decimal, Decimal]] = defaultdict(lambda: (Decimal(0), Decimal(0)))
+        for (_, instrument_id), txns in by_pair.items():
+            quantity, cost_basis = fifo_position(txns)
+            q, c = totals[instrument_id]
+            totals[instrument_id] = (q + quantity, c + cost_basis)
 
         open_positions: list[tuple[Instrument, Decimal, Decimal]] = []
-        for instrument_id, txns in by_instrument.items():
-            quantity, cost_basis = fifo_position(txns)
+        for instrument_id, (quantity, cost_basis) in totals.items():
             if quantity == 0:
                 continue
             instrument = self.instruments.get(instrument_id)
@@ -141,24 +148,27 @@ class PortfolioService:
                 raise UnknownAccountError(account_name)
             account_id = account.id
 
-        by_instrument: dict[int, list[Transaction]] = defaultdict(list)
+        # Per (account, instrument): FIFO never crosses account boundaries, and each
+        # lot knows which broker holds it.
+        by_pair: dict[tuple[int, int], list[Transaction]] = defaultdict(list)
         for txn in self.txns.list_chronological(account_id):
-            by_instrument[txn.instrument_id].append(txn)
+            by_pair[(txn.account_id, txn.instrument_id)].append(txn)
 
-        selected: list[tuple[Instrument, list]] = []
-        for instrument_id, txns in by_instrument.items():
+        account_names = {a.id: a.name for a in self.accounts.list_all()}
+        selected: list[tuple[str, Instrument, list]] = []
+        for (txn_account_id, instrument_id), txns in by_pair.items():
             instrument = self.instruments.get(instrument_id)
             assert instrument is not None
             if symbol is not None and instrument.symbol != symbol.upper():
                 continue
             surviving = open_lots(txns)
             if surviving:
-                selected.append((instrument, surviving))
+                selected.append((account_names.get(txn_account_id, "?"), instrument, surviving))
 
-        quotes = self.provider.get_quotes([inst.symbol for inst, _ in selected])
+        quotes = self.provider.get_quotes(list({inst.symbol for _, inst, _ in selected}))
 
         result: list[LotPosition] = []
-        for instrument, surviving in selected:
+        for lot_account, instrument, surviving in selected:
             quote = quotes.get(instrument.symbol)
             if quote is not None:
                 self.prices.insert_snapshot(instrument.id, quote.price, quote.prev_close)
@@ -170,6 +180,7 @@ class PortfolioService:
                 result.append(
                     LotPosition(
                         instrument=instrument,
+                        account=lot_account,
                         bought_at=lot.bought_at,
                         quantity=lot.quantity,
                         price_paid=lot.price,
@@ -178,7 +189,7 @@ class PortfolioService:
                         price_stale=stale,
                     )
                 )
-        result.sort(key=lambda lot: (lot.instrument.symbol, lot.bought_at))
+        result.sort(key=lambda lot: (lot.instrument.symbol, lot.bought_at, lot.account))
         return result
 
     def import_csv(self, path: Path) -> int:
