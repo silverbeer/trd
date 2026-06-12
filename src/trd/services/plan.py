@@ -23,6 +23,7 @@ class Plan(BaseModel):
     strategy: str
     strategy_ticker: str | None = None
     allocations: dict[str, Decimal] = {}  # symbol -> weight in percent, sums to 100
+    note: str | None = None  # the goal: why this plan exists
 
     @property
     def strategy_label(self) -> str:
@@ -89,6 +90,7 @@ class PlanService:
         ticker: str | None = "SPY",
         allocations: dict[str, Decimal] | None = None,
         create_simulation: bool = False,
+        note: str | None = None,
     ) -> Plan:
         if allocations:
             strategy = "allocation"
@@ -115,14 +117,16 @@ class PlanService:
             raise TrdError(f"Account '{account_name}' already has a plan.")
         self.conn.execute(
             """
-            INSERT INTO contribution_plan (account_id, monthly_amount, strategy, strategy_ticker)
-            VALUES (?, ?, ?, ?)
+            INSERT INTO contribution_plan
+                (account_id, monthly_amount, strategy, strategy_ticker, note)
+            VALUES (?, ?, ?, ?, ?)
             """,
             [
                 account.id,
                 monthly,
                 strategy,
                 ticker.upper() if ticker and strategy == "ticker" else None,
+                note,
             ],
         )
         plan = self.get_plan(account_name)
@@ -136,7 +140,7 @@ class PlanService:
 
     def _plan_row(self, account_id: int) -> tuple | None:
         return self.conn.execute(
-            "SELECT id, monthly_amount, strategy, strategy_ticker FROM contribution_plan "
+            "SELECT id, monthly_amount, strategy, strategy_ticker, note FROM contribution_plan "
             "WHERE account_id = ?",
             [account_id],
         ).fetchone()
@@ -162,6 +166,7 @@ class PlanService:
             strategy=row[2],
             strategy_ticker=row[3],
             allocations=allocations,
+            note=row[4],
         )
 
     def list_plans(self) -> list[Plan]:
