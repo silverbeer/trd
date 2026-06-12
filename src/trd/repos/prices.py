@@ -60,7 +60,7 @@ class PriceRepo:
         """
         rows = self.conn.execute(
             """
-            SELECT date_trunc('month', date) AS month,
+            SELECT CAST(date_trunc('month', date) AS DATE) AS month,
                    max_by(coalesce(adj_close, close), date) AS close
             FROM price_daily
             WHERE instrument_id = ?

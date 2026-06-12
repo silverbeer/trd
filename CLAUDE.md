@@ -31,12 +31,17 @@ trd watch ls [ai]                     # quote board: price, day Δ%, 52w pos, vo
 trd earnings [--days 14]              # upcoming earnings across everything tracked
 trd indicators NVDA                   # indicator panel with plain-English readings
 trd indicator ls|catalog|add|rm|info  # manage followed indicators (trd indicator add ema -p period=8)
-trd plan set --account sofi --monthly 100 --alloc SPY=30 --alloc QQQ=70
-                                      # monthly contribution plan on ANY account; real accounts:
-                                      # you execute at the broker, trd records + scores vs SPY
-trd plan invest [--account NAME] [--date 2026-01-15]   # record the month (once/month/plan)
-trd plan status [--account NAME]      # plan-only P&L vs SPY-same-dates (ignores other holdings)
-trd plan ls
+trd dca set --account sofi --monthly 100 --day 15 --alloc SPY=40 --alloc QQQ=40 --alloc SMH=10 --alloc ARKX=10
+                                      # DCA plan on ANY account; real accounts: you execute at
+                                      # the broker, trd records + scores vs SPY ('trd plan' = alias)
+trd dca invest [--account NAME] [--date 2026-01-15]    # record the month (once/month/plan)
+trd dca show [--account NAME]         # flagship view: XIRR, per-symbol drift, cadence/streak
+trd dca history [--limit N]           # every contribution event with legs and prices
+trd dca forecast [--years 10] [--seed N]   # CAGR projection + Monte Carlo p10/p50/p90 bands
+trd dca backtest [--years 10]         # replay the exact plan against real (adjusted) history
+trd dca status|ls|edit|pause|resume   # quick view, list, partial update, lifecycle
+trd learn [TERM]                      # investing dictionary: every term + exact formula trd uses
+trd sync --years 10                   # deep backfill (forecast/backtest need long history)
 trd sim init --monthly 100 [--strategy ticker|momentum] [--ticker SPY] [--alloc ...] [--name NAME]
                                       # sim = plan on a paper (simulation) account; sim invest/status same
 ```
