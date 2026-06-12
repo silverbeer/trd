@@ -141,20 +141,26 @@ def portfolio(
     account: Annotated[
         str | None, typer.Option("--account", "-a", help="Limit to one account.")
     ] = None,
+    include_all: Annotated[
+        bool, typer.Option("--all", help="Include simulation (paper) accounts.")
+    ] = False,
 ) -> None:
-    """Show holdings: quantity, cost basis, value, day change, P&L."""
+    """Show holdings: quantity, cost basis, value, day change, P&L.
+
+    Real money only by default — pass --all to include paper accounts.
+    """
     service = _portfolio_service()
     try:
         with console.status("Fetching quotes..."):
-            positions = service.positions(account)
+            positions = service.positions(account, include_simulation=include_all)
     except TrdError as exc:
         _fail(exc)
         return
     if not positions:
         console.print("No open positions. Record one with [bold]trd buy[/bold].")
         return
-    title = f"Portfolio — {account}" if account else "Portfolio — all accounts"
-    console.print(positions_table(positions, title))
+    scope = account or ("all accounts" if include_all else "all real accounts")
+    console.print(positions_table(positions, f"Portfolio — {scope}"))
 
 
 @app.command()
@@ -165,12 +171,18 @@ def lots(
     account: Annotated[
         str | None, typer.Option("--account", "-a", help="Limit to one account.")
     ] = None,
+    include_all: Annotated[
+        bool, typer.Option("--all", help="Include simulation (paper) accounts.")
+    ] = False,
 ) -> None:
-    """Per-purchase detail: buy date, price paid per share, total cost, gain since."""
+    """Per-purchase detail: buy date, price paid per share, total cost, gain since.
+
+    Real money only by default — pass --all to include paper accounts.
+    """
     service = _portfolio_service()
     try:
         with console.status("Fetching quotes..."):
-            result = service.lots(account, symbol)
+            result = service.lots(account, symbol, include_simulation=include_all)
     except TrdError as exc:
         _fail(exc)
         return
@@ -179,7 +191,11 @@ def lots(
         console.print(f"No open lots for {target}.")
         return
     parts = [p for p in (symbol.upper() if symbol else None, account) if p]
-    title = f"Lots — {', '.join(parts)}" if parts else "Lots — all accounts"
+    title = (
+        f"Lots — {', '.join(parts)}"
+        if parts
+        else ("Lots — all accounts" if include_all else "Lots — all real accounts")
+    )
     console.print(lots_table(result, title))
 
 
