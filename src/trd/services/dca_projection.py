@@ -3,6 +3,7 @@ signals, not ledger entries (same policy as indicators/math.py). Historical
 math uses adjusted closes (dividends + splits) via PriceRepo helpers."""
 
 import calendar
+import itertools
 import random
 from datetime import date, timedelta
 
@@ -111,7 +112,7 @@ class DcaProjectionService:
         common = [m for m in common if m >= window_start]
 
         returns: list[float] = []
-        for prev, current in zip(common, common[1:], strict=False):
+        for prev, current in itertools.pairwise(common):
             r = 0.0
             for symbol, weight in weights.items():
                 prev_close, close = series[symbol].get(prev), series[symbol].get(current)
@@ -260,7 +261,7 @@ class DcaProjectionService:
             buy_date = date(year, month, min(day, calendar.monthrange(year, month)[1]))
             if start <= buy_date <= today:
                 legs: dict[str, float] = {}
-                for symbol, weight in weights.items():
+                for symbol in weights:
                     instrument = instruments[symbol]
                     assert instrument is not None
                     close = self.prices.close_on_or_after(instrument.id, buy_date, adjusted=True)
