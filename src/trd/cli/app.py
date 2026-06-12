@@ -11,6 +11,7 @@ from trd.cli.render import (
     board_table,
     earnings_table,
     fmt_money,
+    fmt_signed,
     fmt_signed_pct,
     indicator_panel,
     lots_table,
@@ -26,6 +27,7 @@ from trd.services import (
     EarningsService,
     IndicatorService,
     PortfolioService,
+    SimService,
     SyncService,
     WatchlistService,
 )
@@ -42,6 +44,10 @@ watch_app = typer.Typer(help="Manage watchlists and the quote board.", no_args_i
 app.add_typer(watch_app, name="watch")
 indicator_app = typer.Typer(help="Manage the followed-indicator list.", no_args_is_help=True)
 app.add_typer(indicator_app, name="indicator")
+sim_app = typer.Typer(
+    help="Simulation account: paper-trade a monthly contribution.", no_args_is_help=True
+)
+app.add_typer(sim_app, name="sim")
 console = Console()
 err_console = Console(stderr=True)
 
@@ -508,6 +514,105 @@ def indicator_info(
     console.print(f"[dim]Params:[/dim] {params}")
     console.print(f"[dim]Components:[/dim] {', '.join(indicator.components)}")
     console.print(indicator.description)
+
+
+def _sim_service() -> SimService:
+    settings = get_settings()
+    return SimService(connect(settings.db_path), YFinanceProvider())
+
+
+SimNameOpt = Annotated[str, typer.Option("--name", help="Simulation account name.")]
+
+
+@sim_app.command("init")
+def sim_init(
+    monthly: Annotated[
+        str, typer.Option("--monthly", "-m", help="Contribution per month.")
+    ] = "100",
+    strategy: Annotated[
+        str,
+        typer.Option(
+            "--strategy",
+            "-s",
+            help="'ticker' (fixed buy) or 'momentum' (best 3-month watchlist performer).",
+        ),
+    ] = "ticker",
+    ticker: Annotated[
+        str, typer.Option("--ticker", "-t", help="Symbol for the 'ticker' strategy.")
+    ] = "SPY",
+    name: SimNameOpt = "sim",
+) -> None:
+    """Create the simulation account."""
+    service = _sim_service()
+    try:
+        config = service.init(_parse_decimal(monthly, "monthly amount"), strategy, ticker, name)
+    except TrdError as exc:
+        _fail(exc)
+        return
+    detail = config.strategy_ticker if config.strategy == "ticker" else "momentum pick"
+    console.print(
+        f"Simulation account [bold]{name}[/bold]: {fmt_money(config.monthly_amount)}/month "
+        f"into {detail}. Run [bold]trd sim invest[/bold] monthly."
+    )
+
+
+@sim_app.command("invest")
+def sim_invest(
+    date_str: Annotated[
+        str | None,
+        typer.Option(
+            "--date",
+            "-d",
+            help="Backdate (YYYY-MM-DD) using historical close — builds past months.",
+        ),
+    ] = None,
+    name: SimNameOpt = "sim",
+) -> None:
+    """Execute this month's contribution (strategy-driven, once per month)."""
+    service = _sim_service()
+    when = _parse_date(date_str)
+    try:
+        txn, symbol = service.invest(name, when.date() if when else None)
+    except TrdError as exc:
+        _fail(exc)
+        return
+    console.print(
+        f"Sim bought [bold]{txn.quantity.normalize():f} {symbol}[/bold] @ {fmt_money(txn.price)} "
+        f"({txn.executed_at.date()})."
+    )
+
+
+@sim_app.command("status")
+def sim_status(name: SimNameOpt = "sim") -> None:
+    """Performance: invested vs value vs what SPY would have done."""
+    service = _sim_service()
+    try:
+        with console.status("Fetching quotes..."):
+            status = service.status(name)
+    except TrdError as exc:
+        _fail(exc)
+        return
+    table = Table(title=f"Simulation — {name}", title_justify="left")
+    table.add_column("Metric", style="dim")
+    table.add_column("Value", justify="right")
+    strategy = (
+        status.config.strategy_ticker
+        if status.config.strategy == "ticker"
+        else "momentum (watchlist)"
+    )
+    table.add_row("Strategy", strategy or "—")
+    table.add_row("Monthly", fmt_money(status.config.monthly_amount))
+    table.add_row("Months invested", str(status.months_invested))
+    table.add_row("Total invested", fmt_money(status.invested))
+    table.add_row("Current value", fmt_money(status.value))
+    table.add_row("P&L", fmt_signed(status.pl))
+    table.add_row("P&L %", fmt_signed_pct(status.pl_pct))
+    if status.benchmark_value is not None:
+        table.add_row("SPY same dates", fmt_money(status.benchmark_value))
+        table.add_row("vs SPY", fmt_signed(status.vs_benchmark))
+    else:
+        table.add_row("SPY same dates", "[dim]needs SPY history — trd sync --full[/dim]")
+    console.print(table)
 
 
 @app.command(name="import")
