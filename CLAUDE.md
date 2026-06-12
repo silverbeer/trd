@@ -31,6 +31,9 @@ trd watch ls [ai]                     # quote board: price, day Δ%, 52w pos, vo
 trd earnings [--days 14]              # upcoming earnings across everything tracked
 trd indicators NVDA                   # indicator panel with plain-English readings
 trd indicator ls|catalog|add|rm|info  # manage followed indicators (trd indicator add ema -p period=8)
+trd sim init --monthly 100 [--strategy ticker|momentum] [--ticker SPY]
+trd sim invest [--date 2026-01-15]    # monthly contribution; --date backfills with historical close
+trd sim status                        # invested vs value vs SPY-same-dates benchmark
 ```
 
 CSV import format (header required): `date,account,symbol,side,quantity,price[,fees,note]` — date is ISO, side is buy/sell.

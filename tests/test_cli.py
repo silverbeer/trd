@@ -204,6 +204,35 @@ def test_indicators_panel(cli_env: FakeProvider) -> None:
     assert result.exit_code == 1
 
 
+def test_sim_lifecycle(cli_env: FakeProvider) -> None:
+    from trd.models import InstrumentType
+
+    cli_env.add_symbol("SPY", price="500.00", prev_close="495.00", type_=InstrumentType.ETF)
+    runner.invoke(app, ["init"])
+
+    result = runner.invoke(app, ["sim", "init", "--monthly", "100"])
+    assert result.exit_code == 0, result.output
+    assert "100.00/month" in result.output
+
+    result = runner.invoke(app, ["sim", "invest"])
+    assert result.exit_code == 0, result.output
+    assert "0.2 SPY" in result.output
+
+    result = runner.invoke(app, ["sim", "invest"])
+    assert result.exit_code == 1  # same month
+
+    result = runner.invoke(app, ["sim", "status"])
+    assert result.exit_code == 0, result.output
+    assert "Total invested" in result.output
+    assert "100.00" in result.output
+
+
+def test_sim_status_without_init(cli_env: FakeProvider) -> None:
+    runner.invoke(app, ["init"])
+    result = runner.invoke(app, ["sim", "status"])
+    assert result.exit_code == 1
+
+
 def test_earnings_after_sync(cli_env: FakeProvider) -> None:
     from datetime import date, timedelta
 
