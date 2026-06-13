@@ -14,7 +14,7 @@ dependencies = [
 ]
 
 [project.scripts]
-trd = "trd.cli.app:app"
+trd = "trd.cli.app:main"
 
 [dependency-groups]
 dev = [
