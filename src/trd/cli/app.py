@@ -51,7 +51,7 @@ app = typer.Typer(
     name="trd",
     help="Local-first investment tracker.",
     no_args_is_help=True,
-    pretty_exceptions_show_locals=False,
+    pretty_exceptions_enable=False,  # main() renders TrdError cleanly instead
 )
 watch_app = typer.Typer(help="Manage watchlists and the quote board.", no_args_is_help=True)
 app.add_typer(watch_app, name="watch")
@@ -1172,5 +1172,16 @@ def import_csv(
     console.print(f"Imported [bold]{count}[/bold] transactions from {path}.")
 
 
+def main() -> None:
+    """Console entry point. Renders any TrdError that escapes a command (e.g. a
+    database lock raised while opening the connection, before the command's own
+    try/except) as a clean one-line error instead of a traceback."""
+    try:
+        app()
+    except TrdError as exc:
+        err_console.print(f"[red]error:[/red] {exc}")
+        raise SystemExit(1) from None
+
+
 if __name__ == "__main__":
-    app()
+    main()

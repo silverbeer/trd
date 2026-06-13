@@ -19,3 +19,11 @@ class InsufficientPositionError(TrdError):
 
 class ProviderError(TrdError):
     """Market data provider failed (network, upstream change, unknown symbol)."""
+
+
+class DatabaseBusyError(TrdError):
+    def __init__(self) -> None:
+        super().__init__(
+            "Database is busy — another trd command is using it. "
+            "Wait a moment and try again (DuckDB allows one writer at a time)."
+        )
