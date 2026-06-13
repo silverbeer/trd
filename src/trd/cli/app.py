@@ -10,6 +10,9 @@ from rich.table import Table
 from trd.cli.render import (
     backtest_table,
     board_table,
+    dashboard_allocation_table,
+    dashboard_card,
+    dashboard_movers,
     dca_cadence_table,
     dca_history_table,
     dca_summary_table,
@@ -30,6 +33,7 @@ from trd.models import AccountType, Side
 from trd.providers import YFinanceProvider
 from trd.repos import AccountRepo
 from trd.services import (
+    DashboardService,
     DcaDetailService,
     DcaProjectionService,
     EarningsService,
@@ -148,6 +152,45 @@ def sync(
     )
     if result.failures:
         err_console.print(f"[yellow]warning:[/yellow] failed: {', '.join(result.failures)}")
+
+
+@app.command()
+def dashboard(
+    full: Annotated[
+        bool, typer.Option("--full", help="Show allocation, concentration, and full movers.")
+    ] = False,
+    include_all: Annotated[
+        bool, typer.Option("--all", help="Include simulation (paper) accounts.")
+    ] = False,
+) -> None:
+    """Home view: value, return, XIRR, vs S&P 500, today, top holding, movers."""
+    settings = get_settings()
+    service = DashboardService(connect(settings.db_path), YFinanceProvider())
+    try:
+        with console.status("Building dashboard..."):
+            dash = service.summary(include_simulation=include_all)
+    except TrdError as exc:
+        _fail(exc)
+        return
+    if dash.value == 0 and not dash.holdings:
+        console.print("No holdings yet. Record a buy with [bold]trd buy[/bold].")
+        return
+    console.print(dashboard_card(dash))
+    if full:
+        console.print(dashboard_allocation_table(dash))
+        winners, losers = dashboard_movers(dash)
+        console.print(winners)
+        console.print(losers)
+        rate = f"{dash.win_rate:.0f}%" if dash.win_rate is not None else "—"
+        console.print(
+            f"Win rate: [bold]{rate}[/bold] ({dash.positions_up} up / {dash.positions_down} down)"
+        )
+    if dash.xirr is not None:
+        console.print(
+            "[dim]XIRR uses recorded buy dates; snapshot-imported lots use estimated "
+            "dates. vs S&P 500 (same-dates) is unaffected. terms: trd learn xirr · "
+            "benchmark · concentration · total-return[/dim]"
+        )
 
 
 @app.command()
