@@ -407,3 +407,18 @@ def test_portfolio_sort_and_dust(cli_env: FakeProvider) -> None:
 
     result = runner.invoke(app, ["portfolio", "--sort", "bogus"])
     assert result.exit_code == 1
+
+
+def test_sparkline_downsamples_and_colors() -> None:
+    import re
+
+    from trd.cli.render import sparkline
+
+    strip = re.compile(r"\[/?[a-z_]+\]")
+    rising = sparkline([100 + i for i in range(30)])
+    assert "green" in rising
+    assert len(strip.sub("", rising)) == 10  # 30 closes -> 10 buckets
+    falling = sparkline([130 - i for i in range(30)])
+    assert "red" in falling
+    assert sparkline([100.0]) == ""  # too short
+    assert len(strip.sub("", sparkline([100, 101, 102, 103]))) == 4  # short series kept as-is

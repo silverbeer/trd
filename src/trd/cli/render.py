@@ -35,18 +35,35 @@ def fmt_signed_pct(value: Decimal | None) -> str:
 
 
 _SPARK_TICKS = "▁▂▃▄▅▆▇█"
+_SPARK_WIDTH = 10
 
 
-def sparkline(values: list[float]) -> str:
-    """Unicode trend line, colored by net direction over the window."""
+def _downsample(values: list[float], width: int) -> list[float]:
+    """Average values into `width` buckets so a long series renders as a tight spark."""
+    if len(values) <= width:
+        return values
+    bucket = len(values) / width
+    return [
+        sum(values[int(i * bucket) : int((i + 1) * bucket)])
+        / max(1, int((i + 1) * bucket) - int(i * bucket))
+        for i in range(width)
+    ]
+
+
+def sparkline(values: list[float], width: int = _SPARK_WIDTH) -> str:
+    """Compact unicode trend, colored by net direction over the window.
+
+    Net direction uses the raw endpoints; the bars use downsampled buckets so a
+    30-day series stays a tight ~10-char spark that reads as its own row."""
     if len(values) < 2:
         return ""
-    lo, hi = min(values), max(values)
+    points = _downsample(values, width)
+    lo, hi = min(points), max(points)
     span = hi - lo
-    chars = []
-    for v in values:
-        idx = 0 if span == 0 else round((v - lo) / span * (len(_SPARK_TICKS) - 1))
-        chars.append(_SPARK_TICKS[idx])
+    chars = [
+        _SPARK_TICKS[0 if span == 0 else round((v - lo) / span * (len(_SPARK_TICKS) - 1))]
+        for v in points
+    ]
     color = "green" if values[-1] >= values[0] else "red"
     return f"[{color}]{''.join(chars)}[/{color}]"
 
@@ -75,7 +92,7 @@ def positions_table(
     table.add_column("Wt", justify="right")
     table.add_column("Qty", justify="right")
     table.add_column("Price", justify="right")
-    table.add_column("30d", justify="left")
+    table.add_column("30d", justify="left", no_wrap=True, width=_SPARK_WIDTH)
     table.add_column("Value", justify="right")
     table.add_column("Day Δ%", justify="right")
     table.add_column("P&L", justify="right")
