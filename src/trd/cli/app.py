@@ -193,6 +193,15 @@ def dashboard(
         )
 
 
+_SORT_KEYS = {
+    "value": (lambda p: p.market_value or Decimal(0), True),
+    "pl": (lambda p: p.unrealized_pl or Decimal(0), True),
+    "pct": (lambda p: p.unrealized_pl_pct or Decimal(0), True),
+    "day": (lambda p: p.day_change_pct or Decimal(0), True),
+    "symbol": (lambda p: p.instrument.symbol, False),
+}
+
+
 @app.command()
 def portfolio(
     account: Annotated[
@@ -201,23 +210,54 @@ def portfolio(
     include_all: Annotated[
         bool, typer.Option("--all", help="Include simulation (paper) accounts.")
     ] = False,
+    sort: Annotated[
+        str, typer.Option("--sort", "-s", help="value | pl | pct | day | symbol.")
+    ] = "value",
+    min_value: Annotated[
+        float, typer.Option("--min-value", help="Hide positions worth less than this.")
+    ] = 0.0,
 ) -> None:
-    """Show holdings: quantity, cost basis, value, day change, P&L.
+    """Show holdings: weight, price + 30-day trend, value, day change, P&L.
 
-    Real money only by default — pass --all to include paper accounts.
+    Sorted by value (biggest first); real money only unless --all.
     """
+    if sort not in _SORT_KEYS:
+        err_console.print(f"[red]error:[/red] --sort must be one of {', '.join(_SORT_KEYS)}.")
+        raise typer.Exit(code=1)
     service = _portfolio_service()
     try:
         with console.status("Fetching quotes..."):
             positions = service.positions(account, include_simulation=include_all)
+            sparks = service.sparklines(positions)
     except TrdError as exc:
         _fail(exc)
         return
     if not positions:
         console.print("No open positions. Record one with [bold]trd buy[/bold].")
         return
+
+    hidden = [p for p in positions if (p.market_value or Decimal(0)) < Decimal(str(min_value))]
+    shown = [p for p in positions if p not in hidden]
+    key, reverse = _SORT_KEYS[sort]
+    shown.sort(key=key, reverse=reverse)
+
+    value = sum((p.market_value for p in positions if p.market_value is not None), Decimal(0))
+    cost = sum((p.cost_basis for p in positions), Decimal(0))
+    day = sum((p.day_change for p in positions if p.day_change is not None), Decimal(0))
+    pl = value - cost
+    console.print(
+        f"[bold]{fmt_money(value)}[/bold]  "
+        f"today {fmt_signed(day)}  ·  P&L {fmt_signed(pl)} "
+        f"({fmt_signed_pct(pl / cost * 100 if cost else None)})"
+    )
     scope = account or ("all accounts" if include_all else "all real accounts")
-    console.print(positions_table(positions, f"Portfolio — {scope}"))
+    console.print(positions_table(shown, f"Portfolio — {scope}", sparklines=sparks))
+    if hidden:
+        dust = sum((p.market_value for p in hidden if p.market_value is not None), Decimal(0))
+        console.print(
+            f"[dim]+{len(hidden)} smaller position(s) hidden ({fmt_money(dust)}). "
+            f"--min-value 0 to show all.[/dim]"
+        )
 
 
 @app.command()

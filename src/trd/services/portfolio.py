@@ -204,6 +204,15 @@ class PortfolioService:
         result.sort(key=lambda lot: (lot.instrument.symbol, lot.bought_at, lot.account))
         return result
 
+    def sparklines(self, positions: list[Position], days: int = 30) -> dict[str, list[float]]:
+        """Recent daily closes per held symbol, for inline trend sparklines."""
+        out: dict[str, list[float]] = {}
+        for position in positions:
+            closes = self.prices.recent_closes(position.instrument.id, days)
+            if len(closes) >= 2:
+                out[position.instrument.symbol] = [float(c) for c in closes]
+        return out
+
     def import_csv(self, path: Path) -> int:
         """Bulk-load transactions. Columns: date,account,symbol,side,quantity,price[,fees,note]."""
         with path.open(newline="") as fh:

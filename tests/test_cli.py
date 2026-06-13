@@ -357,3 +357,53 @@ def test_dashboard_empty(cli_env: FakeProvider) -> None:
     result = runner.invoke(app, ["dashboard"])
     assert result.exit_code == 0, result.output
     assert "No holdings" in result.output
+
+
+def test_portfolio_sort_and_dust(cli_env: FakeProvider) -> None:
+    from datetime import date, timedelta
+    from decimal import Decimal
+
+    from trd.config import get_settings
+    from trd.db.connection import connect
+    from trd.models import DailyBar, Side
+    from trd.repos import InstrumentRepo, PriceRepo
+    from trd.services import PortfolioService
+
+    runner.invoke(app, ["init"])
+    conn = connect(get_settings().db_path)
+    pf = PortfolioService(conn, cli_env)
+    # AAPL big (10@150 -> 2000 @200), NVDA dust (0.01@100 -> ~1.2)
+    pf.record_trade("main", "AAPL", Side.BUY, Decimal(10), Decimal(150))
+    pf.record_trade("main", "NVDA", Side.BUY, Decimal("0.01"), Decimal(100))
+    # seed bars so sparklines render
+    inst = InstrumentRepo(conn).get_by_symbol("AAPL")
+    assert inst is not None
+    today = date.today()
+    PriceRepo(conn).upsert_daily(
+        inst.id,
+        [
+            DailyBar(
+                date=today - timedelta(days=30 - i),
+                open=Decimal(100 + i),
+                high=Decimal(100 + i),
+                low=Decimal(100 + i),
+                close=Decimal(100 + i),
+                volume=1,
+            )
+            for i in range(30)
+        ],
+    )
+    conn.close()
+
+    result = runner.invoke(app, ["portfolio"])
+    assert result.exit_code == 0, result.output
+    assert "Wt" in result.output  # weight column
+    assert "today" in result.output  # summary header
+
+    # dust filter hides the tiny NVDA position
+    result = runner.invoke(app, ["portfolio", "--min-value", "100"])
+    assert result.exit_code == 0, result.output
+    assert "smaller position" in result.output
+
+    result = runner.invoke(app, ["portfolio", "--sort", "bogus"])
+    assert result.exit_code == 1

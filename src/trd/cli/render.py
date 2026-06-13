@@ -34,38 +34,76 @@ def fmt_signed_pct(value: Decimal | None) -> str:
     return f"[{color}]{'+' if value >= 0 else ''}{value:.2f}%[/{color}]"
 
 
-def positions_table(positions: list[Position], title: str) -> Table:
+_SPARK_TICKS = "▁▂▃▄▅▆▇█"
+
+
+def sparkline(values: list[float]) -> str:
+    """Unicode trend line, colored by net direction over the window."""
+    if len(values) < 2:
+        return ""
+    lo, hi = min(values), max(values)
+    span = hi - lo
+    chars = []
+    for v in values:
+        idx = 0 if span == 0 else round((v - lo) / span * (len(_SPARK_TICKS) - 1))
+        chars.append(_SPARK_TICKS[idx])
+    color = "green" if values[-1] >= values[0] else "red"
+    return f"[{color}]{''.join(chars)}[/{color}]"
+
+
+def heat_pct(value: Decimal | None) -> str:
+    """P&L% with intensity scaled to magnitude — big moves glow, small ones dim."""
+    if value is None:
+        return "—"
+    mag = abs(value)
+    if value >= 0:
+        color = "bright_green" if mag >= 100 else "green" if mag >= 15 else "pale_green1"
+    else:
+        color = "bright_red" if mag >= 50 else "red" if mag >= 15 else "indian_red1"
+    return f"[{color}]{'+' if value >= 0 else ''}{value:.1f}%[/{color}]"
+
+
+def positions_table(
+    positions: list[Position],
+    title: str,
+    sparklines: dict[str, list[float]] | None = None,
+) -> Table:
+    sparklines = sparklines or {}
+    total_value = sum((p.market_value for p in positions if p.market_value is not None), Decimal(0))
     table = Table(title=title, title_justify="left")
     table.add_column("Symbol", style="bold")
+    table.add_column("Wt", justify="right")
     table.add_column("Qty", justify="right")
-    table.add_column("Avg Cost", justify="right")
     table.add_column("Price", justify="right")
+    table.add_column("30d", justify="left")
     table.add_column("Value", justify="right")
-    table.add_column("Day Δ", justify="right")
     table.add_column("Day Δ%", justify="right")
     table.add_column("P&L", justify="right")
     table.add_column("P&L%", justify="right")
 
-    total_value = Decimal(0)
     total_cost = Decimal(0)
     total_day = Decimal(0)
     any_value = False
     for p in positions:
         symbol = p.instrument.symbol + (" [dim](stale)[/dim]" if p.price_stale else "")
+        weight = (
+            f"{p.market_value / total_value * 100:.0f}%"
+            if p.market_value is not None and total_value
+            else "—"
+        )
         table.add_row(
             symbol,
+            weight,
             fmt_qty(p.quantity),
-            fmt_money(p.avg_cost),
             fmt_money(p.price),
+            sparkline(sparklines.get(p.instrument.symbol, [])),
             fmt_money(p.market_value),
-            fmt_signed(p.day_change),
             fmt_signed_pct(p.day_change_pct),
             fmt_signed(p.unrealized_pl),
-            fmt_signed_pct(p.unrealized_pl_pct),
+            heat_pct(p.unrealized_pl_pct),
         )
         total_cost += p.cost_basis
         if p.market_value is not None:
-            total_value += p.market_value
             any_value = True
         if p.day_change is not None:
             total_day += p.day_change
@@ -73,17 +111,20 @@ def positions_table(positions: list[Position], title: str) -> Table:
     if positions and any_value:
         total_pl = total_value - total_cost
         total_pl_pct = total_pl / total_cost * 100 if total_cost else None
+        total_day_pct = (
+            total_day / (total_value - total_day) * 100 if (total_value - total_day) else None
+        )
         table.add_section()
         table.add_row(
             "[bold]Total[/bold]",
             "",
             "",
             "",
-            f"[bold]{fmt_money(total_value)}[/bold]",
-            fmt_signed(total_day),
             "",
+            f"[bold]{fmt_money(total_value)}[/bold]",
+            fmt_signed_pct(total_day_pct),
             fmt_signed(total_pl),
-            fmt_signed_pct(total_pl_pct),
+            heat_pct(total_pl_pct),
         )
     return table
 
