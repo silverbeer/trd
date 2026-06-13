@@ -395,6 +395,62 @@ _ENTRIES: list[GlossaryEntry] = [
         related=["dca"],
         used_in=["(research — trd quote)"],
     ),
+    GlossaryEntry(
+        key="total-return",
+        term="Total return",
+        category=Category.RETURNS,
+        definition=(
+            "Everything you've made on what you currently hold, as a percent of what "
+            "you paid. The headline 'am I up?' number — but it ignores WHEN you invested "
+            "(see xirr for the time-aware version)."
+        ),
+        formula="total return % = (current value - cost basis) / cost basis x 100",
+        example="$160k invested, now worth $200k -> total return = 40k/160k = +25%.",
+        related=["pl", "xirr", "cost-basis"],
+        used_in=["trd dashboard", "trd portfolio"],
+    ),
+    GlossaryEntry(
+        key="alpha",
+        term="Alpha (vs the market)",
+        category=Category.RETURNS,
+        definition=(
+            "How much better (or worse) you did than simply buying the S&P 500 with the "
+            "same money on the same days. Positive alpha means your choices added value; "
+            "negative means an index fund would have beaten you."
+        ),
+        formula="alpha = your total return % - S&P 500 same-dates return %",
+        example="You +25.4%, S&P 500 +18.2% on the same contributions -> alpha = +7.2pp.",
+        related=["benchmark", "total-return", "xirr"],
+        used_in=["trd dashboard"],
+    ),
+    GlossaryEntry(
+        key="concentration",
+        term="Concentration risk",
+        category=Category.RETURNS,
+        definition=(
+            "How much of your portfolio rides on a single position. One stock at 50%+ "
+            "means your results are really a bet on that one company — diversification's "
+            "opposite. trd flags a top holding at or above 25%."
+        ),
+        formula="largest weight = biggest holding value / total portfolio value x 100",
+        example="DSP is 54.5% of the portfolio -> a concentrated single-stock bet.",
+        related=["allocation", "drift", "rebalancing"],
+        used_in=["trd dashboard --full"],
+    ),
+    GlossaryEntry(
+        key="win-rate",
+        term="Win rate",
+        category=Category.RETURNS,
+        definition=(
+            "Share of your positions currently in the green. Interesting but secondary: "
+            "a portfolio can have a low win rate and still win big if its few winners are "
+            "large enough — one HPE can outweigh ten small losers."
+        ),
+        formula="win rate = positions up / (positions up + positions down) x 100",
+        example="18 up, 15 down -> 18/33 = 55%.",
+        related=["total-return"],
+        used_in=["trd dashboard --full"],
+    ),
 ]
 
 

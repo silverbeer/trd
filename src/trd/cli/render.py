@@ -4,6 +4,7 @@ from decimal import Decimal
 from rich.table import Table
 
 from trd.models import BoardRow, EarningsEvent, LotPosition, Position
+from trd.services.dashboard import Dashboard, Holding
 from trd.services.dca_detail import PlanDetail
 from trd.services.dca_projection import BacktestResult, ForecastResult
 
@@ -402,3 +403,68 @@ def backtest_table(result: BacktestResult, account: str) -> Table:
     color = "green" if result.vs_spy >= 0 else "red"
     table.add_row("vs SPY", f"[{color}]{result.vs_spy:+,.0f}[/{color}]")
     return table
+
+
+def _money0(value):
+    return f"{value:,.0f}" if value is not None else "—"
+
+
+def dashboard_card(dash: Dashboard) -> Table:
+    """The compact 'five metrics that matter' home view."""
+    table = Table(title="Portfolio", title_justify="left", show_header=False)
+    table.add_column("Metric", style="dim")
+    table.add_column("Value", justify="right")
+    table.add_row("Portfolio value", f"[bold]{fmt_money(dash.value)}[/bold]")
+    table.add_row("Total return", fmt_signed_pct(dash.total_return_pct))
+    table.add_row("XIRR (annualized)", fmt_pct_float(dash.xirr))
+    if dash.alpha is not None:
+        table.add_row("vs S&P 500", fmt_signed_pct(dash.alpha))
+    table.add_section()
+    table.add_row("Amount invested", fmt_money(dash.invested))
+    table.add_row("Investment gains", fmt_signed(dash.gains))
+    table.add_section()
+    today = f"{fmt_signed(dash.today_change)} ({fmt_signed_pct(dash.today_change_pct)})"
+    table.add_row("Today's change", today)
+    if dash.spy_today_pct is not None:
+        table.add_row("S&P 500 today", fmt_signed_pct(dash.spy_today_pct))
+    table.add_section()
+    top = dash.top_holding
+    if top is not None:
+        warn = "  [yellow]⚠ concentration[/yellow]" if dash.concentration_warning else ""
+        table.add_row("Top holding", f"{top.symbol} ({top.weight:.1f}%){warn}")
+    if dash.winners:
+        w = dash.winners[0]
+        table.add_row("Largest winner", f"{w.symbol} ({fmt_signed_pct(w.pl_pct)})")
+    if dash.losers:
+        x = dash.losers[0]
+        table.add_row("Largest loser", f"{x.symbol} ({fmt_signed_pct(x.pl_pct)})")
+    return table
+
+
+def dashboard_allocation_table(dash: Dashboard) -> Table:
+    table = Table(title="Allocation", title_justify="left")
+    table.add_column("Symbol", style="bold")
+    table.add_column("Value", justify="right")
+    table.add_column("Weight", justify="right")
+    for h in dash.holdings:
+        table.add_row(h.symbol, fmt_money(h.value), f"{h.weight:.1f}%")
+    table.add_section()
+    table.add_row("[dim]Top 5[/dim]", "", f"[dim]{dash.top5_weight:.1f}% of portfolio[/dim]")
+    return table
+
+
+def _movers_table(title: str, holdings: list[Holding]) -> Table:
+    table = Table(title=title, title_justify="left")
+    table.add_column("Symbol", style="bold")
+    table.add_column("Return", justify="right")
+    table.add_column("P&L", justify="right")
+    for h in holdings:
+        table.add_row(h.symbol, fmt_signed_pct(h.pl_pct), fmt_signed(h.pl))
+    return table
+
+
+def dashboard_movers(dash: Dashboard) -> tuple[Table, Table]:
+    return (
+        _movers_table("Biggest winners", dash.winners),
+        _movers_table("Biggest losers", dash.losers),
+    )
