@@ -1073,7 +1073,10 @@ def backup(
 
     settings = get_settings()
     conn = connect(settings.db_path)
-    data = export_data(conn)
+    try:
+        data = export_data(conn)
+    finally:
+        conn.close()
     path.write_text(_json.dumps(data, indent=2))
     console.print(
         f"Backed up [bold]{len(data['transactions'])}[/bold] transactions, "
@@ -1106,6 +1109,8 @@ def restore(
     except TrdError as exc:
         _fail(exc)
         return
+    finally:
+        conn.close()  # release the file so a later --force can recreate it
     console.print(
         f"Restored [bold]{stats.transactions}[/bold] transactions across "
         f"[bold]{stats.accounts}[/bold] accounts, {stats.plans} plans, "
