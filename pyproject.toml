@@ -2,7 +2,7 @@
 name = "trd"
 version = "0.1.0"
 description = "Local-first investment tracker: portfolio, watchlists, indicators, simulation"
-readme = "DESIGN.md"
+readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
     "typer>=0.15",
