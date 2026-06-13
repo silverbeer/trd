@@ -86,6 +86,14 @@ class PriceRepo:
         ).fetchone()
         return row[0] if row else None
 
+    def recent_closes(self, instrument_id: int, days: int = 30) -> list[Decimal]:
+        """The last N daily closes, oldest-first — for inline sparklines."""
+        rows = self.conn.execute(
+            "SELECT close FROM price_daily WHERE instrument_id = ? ORDER BY date DESC LIMIT ?",
+            [instrument_id, days],
+        ).fetchall()
+        return [r[0] for r in reversed(rows)]
+
     def latest_close(self, instrument_id: int, adjusted: bool = False) -> Decimal | None:
         column = "coalesce(adj_close, close)" if adjusted else "close"
         row = self.conn.execute(
