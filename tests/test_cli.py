@@ -409,16 +409,12 @@ def test_portfolio_sort_and_dust(cli_env: FakeProvider) -> None:
     assert result.exit_code == 1
 
 
-def test_sparkline_downsamples_and_colors() -> None:
-    import re
+def test_trend_change_pct_and_arrow() -> None:
+    from trd.cli.render import trend_change
 
-    from trd.cli.render import sparkline
-
-    strip = re.compile(r"\[/?[a-z_]+\]")
-    rising = sparkline([100 + i for i in range(30)])
-    assert "green" in rising
-    assert len(strip.sub("", rising)) == 10  # 30 closes -> 10 buckets
-    falling = sparkline([130 - i for i in range(30)])
-    assert "red" in falling
-    assert sparkline([100.0]) == ""  # too short
-    assert len(strip.sub("", sparkline([100, 101, 102, 103]))) == 4  # short series kept as-is
+    up = trend_change([100, 130])  # +30%
+    assert "green" in up and "↑30%" in up
+    down = trend_change([100, 70])  # -30%
+    assert "red" in down and "↓30%" in down
+    assert trend_change([100, 100]) == "[dim]→0%[/dim]"  # flat
+    assert trend_change([100.0]) == "—"  # too short
