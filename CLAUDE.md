@@ -25,6 +25,8 @@ trd quote AAPL                        # live quote for any symbol
 trd buy AAPL 10 [--price 213.50] [--account main] [--date 2026-06-10] [--fees 1] [--note ...]
 trd sell AAPL 5 [--price ...]         # validates held quantity
 trd import txns.csv                   # bulk-load transactions
+trd backup data.json                 # export user-owned facts (txns/accounts/plans/watch/indicators)
+trd restore data.json [--force]      # rebuild a DB from a backup, then trd sync (cross-machine sync)
 trd watch add NVDA [--list ai]        # follow a symbol (creates list if needed)
 trd watch rm NVDA [--list ai]
 trd watch ls [ai]                     # quote board: price, day Δ%, 52w pos, vol/avg, next earnings
