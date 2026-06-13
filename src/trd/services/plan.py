@@ -9,11 +9,13 @@ from trd.errors import TrdError
 from trd.models import Account, AccountType, Side, Transaction
 from trd.providers.base import MarketDataProvider
 from trd.repos import AccountRepo, InstrumentRepo, PriceRepo, TransactionRepo, WatchlistRepo
+from trd.services.benchmark import BENCHMARK, same_dates_value
 from trd.services.fifo import fifo_position
 from trd.services.portfolio import PortfolioService
 
-BENCHMARK = "SPY"
 MOMENTUM_BARS = 63  # ~3 months of trading days
+
+__all__ = ["BENCHMARK", "Plan", "PlanService", "PlanStatus"]
 
 
 class Plan(BaseModel):
@@ -363,18 +365,7 @@ class PlanService:
 
     def _benchmark_value(self, txns: list[Transaction]) -> Decimal | None:
         """What the same contributions would be worth in SPY, bought the same days."""
-        if not txns:
-            return None
         benchmark = self.instruments.get_by_symbol(BENCHMARK)
         if benchmark is None:
             return None
-        shares = Decimal(0)
-        for txn in txns:
-            close = self.prices.close_on_or_after(benchmark.id, txn.executed_at.date())
-            if close is None or close == 0:
-                return None
-            shares += (txn.quantity * txn.price + txn.fees) / close
-        latest = self.prices.latest_close(benchmark.id)
-        if latest is None:
-            return None
-        return shares * latest
+        return same_dates_value(self.prices, benchmark.id, txns)
