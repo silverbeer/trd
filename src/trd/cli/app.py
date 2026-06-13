@@ -1061,6 +1061,58 @@ def learn(
         console.print(f"[dim]Related: {', '.join(result.related)}[/dim]")
 
 
+@app.command()
+def backup(
+    path: Annotated[Path, typer.Argument(help="Where to write the backup JSON.")],
+) -> None:
+    """Export user-owned data (accounts, transactions, plans, watchlists, indicators)
+    to a portable JSON file. Prices/earnings are excluded — they rebuild with sync."""
+    import json as _json
+
+    from trd.services.backup import export_data
+
+    settings = get_settings()
+    conn = connect(settings.db_path)
+    data = export_data(conn)
+    path.write_text(_json.dumps(data, indent=2))
+    console.print(
+        f"Backed up [bold]{len(data['transactions'])}[/bold] transactions, "
+        f"[bold]{len(data['accounts'])}[/bold] accounts, "
+        f"[bold]{len(data['plans'])}[/bold] plans to {path}."
+    )
+
+
+@app.command()
+def restore(
+    path: Annotated[Path, typer.Argument(exists=True, readable=True, help="Backup JSON to load.")],
+    force: Annotated[
+        bool, typer.Option("--force", help="Replace existing user data (destructive).")
+    ] = False,
+) -> None:
+    """Rebuild a database from a backup, then run 'trd sync' to refresh prices."""
+    import json as _json
+
+    from trd.services.backup import restore_data
+
+    settings = get_settings()
+    db_path = settings.db_path
+    if force and db_path.exists():
+        # Rebuild from scratch — restore is insert-only into a fresh database.
+        db_path.unlink()
+        db_path.with_suffix(db_path.suffix + ".wal").unlink(missing_ok=True)
+    conn = connect(db_path)
+    try:
+        stats = restore_data(conn, _json.loads(path.read_text()))
+    except TrdError as exc:
+        _fail(exc)
+        return
+    console.print(
+        f"Restored [bold]{stats.transactions}[/bold] transactions across "
+        f"[bold]{stats.accounts}[/bold] accounts, {stats.plans} plans, "
+        f"{stats.watchlists} watchlists. Run [bold]trd sync[/bold] to refresh prices."
+    )
+
+
 @app.command(name="import")
 def import_csv(
     path: Annotated[Path, typer.Argument(exists=True, readable=True, help="CSV of transactions.")],
