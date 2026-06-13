@@ -2,13 +2,22 @@ from pathlib import Path
 
 import duckdb
 
+from trd.errors import DatabaseBusyError
+
 MIGRATIONS_DIR = Path(__file__).parent / "migrations"
 
 
 def connect(db_path: Path) -> duckdb.DuckDBPyConnection:
     """Open (creating if needed) the database and bring schema up to date."""
     db_path.parent.mkdir(parents=True, exist_ok=True)
-    conn = duckdb.connect(str(db_path))
+    try:
+        conn = duckdb.connect(str(db_path))
+    except duckdb.IOException as exc:
+        # Single-writer lock held by another trd process (common when the DB
+        # lives on a synced drive). Surface a clean message, not a traceback.
+        if "lock" in str(exc).lower():
+            raise DatabaseBusyError() from exc
+        raise
     apply_migrations(conn)
     return conn
 
