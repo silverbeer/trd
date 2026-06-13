@@ -322,3 +322,38 @@ def test_dca_alias_and_plan_alias(cli_env: FakeProvider) -> None:
     runner.invoke(app, ["init"])
     assert runner.invoke(app, ["dca", "ls"]).exit_code == 0
     assert runner.invoke(app, ["plan", "ls"]).exit_code == 0  # hidden back-compat alias
+
+
+def test_dashboard_command(cli_env: FakeProvider) -> None:
+    from datetime import date, datetime, timedelta
+    from decimal import Decimal
+
+    from trd.config import get_settings
+    from trd.db.connection import connect
+    from trd.models import InstrumentType, Side
+    from trd.services import PortfolioService
+
+    cli_env.add_symbol("SPY", price="100.00", prev_close="99.5", type_=InstrumentType.ETF)
+    runner.invoke(app, ["init"])
+    conn = connect(get_settings().db_path)
+    portfolio = PortfolioService(conn, cli_env)
+    old = datetime.combine(date.today() - timedelta(days=300), datetime.min.time())
+    portfolio.record_trade("main", "AAPL", Side.BUY, Decimal(10), Decimal(150), executed_at=old)
+    conn.close()
+
+    result = runner.invoke(app, ["dashboard"])
+    assert result.exit_code == 0, result.output
+    assert "Portfolio value" in result.output
+    assert "Total return" in result.output
+
+    result = runner.invoke(app, ["dashboard", "--full"])
+    assert result.exit_code == 0, result.output
+    assert "Allocation" in result.output
+    assert "Win rate" in result.output
+
+
+def test_dashboard_empty(cli_env: FakeProvider) -> None:
+    runner.invoke(app, ["init"])
+    result = runner.invoke(app, ["dashboard"])
+    assert result.exit_code == 0, result.output
+    assert "No holdings" in result.output
