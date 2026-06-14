@@ -14,9 +14,12 @@ export TRD_HOME="${TRD_HOME:-$HOME/Library/Mobile Documents/com~apple~CloudDocs/
 export PATH="$HOME/.local/bin:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin"
 # ----------------------------------------------------------------------------
 
-LOG_DIR="$TRD_HOME/prep"
+# Keep the cron log on the LOCAL disk, not iCloud — a launchd agent can't write
+# iCloud Drive until granted Full Disk Access, and we want a log of that very
+# failure. (trd's snapshot still writes to iCloud and needs the FDA grant.)
+LOG_DIR="$HOME/Library/Logs"
 mkdir -p "$LOG_DIR"
-LOG="$LOG_DIR/cron.log"
+LOG="$LOG_DIR/trd-sundayprep-run.log"
 
 echo "=== $(date) :: sunday-prep run ===" >> "$LOG"
 trd sync                 >> "$LOG" 2>&1 || echo "sync failed (continuing)" >> "$LOG"

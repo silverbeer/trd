@@ -9,6 +9,7 @@ checker keeps them honest.
 
 from trd.data.market_calendar import EconEvent, events_for_week
 from trd.data.universe import (
+    COMMODITIES,
     FUTURES,
     INDEX_PROXIES,
     SECTOR_ETFS,
@@ -18,6 +19,7 @@ from trd.data.universe import (
 )
 
 __all__ = [
+    "COMMODITIES",
     "FUTURES",
     "INDEX_PROXIES",
     "SECTOR_ETFS",
