@@ -631,6 +631,19 @@ def sunday_prep_renderables(b: SundayPrepBriefing) -> list[RenderableType]:
         ft.add_row(f.label, _fmt_level(f.price), change)
     out.append(Group(_num_section(1, "Futures Snapshot"), ft))
 
+    # 1b. Commodities (oil + gold)
+    if b.commodities:
+        ct = Table(title=None, expand=False)
+        ct.add_column("Commodity")
+        ct.add_column("Last", justify="right")
+        ct.add_column("Change", justify="right")
+        for c in b.commodities:
+            change = fmt_signed_pct(c.change_pct)
+            if c.unusual:
+                change += " [yellow]⚠[/yellow]"
+            ct.add_row(c.label, _fmt_level(c.price), change)
+        out.append(Group(Text.from_markup("[bold cyan]Commodities[/bold cyan]"), ct))
+
     # 2. Economic events
     if b.econ_events:
         et = Table()
@@ -775,6 +788,15 @@ def sunday_prep_markdown(b: SundayPrepBriefing) -> str:
         flag = " ⚠️" if f.unusual else ""
         lines.append(f"| {f.label} | {_fmt_level(f.price)} | {_md_pct(f.change_pct)}{flag} |")
     lines.append("")
+
+    if b.commodities:
+        lines.append("**Commodities**")
+        lines.append("| Commodity | Last | Change |")
+        lines.append("|---|--:|--:|")
+        for c in b.commodities:
+            flag = " ⚠️" if c.unusual else ""
+            lines.append(f"| {c.label} | {_fmt_level(c.price)} | {_md_pct(c.change_pct)}{flag} |")
+        lines.append("")
 
     lines.append("### 2. Week's Major Events")
     if b.econ_events:
