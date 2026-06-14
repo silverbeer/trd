@@ -58,6 +58,18 @@ class FakeProvider:
     def drop_quote(self, symbol: str) -> None:
         self.quotes.pop(symbol.upper(), None)
 
+    def add_bars(self, symbol: str, bars: list[DailyBar]) -> None:
+        """Register a symbol (info only) plus a daily-bar series for it."""
+        symbol = symbol.upper()
+        self.infos.setdefault(
+            symbol,
+            InstrumentInfo(symbol=symbol, name=symbol, type=InstrumentType.ETF, currency="USD"),
+        )
+        self.bars[symbol] = bars
+
+    def set_earnings(self, symbol: str, dates: list[EarningsDate]) -> None:
+        self.earnings[symbol.upper()] = dates
+
     def get_quote(self, symbol: str) -> Quote:
         quote = self.quotes.get(symbol.upper())
         if quote is None:

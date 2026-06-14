@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Annotated
@@ -25,6 +25,9 @@ from trd.cli.render import (
     indicator_panel,
     lots_table,
     positions_table,
+    prep_history_table,
+    sunday_prep_markdown,
+    sunday_prep_renderables,
 )
 from trd.config import DEFAULT_ACCOUNT, get_settings
 from trd.db.connection import connect
@@ -40,6 +43,9 @@ from trd.services import (
     IndicatorService,
     PlanService,
     PortfolioService,
+    PrepHistoryService,
+    SundayPrepBriefing,
+    SundayPrepService,
     SyncService,
     WatchlistService,
 )
@@ -451,6 +457,68 @@ def earnings(
         console.print(f"No earnings in the next {days} days. Run [bold]trd sync[/bold] to refresh.")
         return
     console.print(earnings_table(events, days))
+
+
+def _write_prep_markdown(briefing: SundayPrepBriefing) -> Path:
+    """Write the human-readable markdown to TRD_HOME/prep/ (synced via iCloud).
+    The DB is the system of record; this file is for reading / a Claude session."""
+    out_dir = get_settings().home / "prep"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    md_path = out_dir / f"{briefing.generated_for.isoformat()}.md"
+    md_path.write_text(sunday_prep_markdown(briefing))
+    return md_path
+
+
+@app.command("sunday-prep")
+@app.command("prep", hidden=True)  # short alias
+def sunday_prep(
+    as_json: Annotated[
+        bool, typer.Option("--json", help="Emit the briefing as structured JSON.")
+    ] = False,
+    snapshot: Annotated[
+        bool,
+        typer.Option("--snapshot", help="Persist to DuckDB + write markdown to TRD_HOME/prep/."),
+    ] = False,
+    history: Annotated[
+        int,
+        typer.Option(
+            "--history",
+            help="Show the last N saved briefings as a trend table instead of building one.",
+        ),
+    ] = 0,
+    on: Annotated[
+        str | None,
+        typer.Option("--date", help="Reference date (ISO); defaults to today."),
+    ] = None,
+) -> None:
+    """Sunday Prep: a structured week-ahead briefing — futures, macro events, earnings,
+    sector leadership, volatility, key levels, themes, a watchlist, and risks."""
+    if history > 0:
+        rows = PrepHistoryService(connect(get_settings().db_path)).history(history)
+        if not rows:
+            console.print(
+                "No saved briefings yet. Run [bold]trd sunday-prep --snapshot[/bold] first."
+            )
+            return
+        console.print(prep_history_table(rows))
+        return
+    try:
+        reference = date.fromisoformat(on) if on else date.today()
+    except ValueError:
+        _fail(TrdError(f"Bad --date {on!r}; use ISO format like 2026-06-14."))
+        return
+    service = SundayPrepService(YFinanceProvider())
+    with console.status("Building Sunday Prep — futures, sectors, earnings, levels..."):
+        briefing = service.build(reference)
+    if as_json:
+        console.print_json(briefing.model_dump_json())
+    else:
+        for renderable in sunday_prep_renderables(briefing):
+            console.print(renderable)
+    if snapshot:
+        PrepHistoryService(connect(get_settings().db_path)).save(briefing)
+        path = _write_prep_markdown(briefing)
+        console.print(f"[dim]Saved to DuckDB + {path}[/dim]")
 
 
 account_app = typer.Typer(
