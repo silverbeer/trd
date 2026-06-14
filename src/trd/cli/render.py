@@ -11,6 +11,7 @@ from trd.repos import PrepSnapshotRow
 from trd.services.dashboard import Dashboard, Holding
 from trd.services.dca_detail import PlanDetail
 from trd.services.dca_projection import BacktestResult, ForecastResult
+from trd.services.equity_curve import EquityCurve
 from trd.services.sunday_prep import SundayPrepBriefing
 
 MONEY = "{:,.2f}"
@@ -508,6 +509,93 @@ def dashboard_movers(dash: Dashboard) -> tuple[Table, Table]:
         _movers_table("Biggest winners", dash.winners),
         _movers_table("Biggest losers", dash.losers),
     )
+
+
+# --- Equity curve -----------------------------------------------------------
+
+
+def _fmt_pct_signed(value: float | None) -> str:
+    if value is None:
+        return "—"
+    color = "green" if value >= 0 else "red"
+    return f"[{color}]{'+' if value >= 0 else ''}{value:.2f}%[/{color}]"
+
+
+def _downsample(values: list[float], width: int) -> list[float]:
+    n = len(values)
+    if n <= width:
+        return values
+    out: list[float] = []
+    for i in range(width):
+        s = int(i * n / width)
+        e = max(int((i + 1) * n / width), s + 1)
+        chunk = values[s:e]
+        out.append(sum(chunk) / len(chunk))
+    return out
+
+
+def equity_chart(curve: EquityCurve, width: int = 64, height: int = 12) -> Text:
+    """A font-proof ASCII line chart of portfolio value over time."""
+    values = [float(p.value) for p in curve.points]
+    sampled = _downsample(values, width)
+    lo, hi = min(sampled), max(sampled)
+    span = (hi - lo) or 1.0
+    grid = [[" "] * len(sampled) for _ in range(height)]
+    for col, v in enumerate(sampled):
+        level = round((v - lo) / span * (height - 1))
+        grid[height - 1 - level][col] = "*"
+    rising = values[-1] >= values[0]
+    color = "green" if rising else "red"
+
+    lines: list[str] = []
+    for r, row in enumerate(grid):
+        if r == 0:
+            axis = f"{hi:>12,.0f} "
+        elif r == height - 1:
+            axis = f"{lo:>12,.0f} "
+        else:
+            axis = " " * 13
+        lines.append(f"[dim]{axis}[/dim][{color}]{''.join(row)}[/{color}]")
+    # x-axis dates
+    left = str(curve.start_date)
+    right = str(curve.end_date)
+    pad = max(len(sampled) - len(left) - len(right), 1)
+    lines.append(f"{' ' * 13}[dim]{left}{' ' * pad}{right}[/dim]")
+    return Text.from_markup("\n".join(lines))
+
+
+def equity_summary_table(curve: EquityCurve) -> Table:
+    table = Table(show_header=False, title=None, box=None, padding=(0, 2, 0, 0))
+    table.add_column("k", style="dim")
+    table.add_column("v")
+    days = (curve.end_date - curve.start_date).days
+    table.add_row("Period", f"{curve.start_date} → {curve.end_date}  ({days}d)")
+    table.add_row(
+        "Value", f"{fmt_money(curve.start_value)} → [bold]{fmt_money(curve.end_value)}[/bold]"
+    )
+    table.add_row("Period return", _fmt_pct_signed(curve.period_return_pct))
+    table.add_row("Unrealized P&L", _fmt_pct_signed(curve.pl_pct))
+    table.add_row("XIRR", _fmt_pct_signed(curve.xirr * 100 if curve.xirr is not None else None))
+    table.add_row("Max drawdown", f"[red]{curve.max_drawdown_pct:.2f}%[/red]")
+    table.add_row("Peak value", fmt_money(curve.peak_value))
+    return table
+
+
+def equity_curve_renderables(curve: EquityCurve) -> list[RenderableType]:
+    out: list[RenderableType] = [
+        Text.from_markup(f"[bold]Equity curve[/bold] — {curve.account_label}"),
+        equity_chart(curve),
+        Text(""),
+        equity_summary_table(curve),
+    ]
+    if curve.unpriced:
+        out.append(
+            Text.from_markup(
+                f"[yellow]No price history for: {', '.join(curve.unpriced)} — "
+                f"run 'trd sync --years N'. Excluded from the curve.[/yellow]"
+            )
+        )
+    return out
 
 
 # --- Sunday Prep ------------------------------------------------------------

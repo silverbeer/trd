@@ -86,6 +86,28 @@ class PriceRepo:
         ).fetchone()
         return row[0] if row else None
 
+    def closes_in_range(
+        self, instrument_id: int, start: date, end: date, adjusted: bool = True
+    ) -> list[tuple[date, Decimal]]:
+        """All (date, close) for an instrument in [start, end], oldest-first.
+        Adjusted by default — return-series math must include dividends/splits."""
+        column = "coalesce(adj_close, close)" if adjusted else "close"
+        rows = self.conn.execute(
+            f"""
+            SELECT date, {column} FROM price_daily
+            WHERE instrument_id = ? AND date BETWEEN ? AND ?
+            ORDER BY date
+            """,
+            [instrument_id, start, end],
+        ).fetchall()
+        return [(r[0], r[1]) for r in rows]
+
+    def first_date(self, instrument_id: int) -> date | None:
+        row = self.conn.execute(
+            "SELECT min(date) FROM price_daily WHERE instrument_id = ?", [instrument_id]
+        ).fetchone()
+        return row[0] if row and row[0] is not None else None
+
     def recent_closes(self, instrument_id: int, days: int = 30) -> list[Decimal]:
         """The last N daily closes, oldest-first — for inline sparklines."""
         rows = self.conn.execute(
