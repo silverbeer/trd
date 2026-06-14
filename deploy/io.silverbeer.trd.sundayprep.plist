@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  launchd job: run Sunday Prep every Sunday at 6:05 PM (local time on the mac mini).
+
+  Install:
+    1) Edit deploy/sunday-prep.sh so TRD_HOME/PATH match this machine.
+    2) Edit the <string> paths below (USERNAME / repo path) to absolute paths.
+    3) cp deploy/io.silverbeer.trd.sundayprep.plist ~/Library/LaunchAgents/
+    4) launchctl load ~/Library/LaunchAgents/io.silverbeer.trd.sundayprep.plist
+    5) Test now:  launchctl start io.silverbeer.trd.sundayprep
+    Uninstall:    launchctl unload ~/Library/LaunchAgents/io.silverbeer.trd.sundayprep.plist
+
+  Note: launchd Weekday 0 = Sunday. Time is the machine's local time — set the mini
+  to Eastern, or shift Hour to land after the 6:00 PM ET cutoff in your timezone.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>io.silverbeer.trd.sundayprep</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/zsh</string>
+        <string>/Users/USERNAME/gitrepos/trd/deploy/sunday-prep.sh</string>
+    </array>
+
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Weekday</key>
+        <integer>0</integer>
+        <key>Hour</key>
+        <integer>18</integer>
+        <key>Minute</key>
+        <integer>5</integer>
+    </dict>
+
+    <!-- If the mini was asleep at 6:05 PM, run as soon as it wakes. -->
+    <key>RunAtLoad</key>
+    <false/>
+
+    <key>StandardOutPath</key>
+    <string>/Users/USERNAME/Library/Logs/trd-sundayprep.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/USERNAME/Library/Logs/trd-sundayprep.err</string>
+</dict>
+</plist>

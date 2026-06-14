@@ -9,8 +9,27 @@ single DuckDB file. Full design: [DESIGN.md](DESIGN.md). Command reference: [CLA
 trd dashboard        # value, return, XIRR, vs S&P 500, today, top holding, movers
 trd portfolio        # holdings, sorted by size, with weights + 30-day change
 trd dca show -a sofi # a DCA plan's XIRR, per-symbol drift, cadence
+trd sunday-prep      # week-ahead briefing: futures, macro events, earnings, levels, themes
 trd learn xirr       # the formula behind any number trd shows
 ```
+
+## Sunday Prep — the week-ahead briefing
+
+`trd sunday-prep` (alias `trd prep`) builds a structured, mentor-style briefing for the
+trading week ahead: futures snapshot, the macro calendar (FOMC, jobs, CPI/PPI), earnings
+from a curated large-cap universe, sector leadership, the VIX read, SPY/QQQ/IWM key
+levels, themes, a study watchlist, and the week's risks. The narrative is deterministic —
+no LLM, no network beyond yfinance — so it runs the same offline as on.
+
+```bash
+trd sunday-prep                 # render the briefing
+trd sunday-prep --json          # structured JSON (for a Claude session to narrate)
+trd sunday-prep --snapshot      # also write JSON + markdown to $TRD_HOME/prep/<date>.{json,md}
+trd sunday-prep --date 2026-06-14   # build for a specific reference date
+```
+
+To have it run itself every Sunday evening on an always-on Mac (and sync the snapshot
+to your other Macs via iCloud), see [deploy/README.md](deploy/README.md).
 
 ## Requirements
 
