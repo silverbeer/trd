@@ -6,6 +6,8 @@ from trd.services.equity_curve import EquityCurve, EquityCurveService
 from trd.services.indicators import IndicatorService
 from trd.services.plan import PlanService
 from trd.services.portfolio import PortfolioService
+from trd.services.prep_history import PrepHistoryService
+from trd.services.sunday_prep import SundayPrepBriefing, SundayPrepService
 from trd.services.sync import SyncResult, SyncService
 from trd.services.watchlist import WatchlistService
 
@@ -19,6 +21,9 @@ __all__ = [
     "IndicatorService",
     "PlanService",
     "PortfolioService",
+    "PrepHistoryService",
+    "SundayPrepBriefing",
+    "SundayPrepService",
     "SyncResult",
     "SyncService",
     "WatchlistService",

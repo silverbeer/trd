@@ -46,6 +46,11 @@ trd dca history [--limit N]           # every contribution event with legs and p
 trd dca forecast [--years 10] [--seed N]   # CAGR projection + Monte Carlo p10/p50/p90 bands
 trd dca backtest [--years 10]         # replay the exact plan against real (adjusted) history
 trd dca status|ls|edit|pause|resume   # quick view, list, partial update, lifecycle
+trd sunday-prep [--json] [--snapshot] [--date ISO]   # alias 'trd prep'
+                                      # week-ahead briefing: futures, macro calendar, curated-universe
+                                      # earnings, sector leadership, VIX, SPY/QQQ/IWM levels, themes,
+                                      # watchlist, risks. Deterministic narrative; --snapshot writes
+                                      # TRD_HOME/prep/<date>.{json,md} (the scheduled mini job uses this)
 trd learn [TERM]                      # investing dictionary: every term + exact formula trd uses
 trd sync --years 10                   # deep backfill (forecast/backtest need long history)
 trd sim init --monthly 100 [--strategy ticker|momentum] [--ticker SPY] [--alloc ...] [--name NAME]
@@ -62,6 +67,7 @@ CSV import format (header required): `date,account,symbol,side,quantity,price[,f
 - Holdings are always derived from transactions via FIFO ([src/trd/services/fifo.py](src/trd/services/fifo.py)) — never stored as mutable balances.
 - Schema changes = new numbered file in [src/trd/db/migrations](src/trd/db/migrations). Never edit an applied migration.
 - Money/quantities are `Decimal` end to end. Never float.
+- Static reference data (curated universe, FOMC/macro calendar) lives in [src/trd/data](src/trd/data) as plain Python — no YAML dep. `SundayPrepService` is pure (provider + data, no DuckDB); its briefing narrative is deterministic templates, leaving a seam for a future `--ai` pass.
 - Tests never hit the network. Extend `FakeProvider` in [tests/conftest.py](tests/conftest.py).
 
 ## Environment
