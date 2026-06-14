@@ -18,6 +18,7 @@ from trd.cli.render import (
     dca_summary_table,
     dca_symbols_table,
     earnings_table,
+    equity_curve_renderables,
     fmt_money,
     fmt_signed,
     fmt_signed_pct,
@@ -37,6 +38,7 @@ from trd.services import (
     DcaDetailService,
     DcaProjectionService,
     EarningsService,
+    EquityCurveService,
     IndicatorService,
     PlanService,
     PortfolioService,
@@ -258,6 +260,41 @@ def portfolio(
             f"[dim]+{len(hidden)} smaller position(s) hidden ({fmt_money(dust)}). "
             f"--min-value 0 to show all.[/dim]"
         )
+
+
+@app.command()
+def equity(
+    account: Annotated[
+        str | None, typer.Option("--account", "-a", help="Limit to one account.")
+    ] = None,
+    include_all: Annotated[
+        bool, typer.Option("--all", help="Include simulation (paper) accounts.")
+    ] = False,
+    days: Annotated[
+        int, typer.Option("--days", help="Look back this many days (0 = since first buy).")
+    ] = 0,
+    months: Annotated[
+        int, typer.Option("--months", help="Look back this many months (overridden by --days).")
+    ] = 0,
+    as_json: Annotated[bool, typer.Option("--json", help="Emit the curve as JSON.")] = False,
+) -> None:
+    """Portfolio value over time: equity curve, return, XIRR, and max drawdown.
+
+    Computed from your transactions and stored price history — depth is bounded by
+    how far back you've synced (use 'trd sync --years N' for a longer curve).
+    """
+    lookback = days if days > 0 else (months * 30 if months > 0 else None)
+    service = EquityCurveService(connect(get_settings().db_path))
+    try:
+        curve = service.curve(account, lookback_days=lookback, include_simulation=include_all)
+    except TrdError as exc:
+        _fail(exc)
+        return
+    if as_json:
+        console.print_json(curve.model_dump_json())
+        return
+    for renderable in equity_curve_renderables(curve):
+        console.print(renderable)
 
 
 @app.command()

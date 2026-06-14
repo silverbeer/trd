@@ -8,6 +8,7 @@ single DuckDB file. Full design: [DESIGN.md](DESIGN.md). Command reference: [CLA
 ```
 trd dashboard        # value, return, XIRR, vs S&P 500, today, top holding, movers
 trd portfolio        # holdings, sorted by size, with weights + 30-day change
+trd equity           # equity curve: value over time, return, XIRR, max drawdown
 trd dca show -a sofi # a DCA plan's XIRR, per-symbol drift, cadence
 trd learn xirr       # the formula behind any number trd shows
 ```
