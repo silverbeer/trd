@@ -13,6 +13,7 @@ from decimal import Decimal
 from pydantic import BaseModel
 
 from trd.data import (
+    COMMODITIES,
     FUTURES,
     INDEX_PROXIES,
     SECTOR_ETFS,
@@ -27,6 +28,7 @@ from trd.models import DailyBar
 from trd.providers.base import MarketDataProvider
 
 UNUSUAL_MOVE_PCT = Decimal("1.0")  # futures move flagged as outsized
+COMMODITY_UNUSUAL_PCT = Decimal("2.0")  # oil/gold are noisier; flag bigger moves
 WATCHLIST_MAX = 10
 WEEKDAY_NAMES = ("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday")
 
@@ -98,6 +100,7 @@ class SundayPrepBriefing(BaseModel):
     week_end: date
     tone: str
     futures: list[FuturesQuote]
+    commodities: list[FuturesQuote]  # oil (WTI/Brent) + gold; reuses the quote-row shape
     econ_events: list[EconEvent]
     earnings: list[EarningsItem]
     sector_leaders: list[SectorMove]
@@ -158,9 +161,9 @@ class SundayPrepService:
 
     # -- sections -------------------------------------------------------------
 
-    def _futures(self) -> list[FuturesQuote]:
+    def _quote_rows(self, symbols: dict[str, str], threshold: Decimal) -> list[FuturesQuote]:
         out: list[FuturesQuote] = []
-        for label, symbol in FUTURES.items():
+        for label, symbol in symbols.items():
             price, pct = self._safe_quote_pct(symbol)
             out.append(
                 FuturesQuote(
@@ -168,10 +171,16 @@ class SundayPrepService:
                     symbol=symbol,
                     price=_dec(float(price)) if price is not None else None,
                     change_pct=pct.quantize(Decimal("0.01")) if pct is not None else None,
-                    unusual=pct is not None and abs(pct) >= UNUSUAL_MOVE_PCT,
+                    unusual=pct is not None and abs(pct) >= threshold,
                 )
             )
         return out
+
+    def _futures(self) -> list[FuturesQuote]:
+        return self._quote_rows(FUTURES, UNUSUAL_MOVE_PCT)
+
+    def _commodities(self) -> list[FuturesQuote]:
+        return self._quote_rows(COMMODITIES, COMMODITY_UNUSUAL_PCT)
 
     def _sectors(self, reference: date) -> tuple[list[SectorMove], list[SectorMove]]:
         # ~2 weeks of calendar days to guarantee a full trading week of bars.
@@ -494,6 +503,7 @@ class SundayPrepService:
     def build(self, reference: date) -> SundayPrepBriefing:
         week_start, week_end = self._week_window(reference)
         futures = self._futures()
+        commodities = self._commodities()
         leaders, laggards = self._sectors(reference)
         vol = self._volatility()
         key_levels = self._key_levels(reference)
@@ -509,6 +519,7 @@ class SundayPrepService:
             week_end=week_end,
             tone=tone,
             futures=futures,
+            commodities=commodities,
             econ_events=events,
             earnings=earnings,
             sector_leaders=leaders,

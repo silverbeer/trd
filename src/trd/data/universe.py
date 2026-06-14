@@ -14,6 +14,13 @@ FUTURES: dict[str, str] = {
     "Russell 2000 Futures": "RTY=F",
 }
 
+# Macro commodities — the inflation/growth tells. WTI & Brent in $/barrel, gold in $/oz.
+COMMODITIES: dict[str, str] = {
+    "WTI Crude ($/bbl)": "CL=F",
+    "Brent Crude ($/bbl)": "BZ=F",
+    "Gold ($/oz)": "GC=F",
+}
+
 # The three ETFs traders quote levels on.
 INDEX_PROXIES: dict[str, str] = {
     "SPY": "S&P 500 ETF",

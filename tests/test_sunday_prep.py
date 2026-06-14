@@ -44,6 +44,11 @@ def prep_provider() -> FakeProvider:
     fake.add_symbol("RTY=F", price="100", prev_close="98")  # +2.04% -> unusual
     fake.add_symbol("^VIX", price="12.00", prev_close="12.50")  # low -> complacency
 
+    # Commodities: gold quiet, WTI makes an outsized (>2%) move.
+    fake.add_symbol("CL=F", price="80", prev_close="77")  # +3.9% -> unusual
+    fake.add_symbol("BZ=F", price="84", prev_close="83.5")
+    fake.add_symbol("GC=F", price="2400", prev_close="2395")
+
     # Sectors: XLK strongest, XLU weakest; others in between.
     fake.add_bars("XLK", _series(SUNDAY, 8, 100, 1.0))  # ~ +7% over the week
     fake.add_bars("XLU", _series(SUNDAY, 8, 100, -0.8))  # negative
@@ -85,6 +90,14 @@ def test_futures_snapshot_flags_outsized_move(briefing) -> None:
     assert by_symbol["RTY=F"].unusual is True
     assert by_symbol["ES=F"].unusual is False
     assert by_symbol["RTY=F"].change_pct > Decimal("2")
+
+
+def test_commodities_snapshot(briefing) -> None:
+    by_symbol = {c.symbol: c for c in briefing.commodities}
+    assert set(by_symbol) == {"CL=F", "BZ=F", "GC=F"}
+    assert by_symbol["CL=F"].unusual is True  # +3.9% > 2% commodity threshold
+    assert by_symbol["GC=F"].unusual is False
+    assert by_symbol["GC=F"].price == Decimal("2400.00")
 
 
 def test_econ_events_include_fomc_in_window(briefing) -> None:
@@ -160,5 +173,6 @@ def test_markdown_snapshot_renders(briefing) -> None:
     md = sunday_prep_markdown(briefing)
     assert md.startswith("## TRD Sunday Prep")
     assert "### 1. Futures Snapshot" in md
+    assert "**Commodities**" in md
     assert "### 10. Weekly Mindset" in md
     assert briefing.prompt_question in md
