@@ -1,12 +1,17 @@
 from datetime import date
 from decimal import Decimal
 
+from rich.console import Group, RenderableType
+from rich.panel import Panel
 from rich.table import Table
+from rich.text import Text
 
 from trd.models import BoardRow, EarningsEvent, LotPosition, Position
+from trd.repos import PrepSnapshotRow
 from trd.services.dashboard import Dashboard, Holding
 from trd.services.dca_detail import PlanDetail
 from trd.services.dca_projection import BacktestResult, ForecastResult
+from trd.services.sunday_prep import SundayPrepBriefing
 
 MONEY = "{:,.2f}"
 
@@ -503,3 +508,290 @@ def dashboard_movers(dash: Dashboard) -> tuple[Table, Table]:
         _movers_table("Biggest winners", dash.winners),
         _movers_table("Biggest losers", dash.losers),
     )
+
+
+# --- Sunday Prep ------------------------------------------------------------
+
+
+def _fmt_level(value: Decimal | None) -> str:
+    return f"{value:,.2f}" if value is not None else "—"
+
+
+def _num_section(n: int, title: str) -> Text:
+    return Text.from_markup(f"[bold cyan]{n}. {title}[/bold cyan]")
+
+
+def sunday_prep_renderables(b: SundayPrepBriefing) -> list[RenderableType]:
+    """The full Sunday Prep briefing as a sequence of Rich renderables."""
+    out: list[RenderableType] = []
+
+    week = f"{b.week_start:%b %d} - {b.week_end:%b %d, %Y}"
+    header = Text.from_markup(
+        f"[bold]TRD Sunday Prep[/bold]  [dim]· week of {week}[/dim]\n\n{b.tone}"
+    )
+    out.append(Panel(header, border_style="cyan"))
+
+    # 1. Futures
+    ft = Table(title=None, expand=False)
+    ft.add_column("Contract")
+    ft.add_column("Last", justify="right")
+    ft.add_column("Change", justify="right")
+    for f in b.futures:
+        change = fmt_signed_pct(f.change_pct)
+        if f.unusual:
+            change += " [yellow]⚠[/yellow]"
+        ft.add_row(f.label, _fmt_level(f.price), change)
+    out.append(Group(_num_section(1, "Futures Snapshot"), ft))
+
+    # 2. Economic events
+    if b.econ_events:
+        et = Table()
+        et.add_column("Day")
+        et.add_column("Time")
+        et.add_column("Event", style="bold")
+        et.add_column("Why it matters")
+        for e in b.econ_events:
+            et.add_row(f"{e.day} {e.date:%m/%d}", e.time_et or "—", e.name, e.why)
+        out.append(Group(_num_section(2, "Week's Major Events"), et))
+    else:
+        out.append(
+            Group(
+                _num_section(2, "Week's Major Events"), Text("  Quiet macro calendar.", style="dim")
+            )
+        )
+
+    # 3. Earnings
+    if b.earnings:
+        ent = Table()
+        ent.add_column("Day")
+        ent.add_column("Symbol", style="bold")
+        ent.add_column("Company")
+        ent.add_column("Session")
+        ent.add_column("Why it matters")
+        for e in b.earnings:
+            ent.add_row(f"{e.day} {e.date:%m/%d}", e.symbol, e.name, e.timing, e.why)
+        out.append(Group(_num_section(3, "Earnings Calendar"), ent))
+    else:
+        out.append(
+            Group(
+                _num_section(3, "Earnings Calendar"),
+                Text("  No tracked-universe names report this week.", style="dim"),
+            )
+        )
+
+    # 4. Leadership
+    lt = Table()
+    lt.add_column("")
+    lt.add_column("Sector", style="bold")
+    lt.add_column("Week", justify="right")
+    for mv in b.sector_leaders:
+        lt.add_row("[green]▲[/green]", f"{mv.name} ({mv.symbol})", fmt_signed_pct(mv.week_pct))
+    if b.sector_leaders and b.sector_laggards:
+        lt.add_section()
+    for mv in b.sector_laggards:
+        lt.add_row("[red]▼[/red]", f"{mv.name} ({mv.symbol})", fmt_signed_pct(mv.week_pct))
+    out.append(Group(_num_section(4, "Market Leadership"), lt))
+
+    # 5. Volatility
+    vix = b.volatility.vix
+    vix_txt = f"[bold]{vix}[/bold]" if vix is not None else "—"
+    out.append(
+        Group(
+            _num_section(5, "Volatility Check"),
+            Text.from_markup(
+                f"  VIX {vix_txt} — {b.volatility.band}\n  [dim]{b.volatility.note}[/dim]"
+            ),
+        )
+    )
+
+    # 6. Key levels
+    kt = Table()
+    kt.add_column("ETF", style="bold")
+    kt.add_column("Price", justify="right")
+    kt.add_column("50d", justify="right")
+    kt.add_column("200d", justify="right")
+    kt.add_column("52w Hi", justify="right")
+    kt.add_column("52w Lo", justify="right")
+    kt.add_column("ATR", justify="right")
+    kt.add_column("Read")
+    for lvl in b.key_levels:
+        kt.add_row(
+            lvl.symbol,
+            _fmt_level(lvl.price),
+            _fmt_level(lvl.sma50),
+            _fmt_level(lvl.sma200),
+            _fmt_level(lvl.high52),
+            _fmt_level(lvl.low52),
+            _fmt_level(lvl.atr),
+            lvl.note,
+        )
+    out.append(Group(_num_section(6, "Key Levels"), kt))
+
+    # 7. Themes
+    theme_lines = "\n".join(f"  • [bold]{t.title}[/bold] — {t.why}" for t in b.themes)
+    out.append(Group(_num_section(7, "Themes to Watch"), Text.from_markup(theme_lines)))
+
+    # 8. Watchlist
+    wt = Table()
+    wt.add_column("Symbol", style="bold")
+    wt.add_column("Rationale")
+    wt.add_column("Catalyst")
+    for w in b.watchlist:
+        wt.add_row(w.symbol, w.rationale, w.catalyst)
+    out.append(
+        Group(
+            _num_section(8, "Build a Watchlist"),
+            wt,
+            Text(
+                "  Not recommendations — candidates to study before the open.", style="dim italic"
+            ),
+        )
+    )
+
+    # 9. Risks
+    risk_lines = "\n".join(f"  • {r}" for r in b.risks)
+    out.append(Group(_num_section(9, "Risk Assessment"), Text(risk_lines)))
+
+    # 10. Mindset
+    out.append(
+        Panel(
+            Text.from_markup(f"{b.mindset}\n\n[bold cyan]{b.prompt_question}[/bold cyan]"),
+            title="10. Weekly Mindset",
+            title_align="left",
+            border_style="cyan",
+        )
+    )
+    return out
+
+
+def _md_pct(value: Decimal | None) -> str:
+    if value is None:
+        return "—"
+    return f"{'+' if value >= 0 else ''}{value:.2f}%"
+
+
+def sunday_prep_markdown(b: SundayPrepBriefing) -> str:
+    """GitHub-flavored markdown of the briefing — the snapshot artifact a Claude
+    session (or any reader) can narrate over."""
+    lines: list[str] = []
+    lines.append("## TRD Sunday Prep")
+    lines.append(f"*Week of {b.week_start:%b %d} - {b.week_end:%b %d, %Y}*")
+    lines.append("")
+    lines.append(b.tone)
+    lines.append("")
+
+    lines.append("### 1. Futures Snapshot")
+    lines.append("| Contract | Last | Change |")
+    lines.append("|---|--:|--:|")
+    for f in b.futures:
+        flag = " ⚠️" if f.unusual else ""
+        lines.append(f"| {f.label} | {_fmt_level(f.price)} | {_md_pct(f.change_pct)}{flag} |")
+    lines.append("")
+
+    lines.append("### 2. Week's Major Events")
+    if b.econ_events:
+        lines.append("| Day | Time | Event | Why |")
+        lines.append("|---|---|---|---|")
+        for e in b.econ_events:
+            lines.append(f"| {e.day} {e.date:%m/%d} | {e.time_et or '—'} | {e.name} | {e.why} |")
+    else:
+        lines.append("Quiet macro calendar.")
+    lines.append("")
+
+    lines.append("### 3. Earnings Calendar")
+    if b.earnings:
+        lines.append("| Day | Symbol | Company | Session | Why |")
+        lines.append("|---|---|---|---|---|")
+        for e in b.earnings:
+            lines.append(
+                f"| {e.day} {e.date:%m/%d} | {e.symbol} | {e.name} | {e.timing} | {e.why} |"
+            )
+    else:
+        lines.append("No tracked-universe names report this week.")
+    lines.append("")
+
+    lines.append("### 4. Market Leadership")
+    for mv in b.sector_leaders:
+        lines.append(f"- ▲ **{mv.name}** ({mv.symbol}) {_md_pct(mv.week_pct)}")
+    for mv in b.sector_laggards:
+        lines.append(f"- ▼ {mv.name} ({mv.symbol}) {_md_pct(mv.week_pct)}")
+    lines.append("")
+
+    lines.append("### 5. Volatility Check")
+    vix = b.volatility.vix
+    lines.append(
+        f"VIX **{vix if vix is not None else '—'}** — {b.volatility.band}. {b.volatility.note}"
+    )
+    lines.append("")
+
+    lines.append("### 6. Key Levels")
+    lines.append("| ETF | Price | 50d | 200d | 52w Hi | 52w Lo | ATR | Read |")
+    lines.append("|---|--:|--:|--:|--:|--:|--:|---|")
+    for lvl in b.key_levels:
+        lines.append(
+            f"| {lvl.symbol} | {_fmt_level(lvl.price)} | {_fmt_level(lvl.sma50)} | "
+            f"{_fmt_level(lvl.sma200)} | {_fmt_level(lvl.high52)} | {_fmt_level(lvl.low52)} | "
+            f"{_fmt_level(lvl.atr)} | {lvl.note} |"
+        )
+    lines.append("")
+
+    lines.append("### 7. Themes to Watch")
+    for t in b.themes:
+        lines.append(f"- **{t.title}** — {t.why}")
+    lines.append("")
+
+    lines.append("### 8. Build a Watchlist")
+    lines.append("| Symbol | Rationale | Catalyst |")
+    lines.append("|---|---|---|")
+    for w in b.watchlist:
+        lines.append(f"| {w.symbol} | {w.rationale} | {w.catalyst} |")
+    lines.append("")
+    lines.append("*Not recommendations — candidates to study before the open.*")
+    lines.append("")
+
+    lines.append("### 9. Risk Assessment")
+    for r in b.risks:
+        lines.append(f"- {r}")
+    lines.append("")
+
+    lines.append("### 10. Weekly Mindset")
+    lines.append(b.mindset)
+    lines.append("")
+    lines.append(f"**{b.prompt_question}**")
+    lines.append("")
+    return "\n".join(lines)
+
+
+def _md_sector(symbol: str | None, pct: float | None) -> str:
+    if symbol is None:
+        return "—"
+    return f"{symbol} {pct:+.2f}%" if pct is not None else symbol
+
+
+def prep_history_table(rows: list[PrepSnapshotRow]) -> Table:
+    """Saved Sunday Prep briefings as a week-over-week trend."""
+    table = Table(title="Sunday Prep history", title_justify="left")
+    table.add_column("Date")
+    table.add_column("Week of")
+    table.add_column("VIX", justify="right")
+    table.add_column("Regime")
+    table.add_column("Breadth", justify="right")
+    table.add_column("Top sector")
+    table.add_column("Worst sector")
+    table.add_column("FOMC", justify="center")
+    table.add_column("Earn", justify="right")
+    for r in rows:
+        vix = f"{r.vix:.2f}" if r.vix is not None else "—"
+        breadth = f"{r.avg_futures_pct:+.2f}%" if r.avg_futures_pct is not None else "—"
+        table.add_row(
+            str(r.snapshot_date),
+            f"{r.week_start:%b %d}",
+            vix,
+            r.vix_band.split(" — ")[0],
+            breadth,
+            _md_sector(r.top_sector, r.top_sector_pct),
+            _md_sector(r.worst_sector, r.worst_sector_pct),
+            "●" if r.fomc_week else "",
+            str(r.earnings_count),
+        )
+    return table
