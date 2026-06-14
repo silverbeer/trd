@@ -20,6 +20,10 @@ trd account add fidelity              # one account per brokerage (--type simula
 trd account ls
 trd sync [--full]                     # refresh quotes + daily bars + earnings (--full = 2y backfill)
 trd portfolio [--account NAME]        # holdings with live P&L
+trd equity [--account NAME] [--days N | --months N] [--all] [--json]
+                                      # equity curve: portfolio value over time, period return,
+                                      # XIRR, max drawdown. Derived from txn FIFO × price_daily
+                                      # (no snapshots); depth bounded by sync history
 trd lots [SYMBOL] [--account NAME]    # per-purchase detail: buy date, paid/share, total cost, gain
 trd quote AAPL                        # live quote for any symbol
 trd buy AAPL 10 [--price 213.50] [--account main] [--date 2026-06-10] [--fees 1] [--note ...]
