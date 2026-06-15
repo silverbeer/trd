@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Dated launchd job: GLP-1 experiment check-in (LLY vs NVO paper sims).
+  Fires Sep 14 at 9:00 AM local time on the mac mini — the 3-month mark of the
+  experiment started 2026-06-14. (StartCalendarInterval with Month+Day recurs
+  annually; leave it as a yearly GLP-1 review, or unload after it fires once.)
+
+  Install (replace USERNAME with your account; this runs on the mini ONLY):
+    cp deploy/io.silverbeer.trd.glp1checkin.plist ~/Library/LaunchAgents/
+    launchctl load -w ~/Library/LaunchAgents/io.silverbeer.trd.glp1checkin.plist
+  Needs Full Disk Access on /bin/zsh to write the iCloud report (same as sunday-prep).
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>io.silverbeer.trd.glp1checkin</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/zsh</string>
+        <string>/Users/USERNAME/gitrepos/trd/deploy/glp1-checkin.sh</string>
+    </array>
+
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Month</key>
+        <integer>9</integer>
+        <key>Day</key>
+        <integer>14</integer>
+        <key>Hour</key>
+        <integer>9</integer>
+        <key>Minute</key>
+        <integer>0</integer>
+    </dict>
+
+    <key>RunAtLoad</key>
+    <false/>
+
+    <key>StandardOutPath</key>
+    <string>/Users/USERNAME/Library/Logs/trd-glp1-checkin.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/USERNAME/Library/Logs/trd-glp1-checkin.err</string>
+</dict>
+</plist>
