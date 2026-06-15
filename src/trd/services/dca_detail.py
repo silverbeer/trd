@@ -221,11 +221,17 @@ class DcaDetailService:
             )
         first = min(t.executed_at.date() for t in txns)
         last = max(t.executed_at.date() for t in txns)
-        due = _due_months(first, date.today(), plan.day_of_month)
+        today = date.today()
+        due = _due_months(first, today, plan.day_of_month)
+        current_month = (today.year, today.month)
         streak = 0
         for month in reversed(due):
             if month in invested_months:
                 streak += 1
+            elif month == current_month:
+                # The current month is due but still investable — pending, not a
+                # missed month yet. Don't let it reset the streak until it lapses.
+                continue
             else:
                 break
         return CadenceHealth(
