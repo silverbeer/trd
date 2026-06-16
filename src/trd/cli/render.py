@@ -12,6 +12,7 @@ from trd.services.dashboard import Dashboard, Holding
 from trd.services.dca_detail import PlanDetail
 from trd.services.dca_projection import BacktestResult, ForecastResult
 from trd.services.equity_curve import EquityCurve
+from trd.services.movers import MoverRow
 from trd.services.plan import PlanStatus
 from trd.services.sunday_prep import SundayPrepBriefing
 
@@ -923,6 +924,39 @@ def equity_daily_table(curve: EquityCurve, limit: int = 30) -> Table:
             fmt_money(p.value),
             fmt_signed(p.day_pnl),
             _fmt_pct_signed(p.day_pnl_pct),
+        )
+    return table
+
+
+def movers_table(rows: list[MoverRow], title: str) -> Table:
+    """Owned + watched names ranked by move. Owned carry P&L; watch-only show price/day."""
+    table = Table(title=title, title_justify="left")
+    table.add_column("Symbol", style="bold")
+    table.add_column("", style="dim")  # own / watch tag
+    table.add_column("Price", justify="right")
+    table.add_column("Day Δ%", justify="right")
+    table.add_column("Day $", justify="right")
+    table.add_column("30d", justify="right")
+    table.add_column("Value", justify="right")
+    table.add_column("P&L", justify="right")
+    table.add_column("P&L%", justify="right")
+    for r in rows:
+        if r.owned and r.watched:
+            tag = "own+watch"
+        elif r.owned:
+            tag = "own"
+        else:
+            tag = "watch"
+        table.add_row(
+            r.symbol,
+            tag,
+            fmt_money(r.price),
+            fmt_signed_pct(r.day_pct),
+            fmt_signed(r.day_change),
+            trend_change(r.spark),
+            fmt_money(r.value),
+            fmt_signed(r.pl),
+            heat_pct(r.pl_pct),
         )
     return table
 

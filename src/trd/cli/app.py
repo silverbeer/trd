@@ -26,6 +26,7 @@ from trd.cli.render import (
     forecast_table,
     indicator_panel,
     lots_table,
+    movers_table,
     plans_pnl_table,
     positions_table,
     prep_history_table,
@@ -45,6 +46,7 @@ from trd.services import (
     EarningsService,
     EquityCurveService,
     IndicatorService,
+    MoversService,
     PlanService,
     PortfolioService,
     PrepHistoryService,
@@ -310,6 +312,31 @@ def equity(
         return
     for renderable in equity_curve_renderables(curve):
         console.print(renderable)
+
+
+@app.command()
+def movers(
+    sort: Annotated[str, typer.Option("--sort", "-s", help="day | pl | value | symbol.")] = "day",
+    include_all: Annotated[
+        bool, typer.Option("--all", help="Include simulation (paper) accounts.")
+    ] = False,
+) -> None:
+    """What's up or down across everything you own and watch, ranked.
+
+    Owned names carry P&L (today's $ + cumulative); watch-only names show price and
+    the day move. Live quotes each run — no sync needed.
+    """
+    if sort not in ("day", "pl", "value", "symbol"):
+        err_console.print("[red]error:[/red] --sort must be day, pl, value, or symbol.")
+        raise typer.Exit(code=1)
+    settings = get_settings()
+    service = MoversService(connect(settings.db_path), YFinanceProvider())
+    with console.status("Fetching quotes..."):
+        rows = service.board(sort=sort, include_simulation=include_all)
+    if not rows:
+        console.print("Nothing owned or watched yet. Buy or [bold]trd watch add[/bold] something.")
+        return
+    console.print(movers_table(rows, "Movers — owned + watched"))
 
 
 @app.command()
