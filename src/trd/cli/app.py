@@ -26,6 +26,7 @@ from trd.cli.render import (
     forecast_table,
     indicator_panel,
     lots_table,
+    plans_pnl_table,
     positions_table,
     prep_history_table,
     sunday_prep_markdown,
@@ -906,12 +907,22 @@ def plan_status(account: PlanAccountOpt = None) -> None:
 
 
 @plan_app.command("ls")
-def plan_ls() -> None:
-    """All contribution plans."""
+def plan_ls(
+    pnl: Annotated[
+        bool,
+        typer.Option("--pnl", help="Show each plan's value, P&L, and vs-SPY (fetches quotes)."),
+    ] = False,
+) -> None:
+    """All contribution plans (add --pnl for value / P&L / vs-SPY per plan)."""
     service = _plan_service()
     plans = service.list_plans()
     if not plans:
         console.print("No plans. Run [bold]trd plan set[/bold] or [bold]trd sim init[/bold].")
+        return
+    if pnl:
+        with console.status("Fetching quotes..."):
+            statuses = [service.status(plan.account.name) for plan in plans]
+        console.print(plans_pnl_table(statuses))
         return
     table = Table(title="DCA plans", title_justify="left")
     table.add_column("Account", style="bold")
