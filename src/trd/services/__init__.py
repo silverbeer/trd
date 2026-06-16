@@ -4,6 +4,7 @@ from trd.services.dca_projection import DcaProjectionService
 from trd.services.earnings import EarningsService
 from trd.services.equity_curve import EquityCurve, EquityCurveService
 from trd.services.indicators import IndicatorService
+from trd.services.movers import MoverRow, MoversService
 from trd.services.plan import PlanService
 from trd.services.portfolio import PortfolioService
 from trd.services.prep_history import PrepHistoryService
@@ -19,6 +20,8 @@ __all__ = [
     "EquityCurve",
     "EquityCurveService",
     "IndicatorService",
+    "MoverRow",
+    "MoversService",
     "PlanService",
     "PortfolioService",
     "PrepHistoryService",
