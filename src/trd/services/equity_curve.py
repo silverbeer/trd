@@ -28,6 +28,8 @@ class EquityPoint(BaseModel):
     value: Decimal  # market value of holdings
     cost_basis: Decimal  # FIFO cost of open lots held that day
     drawdown_pct: float  # vs the running peak, <= 0
+    day_pnl: Decimal = Decimal(0)  # flow-adjusted market P&L vs the prior point
+    day_pnl_pct: float | None = None  # day_pnl as % of the prior day's value
 
     @property
     def unrealized_pl(self) -> Decimal:
@@ -135,9 +137,20 @@ class EquityCurveService:
             i = bisect_right(ds, d)
             return price_vals[iid][i - 1] if i > 0 else None
 
+        # Net external cash invested per day (buys add, sell proceeds subtract) — used to
+        # strip contributions out of the day-over-day P&L so it reflects only price moves.
+        flow_by_date: dict[date, Decimal] = defaultdict(Decimal)
+        for t in txns:
+            amount = t.quantity * t.price
+            if t.side.value == "buy":
+                flow_by_date[t.executed_at.date()] += amount + t.fees
+            else:
+                flow_by_date[t.executed_at.date()] -= amount - t.fees
+
         points: list[EquityPoint] = []
         peak = Decimal(0)
         max_dd = 0.0
+        prev_value: Decimal | None = None
         # Holdings change only on transaction dates — recompute FIFO lazily.
         pair_qty: dict[tuple[int, int], Decimal] = {}
         pair_cost: dict[tuple[int, int], Decimal] = {}
@@ -171,7 +184,25 @@ class EquityCurveService:
                 peak = value
             dd = float((value - peak) / peak * 100) if peak > 0 else 0.0
             max_dd = min(max_dd, dd)
-            points.append(EquityPoint(date=d, value=value, cost_basis=cost_basis, drawdown_pct=dd))
+
+            # Flow-adjusted day P&L: value move minus the day's net contributions.
+            day_pnl = Decimal(0)
+            day_pnl_pct: float | None = None
+            if prev_value is not None:
+                day_pnl = value - prev_value - flow_by_date.get(d, Decimal(0))
+                if prev_value > 0:
+                    day_pnl_pct = float(day_pnl / prev_value * 100)
+            points.append(
+                EquityPoint(
+                    date=d,
+                    value=value,
+                    cost_basis=cost_basis,
+                    drawdown_pct=dd,
+                    day_pnl=day_pnl,
+                    day_pnl_pct=day_pnl_pct,
+                )
+            )
+            prev_value = value
 
         start_value = points[0].value
         end_value = points[-1].value
