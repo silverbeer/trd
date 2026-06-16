@@ -905,3 +905,22 @@ def prep_history_table(rows: list[PrepSnapshotRow]) -> Table:
             str(r.earnings_count),
         )
     return table
+
+
+def equity_daily_table(curve: EquityCurve, limit: int = 30) -> Table:
+    """Day-over-day flow-adjusted P&L (contributions stripped out), newest first."""
+    table = Table(title=f"Daily P&L — {curve.account_label}", title_justify="left")
+    table.add_column("Date")
+    table.add_column("Value", justify="right")
+    table.add_column("Day +/-", justify="right")
+    table.add_column("Day %", justify="right")
+    # Skip the first point (no prior day to diff against); show the most recent `limit`.
+    rows = [p for p in curve.points[1:]][-limit:]
+    for p in reversed(rows):
+        table.add_row(
+            str(p.date),
+            fmt_money(p.value),
+            fmt_signed(p.day_pnl),
+            _fmt_pct_signed(p.day_pnl_pct),
+        )
+    return table

@@ -112,6 +112,25 @@ def test_xirr_present_for_long_rising_series(conn: duckdb.DuckDBPyConnection) ->
     assert curve.xirr > 0
 
 
+def test_daily_pnl_strips_contributions(conn: duckdb.DuckDBPyConnection) -> None:
+    acct = _account(conn)
+    start = TODAY - timedelta(days=3)
+    iid = _seed_prices(conn, "AAPL", start, [100, 100, 110, 110])
+    _buy(conn, acct, iid, "10", "100", start)  # day 0
+    # A contribution lands on the same day the price rises 100 -> 110.
+    _buy(conn, acct, iid, "5", "110", start + timedelta(days=2))
+    curve = EquityCurveService(conn).curve()
+    by_date = {p.date: p for p in curve.points}
+
+    move_day = by_date[start + timedelta(days=2)]
+    # Only the 10 held shares' price move counts (+$100); the $550 buy is stripped out.
+    assert move_day.day_pnl == Decimal("100")
+    assert move_day.day_pnl_pct == pytest.approx(10.0)  # 100 / 1000 prior value
+    # First point has no prior day to diff against.
+    assert curve.points[0].day_pnl == Decimal("0")
+    assert curve.points[0].day_pnl_pct is None
+
+
 def test_no_transactions_raises(conn: duckdb.DuckDBPyConnection) -> None:
     _account(conn)
     with pytest.raises(TrdError):

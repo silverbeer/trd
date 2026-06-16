@@ -19,6 +19,7 @@ from trd.cli.render import (
     dca_symbols_table,
     earnings_table,
     equity_curve_renderables,
+    equity_daily_table,
     fmt_money,
     fmt_signed,
     fmt_signed_pct,
@@ -282,6 +283,10 @@ def equity(
     months: Annotated[
         int, typer.Option("--months", help="Look back this many months (overridden by --days).")
     ] = 0,
+    daily: Annotated[
+        bool,
+        typer.Option("--daily", help="Show day-over-day P&L (contributions stripped) as a table."),
+    ] = False,
     as_json: Annotated[bool, typer.Option("--json", help="Emit the curve as JSON.")] = False,
 ) -> None:
     """Portfolio value over time: equity curve, return, XIRR, and max drawdown.
@@ -298,6 +303,9 @@ def equity(
         return
     if as_json:
         console.print_json(curve.model_dump_json())
+        return
+    if daily:
+        console.print(equity_daily_table(curve))
         return
     for renderable in equity_curve_renderables(curve):
         console.print(renderable)
