@@ -13,6 +13,7 @@ from trd.services.dca_detail import PlanDetail
 from trd.services.dca_projection import BacktestResult, ForecastResult
 from trd.services.equity_curve import EquityCurve
 from trd.services.movers import MoverRow
+from trd.services.plan import PlanStatus
 from trd.services.sunday_prep import SundayPrepBriefing
 
 MONEY = "{:,.2f}"
@@ -956,5 +957,33 @@ def movers_table(rows: list[MoverRow], title: str) -> Table:
             fmt_money(r.value),
             fmt_signed(r.pl),
             heat_pct(r.pl_pct),
+        )
+    return table
+
+
+def plans_pnl_table(statuses: list[PlanStatus]) -> Table:
+    """Every contribution plan with its value, P&L, and lead/lag vs SPY — the
+    at-a-glance 'which plans are winning' board."""
+    table = Table(title="DCA plans — P&L", title_justify="left")
+    table.add_column("Account", style="bold")
+    table.add_column("Type")
+    table.add_column("Strategy")
+    table.add_column("Mo", justify="right")
+    table.add_column("Invested", justify="right")
+    table.add_column("Value", justify="right")
+    table.add_column("P&L", justify="right")
+    table.add_column("P&L%", justify="right")
+    table.add_column("vs SPY", justify="right")
+    for s in statuses:
+        table.add_row(
+            s.plan.account.name,
+            "paper" if s.plan.is_paper else "real",
+            s.plan.strategy_label,
+            str(s.months_invested),
+            fmt_money(s.invested),
+            fmt_money(s.value),
+            fmt_signed(s.pl),
+            heat_pct(s.pl_pct),
+            fmt_signed(s.vs_benchmark),
         )
     return table
