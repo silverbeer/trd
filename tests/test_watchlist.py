@@ -86,3 +86,40 @@ def test_board_stale_fallback(watchlist: WatchlistService, provider) -> None:
     assert row.price_stale
     assert row.quote is not None
     assert row.quote.price == Decimal("120.00")
+
+
+def test_board_marks_owned_and_type(conn, provider) -> None:
+    from trd.models import AccountType, InstrumentType, Side
+    from trd.repos import AccountRepo
+    from trd.services import PortfolioService
+
+    AccountRepo(conn).create("main", AccountType.REAL)
+    provider.add_symbol("SMH", price="600.00", type_=InstrumentType.ETF)
+    PortfolioService(conn, provider).record_trade("main", "AAPL", Side.BUY, Decimal("5"))
+
+    wl = WatchlistService(conn, provider)
+    wl.add("AAPL")  # owned + watched (stock)
+    wl.add("NVDA")  # watched only (stock)
+    wl.add("SMH")  # watched only (ETF)
+    rows = {r.instrument.symbol: r for r in wl.board()}
+
+    assert rows["AAPL"].owned is True
+    assert rows["NVDA"].owned is False
+    assert rows["SMH"].owned is False
+    assert rows["AAPL"].instrument.type == InstrumentType.STOCK
+    assert rows["SMH"].instrument.type == InstrumentType.ETF
+
+
+def test_board_owned_clears_after_full_sell(conn, provider) -> None:
+    from trd.models import AccountType, Side
+    from trd.repos import AccountRepo
+    from trd.services import PortfolioService
+
+    AccountRepo(conn).create("main", AccountType.REAL)
+    pf = PortfolioService(conn, provider)
+    pf.record_trade("main", "AAPL", Side.BUY, Decimal("5"))
+    pf.record_trade("main", "AAPL", Side.SELL, Decimal("5"))  # net zero -> not owned
+
+    wl = WatchlistService(conn, provider)
+    wl.add("AAPL")
+    assert wl.board()[0].owned is False
