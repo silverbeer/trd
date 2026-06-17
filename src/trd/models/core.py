@@ -176,6 +176,7 @@ class BoardRow(BaseModel):
     quote: Quote | None = None
     price_stale: bool = False
     next_earnings: date | None = None
+    owned: bool = False  # do you hold a net position in this symbol?
 
 
 class DailyBar(BaseModel):

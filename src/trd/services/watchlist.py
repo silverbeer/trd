@@ -1,9 +1,12 @@
+from collections import defaultdict
+from decimal import Decimal
+
 import duckdb
 
 from trd.errors import TrdError
-from trd.models import BoardRow, Quote
+from trd.models import BoardRow, Quote, Side
 from trd.providers.base import MarketDataProvider
-from trd.repos import EarningsRepo, InstrumentRepo, PriceRepo, WatchlistRepo
+from trd.repos import EarningsRepo, InstrumentRepo, PriceRepo, TransactionRepo, WatchlistRepo
 
 DEFAULT_WATCHLIST = "default"
 
@@ -16,6 +19,15 @@ class WatchlistService:
         self.watchlists = WatchlistRepo(conn)
         self.prices = PriceRepo(conn)
         self.earnings = EarningsRepo(conn)
+        self.txns = TransactionRepo(conn)
+
+    def _owned_instrument_ids(self) -> set[int]:
+        """Instruments with a net long position across all accounts (buys minus sells)."""
+        net: dict[int, Decimal] = defaultdict(Decimal)
+        for txn in self.txns.list_chronological():
+            sign = Decimal(1) if txn.side == Side.BUY else Decimal(-1)
+            net[txn.instrument_id] += sign * txn.quantity
+        return {iid for iid, qty in net.items() if qty > 0}
 
     def add(self, symbol: str, list_name: str = DEFAULT_WATCHLIST) -> bool:
         """Add symbol to a watchlist (creating list and instrument as needed).
@@ -46,6 +58,7 @@ class WatchlistService:
         items = self.watchlists.items(watchlist_id)
         symbols = list({instrument.symbol for _, instrument in items})
         quotes = self.provider.get_quotes(symbols)
+        owned_ids = self._owned_instrument_ids()
 
         rows: list[BoardRow] = []
         for wl_name, instrument in items:
@@ -67,6 +80,7 @@ class WatchlistService:
                     quote=quote,
                     price_stale=stale,
                     next_earnings=self.earnings.next_for_instrument(instrument.id),
+                    owned=instrument.id in owned_ids,
                 )
             )
         return rows

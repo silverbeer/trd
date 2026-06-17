@@ -153,12 +153,17 @@ def _fmt_earnings_date(when: date | None, today: date) -> str:
     return f"[bold red]{text}[/bold red]" if days <= 7 else text
 
 
+_TYPE_LABEL = {"etf": "ETF", "stock": "Stock", "crypto": "Crypto"}
+
+
 def board_table(rows: list[BoardRow], title: str, show_list_column: bool) -> Table:
     today = date.today()
     table = Table(title=title, title_justify="left")
     if show_list_column:
         table.add_column("List", style="dim")
     table.add_column("Symbol", style="bold")
+    table.add_column("Own", justify="center")
+    table.add_column("Type", style="dim")
     table.add_column("Price", justify="right")
     table.add_column("Day Δ%", justify="right")
     table.add_column("52w Pos", justify="right")
@@ -169,6 +174,8 @@ def board_table(rows: list[BoardRow], title: str, show_list_column: bool) -> Tab
         symbol = row.instrument.symbol + (" [dim](stale)[/dim]" if row.price_stale else "")
         cells = [
             symbol,
+            "[green]●[/green]" if row.owned else "",
+            _TYPE_LABEL.get(row.instrument.type.value, row.instrument.type.value),
             fmt_money(quote.price if quote else None),
             fmt_signed_pct(quote.day_change_pct if quote else None),
             _fmt_year_range(quote.year_range_pct if quote else None),
