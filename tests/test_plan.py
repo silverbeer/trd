@@ -224,6 +224,28 @@ def test_update_plan_partial(plans: PlanService) -> None:
         plans.update_plan("sim")
 
 
+def test_update_plan_reallocates(plans: PlanService) -> None:
+    _sim(plans, allocations={"SPY": Decimal(40), "QQQ": Decimal(60)})
+    plan = plans.update_plan("sim", allocations={"IVV": Decimal(25), "IXUS": Decimal(75)})
+    assert plan.strategy == "allocation"
+    assert plan.allocations == {"IXUS": Decimal(75), "IVV": Decimal(25)}
+    assert "SPY" not in plan.allocations and "QQQ" not in plan.allocations
+
+
+def test_update_plan_realloc_switches_ticker_strategy(plans: PlanService) -> None:
+    _sim(plans, strategy="ticker", ticker="SPY")
+    plan = plans.update_plan("sim", allocations={"IVV": Decimal(50), "QQQM": Decimal(50)})
+    assert plan.strategy == "allocation"
+    assert plan.strategy_ticker is None
+    assert plan.allocations == {"IVV": Decimal(50), "QQQM": Decimal(50)}
+
+
+def test_update_plan_realloc_weights_must_sum_100(plans: PlanService) -> None:
+    _sim(plans)
+    with pytest.raises(TrdError, match="sum to 100"):
+        plans.update_plan("sim", allocations={"IVV": Decimal(40), "IXUS": Decimal(50)})
+
+
 def test_pause_blocks_invest_resume_unblocks(plans: PlanService) -> None:
     _sim(plans)
     plans.pause("sim")

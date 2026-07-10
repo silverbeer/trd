@@ -1096,8 +1096,13 @@ def plan_edit(
         int | None, typer.Option("--day", help="Scheduled buy day of month (1-31).")
     ] = None,
     note: NoteOpt = None,
+    alloc: AllocOpt = None,
 ) -> None:
-    """Update an existing plan's amount, scheduled day, or goal note."""
+    """Update an existing plan's amount, scheduled day, goal note, or allocation.
+
+    --alloc re-targets the plan (weights sum to 100); recorded buys keep their
+    symbols, only future contributions follow the new split.
+    """
     service = _plan_service()
     try:
         name = account or service.resolve_default_account()
@@ -1106,12 +1111,16 @@ def plan_edit(
             monthly=_parse_decimal(monthly, "monthly amount") if monthly else None,
             day_of_month=day,
             note=note,
+            allocations=_parse_allocs(alloc),
         )
     except TrdError as exc:
         _fail(exc)
         return
     day_text = f", day {plan.day_of_month}" if plan.day_of_month else ""
     console.print(f"Plan on [bold]{name}[/bold]: {fmt_money(plan.monthly_amount)}/month{day_text}.")
+    if plan.allocations:
+        legs = " / ".join(f"{w.normalize():f}% {s}" for s, w in plan.allocations.items())
+        console.print(f"[dim]Allocation: {legs}[/dim]")
 
 
 @plan_app.command("pause")

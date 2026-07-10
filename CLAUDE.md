@@ -46,6 +46,9 @@ trd dca history [--limit N]           # every contribution event with legs and p
 trd dca forecast [--years 10] [--seed N]   # CAGR projection + Monte Carlo p10/p50/p90 bands
 trd dca backtest [--years 10]         # replay the exact plan against real (adjusted) history
 trd dca status|ls|edit|pause|resume   # quick view, list, partial update, lifecycle
+                                      # edit --alloc IVV=25 --alloc IXUS=25 ... re-targets the plan
+                                      # (weights sum to 100); recorded buys keep their symbols,
+                                      # only future contributions follow the new split
 trd sunday-prep [--json] [--snapshot] [--date ISO]   # alias 'trd prep'
                                       # week-ahead briefing: futures, macro calendar, curated-universe
                                       # earnings, sector leadership, VIX, SPY/QQQ/IWM levels, themes,

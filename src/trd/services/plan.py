@@ -105,11 +105,7 @@ class PlanService:
         if strategy == "ticker" and not ticker:
             raise TrdError("The 'ticker' strategy needs --ticker.")
         if strategy == "allocation":
-            if not allocations:
-                raise TrdError("The 'allocation' strategy needs --alloc SYMBOL=WEIGHT entries.")
-            total = sum(allocations.values(), Decimal(0))
-            if total != 100:
-                raise TrdError(f"Allocation weights must sum to 100, got {total.normalize():f}.")
+            self._validate_allocations(allocations)
         if monthly <= 0:
             raise TrdError("Monthly amount must be positive.")
         self._validate_day(day_of_month)
@@ -151,6 +147,14 @@ class PlanService:
         if day_of_month is not None and not 1 <= day_of_month <= 31:
             raise TrdError(f"--day must be 1-31, got {day_of_month}.")
 
+    @staticmethod
+    def _validate_allocations(allocations: dict[str, Decimal] | None) -> None:
+        if not allocations:
+            raise TrdError("The 'allocation' strategy needs --alloc SYMBOL=WEIGHT entries.")
+        total = sum(allocations.values(), Decimal(0))
+        if total != 100:
+            raise TrdError(f"Allocation weights must sum to 100, got {total.normalize():f}.")
+
     def _plan_row(self, account_id: int) -> tuple | None:
         return self.conn.execute(
             "SELECT id, monthly_amount, strategy, strategy_ticker, note, day_of_month, active "
@@ -164,14 +168,23 @@ class PlanService:
         monthly: Decimal | None = None,
         day_of_month: int | None = None,
         note: str | None = None,
+        allocations: dict[str, Decimal] | None = None,
     ) -> Plan:
-        """Partial update of an existing plan (set_plan rejects duplicates)."""
+        """Partial update of an existing plan (set_plan rejects duplicates).
+
+        Passing ``allocations`` re-targets the plan: it switches to the
+        'allocation' strategy and replaces the plan's legs. Recorded
+        contributions keep their original symbols — only future buys follow the
+        new split.
+        """
         plan = self.get_plan(account_name)
         if monthly is not None and monthly <= 0:
             raise TrdError("Monthly amount must be positive.")
         self._validate_day(day_of_month)
-        if monthly is None and day_of_month is None and note is None:
-            raise TrdError("Nothing to update — pass --monthly, --day, or --note.")
+        if allocations is not None:
+            self._validate_allocations(allocations)
+        if monthly is None and day_of_month is None and note is None and allocations is None:
+            raise TrdError("Nothing to update — pass --monthly, --day, --note, or --alloc.")
         self.conn.execute(
             """
             UPDATE contribution_plan SET
@@ -182,6 +195,18 @@ class PlanService:
             """,
             [monthly, day_of_month, note, plan.id],
         )
+        if allocations is not None:
+            self.conn.execute(
+                "UPDATE contribution_plan SET strategy = 'allocation', strategy_ticker = NULL "
+                "WHERE id = ?",
+                [plan.id],
+            )
+            self.conn.execute("DELETE FROM plan_allocation WHERE plan_id = ?", [plan.id])
+            for symbol, weight in allocations.items():
+                self.conn.execute(
+                    "INSERT INTO plan_allocation (plan_id, symbol, weight) VALUES (?, ?, ?)",
+                    [plan.id, symbol.upper(), weight],
+                )
         return self.get_plan(account_name)
 
     def pause(self, account_name: str) -> Plan:
