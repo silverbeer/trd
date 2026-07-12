@@ -1,0 +1,17 @@
+# QE plugin config (silverbeer/qe-plugin) — read by /qe and /generate-tests
+stack: python
+test_cmd: "uv run pytest -q"
+coverage_cmd: "uv run pytest --cov=src --cov-report=json -q"
+coverage_report: "coverage.json"
+coverage_format: python-json
+test_dir: "tests"
+source_dir: "src"
+
+# Goals calibrated to 2026-07-12 baseline (80.0%) — floor just below, aspire higher.
+goals:
+  coverage_total_min: 75
+  coverage_no_regression: true
+  coverage_target: 85
+  coverage_module_min: 40
+  # yf.py = thin yfinance wrapper — network layer, consumers tested via FakeProvider seam
+  exempt: "src/trd/providers/yf.py"

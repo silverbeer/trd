@@ -20,3 +20,7 @@ htmlcov/
 
 # OS
 .DS_Store
+
+# qe-plugin state
+.qe/coverage_history.jsonl
+coverage.json
