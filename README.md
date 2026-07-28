@@ -47,6 +47,8 @@ trd engine positions   # open trades: entry, stop (↑ = trailing in force), tar
 trd engine signals     # every signal fired, taken or passed over, with its reason
 trd engine report      # win rate, avg win/loss, expectancy in R, per strategy
 trd engine rules       # what each entry strategy looks for, and all five exit rules
+trd engine backtest    # replay the same rules over 10y of history — the report,
+                       #   but with hundreds of trades instead of years of waiting
 ```
 
 Four entry strategies (`momentum`, `breakout`, `pullback`, `macd_cross`), all gated on the
@@ -57,6 +59,15 @@ unchanged.
 
 Read **expectancy** before win rate: 40% winners at +0.5R beats 70% winners that give it
 back on the losers.
+
+**Live vs replayed.** The scorecard needs ~144 trades per strategy before an edge is
+distinguishable from luck, and live paper-trading produces ~39 a year. `trd engine
+backtest` closes that gap: it replays the *same* rule code over stored daily bars
+(run `trd sync --years 10` first) and prints the same scorecard, so live and
+historical results sit on one scale. Gaps fill at the open, a bar that touches both
+stop and target counts the stop, and a `--fill close` / `--no-blackout` rerun bounds
+the assumptions. Treat every backtest number as an upper bound — today's universe is
+the survivors, and simulated fills pay no spread.
 
 **Running it unattended:**
 
