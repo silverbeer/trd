@@ -30,17 +30,45 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
+# The engine's own database. Deliberately NOT your real trd database: this one
+# holds a paper account and ten tickers' price history, nothing else.
+ENGINE_HOME="${ENGINE_HOME:-$HOME/.trd-engine}"
+
 CURRENT_CONTEXT=$(kubectl config current-context)
 echo -e "${BLUE}========================================${NC}"
 echo -e "${BLUE}K3s Deployment: trd engine${NC}"
 echo -e "${BLUE}========================================${NC}"
-echo -e "Context: ${YELLOW}${CURRENT_CONTEXT}${NC}"
+echo -e "Context:     ${YELLOW}${CURRENT_CONTEXT}${NC}"
+echo -e "Engine DB:   ${YELLOW}${ENGINE_HOME}${NC}  (paper only)"
+echo -e "Your real DB is not touched by any of this."
 echo ""
 
 # The engine writes trades. Deploying it to the wrong cluster is not a no-op, so
 # make the operator look at the context name before anything happens.
 read -r -p "Deploy to this context? [y/N] " confirm
 [[ "$confirm" == "y" || "$confirm" == "Y" ]] || { echo "Aborted."; exit 1; }
+echo ""
+
+# --- Step 0: make sure the database the pod mounts actually has an engine in it.
+# A pod started against an unseeded directory just fails every five minutes with
+# "No engine configured", which is a slow and confusing way to find this out.
+if ! command -v trd &> /dev/null; then
+    echo -e "${RED}❌ trd is not on PATH. Run: uv tool install --editable .${NC}"
+    exit 1
+fi
+
+if ! TRD_HOME="$ENGINE_HOME" trd engine rules &> /dev/null \
+   || ! TRD_HOME="$ENGINE_HOME" trd engine positions &> /dev/null; then
+    echo -e "${YELLOW}🌱 Seeding the engine database at ${ENGINE_HOME}...${NC}"
+    echo -e "${BLUE}   (a separate paper database — your real trd data is elsewhere)${NC}"
+    TRD_HOME="$ENGINE_HOME" trd init
+    TRD_HOME="$ENGINE_HOME" trd engine init
+    echo -e "${YELLOW}   Downloading 2 years of daily bars (the rules need 200)...${NC}"
+    TRD_HOME="$ENGINE_HOME" trd sync --full
+    echo -e "${GREEN}✅ Engine database ready${NC}"
+else
+    echo -e "${GREEN}✅ Engine database already seeded${NC}"
+fi
 echo ""
 
 if [[ "$SKIP_BUILD" == false ]]; then
@@ -69,8 +97,11 @@ fi
 
 echo -e "${YELLOW}⚙️  Applying manifests...${NC}"
 kubectl apply -f k3s/trd-engine/namespace.yaml
-kubectl apply -f k3s/trd-engine/cronjob.yaml
-echo -e "${GREEN}✅ Applied${NC}"
+# Rewrite the hostPath to this machine's engine home, so the manifest does not
+# have to be hand-edited per user. The committed value is only a default.
+sed -E "s#path: /Users/[^[:space:]]+#path: ${ENGINE_HOME}#" k3s/trd-engine/cronjob.yaml \
+    | kubectl apply -f -
+echo -e "${GREEN}✅ Applied${NC} (hostPath → ${ENGINE_HOME})"
 echo ""
 
 if ! kubectl get secret trd-engine-telegram -n "$NAMESPACE" &>/dev/null; then
