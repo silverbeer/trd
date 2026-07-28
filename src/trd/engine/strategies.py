@@ -32,18 +32,24 @@ class Momentum(Strategy):
         sma200 = last(indicator("sma", bars, period=200)["value"])
         rsi = last(indicator("rsi", bars, period=14)["value"])
         vol = last(indicator("volratio", bars, period=20)["ratio"])
-        if sma50 is None or sma200 is None or rsi is None:
+        # `vol is None` used to fall through this filter, which meant the rule
+        # silently dropped its volume requirement exactly when volume was unknown
+        # — intraday, where the forming bar carries whatever the quote reports and
+        # often nothing at all. Breakout already treats missing volume as
+        # disqualifying; a filter that switches itself off on missing data is the
+        # wrong default for a rule whose thesis is "strength that is working".
+        if sma50 is None or sma200 is None or rsi is None or vol is None:
             return None
         if not (price > sma50 > sma200):
             return None
         if not (50 <= rsi <= 70):
             return None
-        if vol is not None and vol < 1.0:
+        if vol < 1.0:
             return None
 
         spread = clamp01((sma50 / sma200 - 1) / 0.15)
         rsi_fit = clamp01(1 - abs(rsi - 60) / 10)
-        vol_bonus = clamp01(((vol or 1.0) - 1.0) / 0.5)
+        vol_bonus = clamp01((vol - 1.0) / 0.5)
         score = clamp01(0.4 * spread + 0.4 * rsi_fit + 0.2 * vol_bonus)
         gap = (price / sma50 - 1) * 100
         return StrategySignal(

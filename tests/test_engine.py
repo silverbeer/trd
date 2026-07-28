@@ -725,3 +725,16 @@ def test_a_day_engine_closes_its_position_at_the_bell(engine, provider, conn):
         "buy",
         "sell",
     ]
+
+
+def test_momentum_requires_volume_it_can_actually_see():
+    """Missing volume used to fall straight through the filter, so the rule
+    dropped its volume requirement precisely when volume was unknown — intraday,
+    where the forming bar carries whatever the quote reports. Breakout already
+    treated missing volume as disqualifying; both agree now."""
+    bars = make_bars(uptrend())
+    assert STRATEGIES["momentum"].evaluate(bars) is not None  # volume present, fires
+
+    blind = [*bars[:-1], bars[-1].model_copy(update={"volume": None})]
+    assert STRATEGIES["momentum"].evaluate(blind) is None
+    assert STRATEGIES["breakout"].evaluate(blind) is None  # unchanged, for contrast
