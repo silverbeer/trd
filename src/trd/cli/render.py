@@ -6,11 +6,25 @@ from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 
-from trd.models import BoardRow, EarningsEvent, ExitCheckRow, ExitStatus, LotPosition, Position
+from trd.engine import EXIT_RULES
+from trd.engine import REGISTRY as STRATEGIES
+from trd.models import (
+    BoardRow,
+    EarningsEvent,
+    ExitCheckRow,
+    ExitStatus,
+    LotPosition,
+    Position,
+    PositionRow,
+    PositionStatus,
+    SignalRow,
+    StrategyStat,
+)
 from trd.repos import PrepSnapshotRow
 from trd.services.dashboard import Dashboard, Holding
 from trd.services.dca_detail import PlanDetail
 from trd.services.dca_projection import BacktestResult, ForecastResult
+from trd.services.engine import ScanResult
 from trd.services.equity_curve import EquityCurve
 from trd.services.movers import MoverRow
 from trd.services.plan import PlanStatus
@@ -1031,4 +1045,235 @@ def plans_pnl_table(statuses: list[PlanStatus]) -> Table:
             heat_pct(s.pl_pct),
             fmt_signed(s.vs_benchmark),
         )
+    return table
+
+
+def _score_bar(score: float) -> str:
+    """Confidence as five blocks. Only meaningful *between* same-bar candidates."""
+    filled = max(1, min(5, round(score * 5)))
+    color = "green" if score >= 0.6 else "yellow" if score >= 0.35 else "dim"
+    return f"[{color}]{'█' * filled}{'·' * (5 - filled)}[/{color}] {score:.2f}"
+
+
+def engine_scan_renderables(result: ScanResult) -> list[RenderableType]:
+    """One scan pass, narrated: what closed, what opened, what merely fired."""
+    out: list[RenderableType] = []
+    stamp = result.at.strftime("%Y-%m-%d %H:%M:%S")
+    mode = "paper fills" if result.paper else "signals only (no fills)"
+    header = (
+        f"[bold]engine scan[/bold]  {stamp}  ·  {result.scanned} symbols  ·  {mode}\n"
+        f"open {result.open_positions}  ·  room for {result.capacity} more"
+    )
+    out.append(Panel(header, expand=False, border_style="cyan"))
+
+    if result.closed:
+        table = Table(title="Closed", title_justify="left")
+        table.add_column("Symbol", style="bold")
+        table.add_column("Strategy")
+        table.add_column("Rule")
+        table.add_column("Qty", justify="right")
+        table.add_column("Price", justify="right")
+        table.add_column("P&L", justify="right")
+        table.add_column("R", justify="right")
+        table.add_column("Why", style="dim")
+        for fill in result.closed:
+            table.add_row(
+                fill.symbol,
+                fill.strategy,
+                fill.rule or "—",
+                fmt_qty(fill.quantity),
+                fmt_money(fill.price),
+                fmt_signed(fill.pnl),
+                f"{fill.r_multiple:+.2f}R" if fill.r_multiple is not None else "—",
+                fill.reason,
+            )
+        out.append(table)
+
+    if result.opened:
+        table = Table(title="Opened", title_justify="left")
+        table.add_column("Symbol", style="bold")
+        table.add_column("Strategy")
+        table.add_column("Qty", justify="right")
+        table.add_column("Price", justify="right")
+        table.add_column("Why", style="dim")
+        for fill in result.opened:
+            table.add_row(
+                fill.symbol,
+                fill.strategy,
+                fmt_qty(fill.quantity),
+                fmt_money(fill.price),
+                fill.reason,
+            )
+        out.append(table)
+
+    unacted = [s for s in result.signals if not s.acted]
+    if unacted:
+        table = Table(title="Signals not taken", title_justify="left")
+        table.add_column("Symbol", style="bold")
+        table.add_column("Strategy")
+        table.add_column("Score", justify="right")
+        table.add_column("Price", justify="right")
+        table.add_column("Why", style="dim")
+        for signal in unacted:
+            table.add_row(
+                signal.symbol,
+                signal.strategy,
+                _score_bar(signal.score),
+                fmt_money(signal.price),
+                signal.reason,
+            )
+        out.append(table)
+
+    if result.skipped:
+        out.append(
+            Panel(
+                "\n".join(f"· {line}" for line in result.skipped),
+                title="Skipped",
+                title_align="left",
+                border_style="yellow",
+                expand=False,
+            )
+        )
+
+    if result.quiet:
+        out.append(
+            Text(
+                "Nothing fired. A quiet scan is the normal case — "
+                "most days no rule's conditions line up.",
+                style="dim",
+            )
+        )
+    return out
+
+
+def engine_signals_table(rows: list[SignalRow]) -> Table:
+    """Signal history: every entry the rules saw, taken or passed over."""
+    table = Table(title="Engine signals", title_justify="left")
+    table.add_column("Fired", style="dim")
+    table.add_column("Symbol", style="bold")
+    table.add_column("Strategy")
+    table.add_column("Score", justify="right")
+    table.add_column("Price", justify="right")
+    table.add_column("Taken", justify="center")
+    table.add_column("Why", style="dim")
+    for row in rows:
+        table.add_row(
+            row.signal.fired_at.strftime("%m-%d %H:%M"),
+            row.instrument.symbol,
+            row.signal.strategy,
+            _score_bar(row.signal.score),
+            fmt_money(row.signal.price),
+            "[green]✓[/green]" if row.signal.acted else "[dim]·[/dim]",
+            row.signal.reason,
+        )
+    return table
+
+
+def _effective_stop(row: PositionRow) -> str:
+    """The stop actually in force. An arrow marks the bars where the chandelier
+    stop has overtaken the initial one — the trade can no longer give it all back."""
+    initial = row.position.stop_price
+    if row.trail_stop > initial:
+        return f"[green]↑{MONEY.format(row.trail_stop)}[/green]"
+    return fmt_money(initial)
+
+
+def engine_positions_table(rows: list[PositionRow], title: str, show_exit: bool = False) -> Table:
+    """Open trades with live P&L and where the stop currently sits."""
+    table = Table(title=title, title_justify="left")
+    table.add_column("Symbol", style="bold")
+    table.add_column("Strategy")
+    table.add_column("Qty", justify="right")
+    table.add_column("Entry", justify="right")
+    table.add_column("Now", justify="right")
+    table.add_column("Stop", justify="right")
+    table.add_column("Target", justify="right")
+    table.add_column("Bars", justify="right")
+    table.add_column("P&L", justify="right")
+    table.add_column("R", justify="right")
+    if show_exit:
+        table.add_column("Exit", style="dim")
+    for row in rows:
+        position, mark = row.position, row.mark
+        r = position.r_multiple_at(mark)
+        cells = [
+            row.instrument.symbol,
+            position.strategy,
+            fmt_qty(position.quantity),
+            fmt_money(position.entry_price),
+            fmt_money(mark),
+            _effective_stop(row),
+            fmt_money(position.target_price),
+            str(position.bars_held),
+            fmt_signed(position.pnl_at(mark)),
+            f"{r:+.2f}R" if r is not None else "—",
+        ]
+        if show_exit:
+            cells.append(
+                position.exit_reason or ""
+                if position.status == PositionStatus.CLOSED
+                else "[green]open[/green]"
+            )
+        table.add_row(*cells)
+    return table
+
+
+def engine_report_table(stats: list[StrategyStat]) -> Table:
+    """The scorecard the dry run exists to produce. Read expectancy first: a 40%
+    win rate with +0.5R expectancy beats a 70% win rate that gives it all back."""
+    table = Table(title="Strategy scorecard — closed trades", title_justify="left")
+    table.add_column("Strategy", style="bold")
+    table.add_column("Trades", justify="right")
+    table.add_column("Open", justify="right")
+    table.add_column("Win%", justify="right")
+    table.add_column("W/L", justify="right")
+    table.add_column("Avg win", justify="right")
+    table.add_column("Avg loss", justify="right")
+    table.add_column("Expectancy", justify="right")
+    table.add_column("P&L", justify="right")
+    for stat in stats:
+        expectancy = (
+            f"[{'green' if stat.expectancy_r >= 0 else 'red'}]{stat.expectancy_r:+.2f}R[/]"
+            if stat.expectancy_r is not None
+            else "—"
+        )
+        table.add_row(
+            stat.strategy,
+            str(stat.trades),
+            str(stat.open_trades),
+            f"{stat.win_rate:.0f}%" if stat.win_rate is not None else "—",
+            f"{stat.wins}/{stat.losses}",
+            fmt_signed_pct(stat.avg_win_pct),
+            fmt_signed_pct(stat.avg_loss_pct),
+            expectancy,
+            fmt_signed(stat.total_pnl),
+        )
+    return table
+
+
+def engine_strategies_table() -> Table:
+    """What each rule looks for, in plain English."""
+    table = Table(title="Entry strategies", title_justify="left")
+    table.add_column("Key", style="bold")
+    table.add_column("Name")
+    table.add_column("Bars", justify="right")
+    table.add_column("Looks for", style="dim")
+    for key in sorted(STRATEGIES):
+        strategy = STRATEGIES[key]
+        table.add_row(key, strategy.name, str(strategy.min_bars), strategy.description)
+    return table
+
+
+def engine_exits_table(params: dict[str, float] | None = None) -> Table:
+    """Exit rules in the order they are checked, with the live parameters."""
+    table = Table(title="Exit rules (checked in this order)", title_justify="left")
+    table.add_column("#", justify="right", style="dim")
+    table.add_column("Key", style="bold")
+    table.add_column("Name")
+    table.add_column("How it works", style="dim")
+    for i, rule in enumerate(EXIT_RULES, start=1):
+        table.add_row(str(i), rule.key, rule.name, rule.description)
+    if params:
+        table.caption = "  ".join(f"{k}={v:g}" for k, v in sorted(params.items()))
+        table.caption_justify = "left"
     return table
