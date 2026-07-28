@@ -12,11 +12,12 @@ from trd.errors import TrdError
 from trd.models import (
     AccountType,
     DailyBar,
+    EarningsDate,
     EnginePosition,
     InstrumentInfo,
     PositionStatus,
 )
-from trd.repos import AccountRepo, InstrumentRepo, PriceRepo, TransactionRepo
+from trd.repos import AccountRepo, EarningsRepo, InstrumentRepo, PriceRepo, TransactionRepo
 from trd.services import EngineService
 from trd.services.engine import DEFAULT_ENGINE_ACCOUNT
 
@@ -532,3 +533,87 @@ def test_a_share_priced_above_the_slot_is_still_tradeable(engine, provider, conn
     assert len(result.opened) == 1
     assert result.opened[0].quantity < 1
     assert result.skipped == []
+
+
+# --------------------------------------------------------- earnings blackout
+
+
+def seed_earnings(conn: duckdb.DuckDBPyConnection, instrument_id: int, when: date) -> None:
+    EarningsRepo(conn).upsert(instrument_id, [EarningsDate(date=when, eps_estimate=None)])
+
+
+def test_a_print_inside_the_blackout_holds_the_signal_back(engine, provider, conn):
+    """The signal is real — good data, rule genuinely fired — so it is still
+    recorded. What the blackout withholds is the entry, because a gap jumps the
+    stop and the trade would not risk the 1R its R-multiple claims."""
+    bars = make_bars(uptrend())
+    instrument_id = seed(conn, "AAA", bars)
+    provider.add_symbol("AAA", price=str(float(bars[-1].close) * 0.998))
+    seed_earnings(conn, instrument_id, date(2024, 9, 18))  # 2 days out
+    engine.init(symbols=["AAA"], strategies=["momentum"], position_size=Decimal("10000"))
+
+    result = engine.scan(at=datetime(2024, 9, 16, 10, 0))
+
+    assert result.opened == []
+    assert len(result.signals) == 1  # fired and logged, just not acted on
+    assert any("earnings in 2d" in line for line in result.skipped)
+    assert engine.position_rows(open_only=True) == []
+
+
+def test_a_print_outside_the_blackout_trades_normally(engine, provider, conn):
+    bars = make_bars(uptrend())
+    instrument_id = seed(conn, "AAA", bars)
+    provider.add_symbol("AAA", price=str(float(bars[-1].close) * 0.998))
+    seed_earnings(conn, instrument_id, date(2024, 9, 30))  # 14 days out
+    engine.init(symbols=["AAA"], strategies=["momentum"], position_size=Decimal("10000"))
+
+    result = engine.scan(at=datetime(2024, 9, 16, 10, 0))
+
+    assert len(result.opened) == 1
+
+
+def test_the_day_after_a_print_is_tradeable_again(engine, provider, conn):
+    """Deliberate: the gap-and-volume day is exactly what breakout exists to
+    catch. The blackout removes the coin flip, not the setup it creates."""
+    bars = make_bars(uptrend())
+    instrument_id = seed(conn, "AAA", bars)
+    provider.add_symbol("AAA", price=str(float(bars[-1].close) * 0.998))
+    seed_earnings(conn, instrument_id, date(2024, 9, 15))  # reported yesterday
+    engine.init(symbols=["AAA"], strategies=["momentum"], position_size=Decimal("10000"))
+
+    result = engine.scan(at=datetime(2024, 9, 16, 10, 0))
+
+    assert len(result.opened) == 1
+
+
+def test_a_zero_blackout_disables_the_guard(engine, provider, conn):
+    bars = make_bars(uptrend())
+    instrument_id = seed(conn, "AAA", bars)
+    provider.add_symbol("AAA", price=str(float(bars[-1].close) * 0.998))
+    seed_earnings(conn, instrument_id, date(2024, 9, 16))  # reporting today
+    engine.init(
+        symbols=["AAA"],
+        strategies=["momentum"],
+        position_size=Decimal("10000"),
+        earnings_blackout_days=0,
+    )
+
+    result = engine.scan(at=datetime(2024, 9, 16, 10, 0))
+
+    assert len(result.opened) == 1
+
+
+def test_a_name_with_no_known_earnings_date_is_unaffected(engine, provider, conn):
+    bars = make_bars(uptrend())
+    seed(conn, "AAA", bars)
+    provider.add_symbol("AAA", price=str(float(bars[-1].close) * 0.998))
+    engine.init(symbols=["AAA"], strategies=["momentum"], position_size=Decimal("10000"))
+
+    result = engine.scan(at=datetime(2024, 9, 16, 10, 0))
+
+    assert len(result.opened) == 1
+
+
+def test_blackout_days_cannot_be_negative(engine):
+    with pytest.raises(TrdError, match="cannot be negative"):
+        engine.init(symbols=[], earnings_blackout_days=-1)
