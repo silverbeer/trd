@@ -1,8 +1,15 @@
 # Scheduled jobs (mac mini)
 
-Two launchd agents live here: **Sunday Prep** (weekly briefing) and the
-**trading engine** (every 5 minutes during market hours). Jump to
-[Trading engine](#trading-engine-mac-mini) for the engine.
+Three launchd agents live here:
+
+- **Sunday Prep** — weekly briefing. See below.
+- **Trading engine** — every 5 min during market hours. Superseded by the
+  [k3s CronJob](../k3s/trd-engine/README.md); kept as the no-cluster fallback.
+  Run one or the other, never both.
+- **Engine publish** (`engine-publish.sh`) — copies the engine's `status.txt` and
+  `engine-backup.json` into iCloud so the MacBook Air can read them. Pairs with
+  **either** runner, including k3s: it only copies files, never opens the
+  database, so it is not a second writer.
 
 ---
 
