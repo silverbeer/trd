@@ -62,6 +62,8 @@ DEFAULT_MAX_POSITIONS = 5
 # No new entry when a print lands within this many days. Three sessions is enough
 # to keep a fresh trade out of a binary event without blacking out half the month.
 DEFAULT_EARNINGS_BLACKOUT_DAYS = 3
+# How long before a day-mode engine's flat time it stops taking new entries.
+ENTRY_CUTOFF_MINUTES = 30
 
 # Ten liquid, heavily-covered names. Small enough to reason about by hand, which
 # is the point of a monitor-mode dry run — you should be able to check the
@@ -232,6 +234,20 @@ class EngineService:
             for r in rows
         ]
 
+    @staticmethod
+    def _entry_cutoff(params: dict[str, float]) -> int | None:
+        """Minute-of-day after which a day-mode engine stops opening trades.
+
+        Returns None when `flat_at_minute` is off, which is every swing engine.
+        Minute-of-day, not HHMM: 15:55 minus 30 minutes is 15:25, and HHMM
+        arithmetic would say 15:25 too only by luck — 16:05 minus 30 would give
+        15:75.
+        """
+        flat_at = int(params.get("flat_at_minute", 0))
+        if flat_at <= 0:
+            return None
+        return (flat_at // 100) * 60 + (flat_at % 100) - ENTRY_CUTOFF_MINUTES
+
     def _earnings_blackout(self, instrument_id: int, today: date, days: int) -> date | None:
         """The earnings date blocking a new entry, or None if the way is clear.
 
@@ -379,7 +395,7 @@ class EngineService:
                     "bars_held": sum(1 for b in stored if b.date > position.opened_at.date()),
                 }
             )
-            decision = evaluate_exits(live, bars, price, config.exit_params)
+            decision = evaluate_exits(live, bars, price, config.exit_params, now)
             if decision is None:
                 self.positions.touch(position.id, live.trail_high, live.bars_held, bars[-1].date)
                 continue
@@ -425,6 +441,17 @@ class EngineService:
         run_id: int,
         result: ScanResult,
     ) -> None:
+        # Without this a day-mode engine can enter at 15:50 and be flattened at
+        # 15:55 by session_close — the spread paid twice for five minutes of
+        # exposure. Entries stop before the flat time, exits keep running.
+        cutoff = self._entry_cutoff(config.exit_params)
+        if cutoff is not None and (now.hour * 60 + now.minute) >= cutoff:
+            result.capacity = max(0, config.max_positions - len(held))
+            result.skipped.append(
+                f"no new entries within {ENTRY_CUTOFF_MINUTES}m of the session close — "
+                "a fill now would be flattened before it could work"
+            )
+            return
         candidates: list[tuple[float, Instrument, list[DailyBar], int | None, ScanSignal]] = []
         for instrument in universe:
             stored = self._stored_bars(instrument.id)
