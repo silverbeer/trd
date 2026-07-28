@@ -114,15 +114,50 @@ echo -e "${BLUE}CronJob:${NC}"
 kubectl get cronjob -n "$NAMESPACE"
 echo ""
 
+# A one-off pod running the same image against the same database, with the
+# market-hours guard switched off.
+#
+# NOT `kubectl create job --from=cronjob` plus `kubectl set env`: a Job's pod
+# template is immutable once created, so the env edit is rejected and the pod
+# runs with the guard still on — it exits 0 having done nothing, which looks
+# like success. Building the pod spec up front avoids that entirely.
+run_once() {
+    local name="$1"
+    shift
+    kubectl run "$name" -n "$NAMESPACE" --rm -i --restart=Never \
+        --image="$IMAGE_FULL" \
+        --overrides="$(cat <<JSON
+{
+  "spec": {
+    "restartPolicy": "Never",
+    "containers": [{
+      "name": "trd",
+      "image": "${IMAGE_FULL}",
+      "imagePullPolicy": "Never",
+      "args": [$(printf '"%s",' "$@" | sed 's/,$//')],
+      "env": [
+        {"name": "TRD_HOME", "value": "/data"},
+        {"name": "TZ", "value": "America/New_York"},
+        {"name": "NO_COLOR", "value": "1"},
+        {"name": "TRD_ENGINE_FORCE", "value": "1"}
+      ],
+      "envFrom": [{"secretRef": {"name": "trd-engine-telegram", "optional": true}}],
+      "volumeMounts": [{"name": "trd-home", "mountPath": "/data"}]
+    }],
+    "volumes": [{
+      "name": "trd-home",
+      "hostPath": {"path": "${ENGINE_HOME}", "type": "DirectoryOrCreate"}
+    }]
+  }
+}
+JSON
+)"
+}
+
 if [[ "$RUN_TEST" == true ]]; then
-    JOB="trd-engine-test-$(date +%s)"
     echo -e "${YELLOW}🚀 Running one scan now (market-hours guard bypassed)...${NC}"
-    kubectl create job --from=cronjob/trd-engine-scan "$JOB" -n "$NAMESPACE"
-    # The CronJob's pod template is copied verbatim, so force the guard off here.
-    kubectl set env job/"$JOB" -n "$NAMESPACE" TRD_ENGINE_FORCE=1
-    kubectl wait --for=condition=complete --timeout=300s job/"$JOB" -n "$NAMESPACE" || true
-    echo ""
-    kubectl logs -n "$NAMESPACE" job/"$JOB" --tail=50 || true
+    # No args -> the entrypoint's normal path: guard, daily sync, scan, publish.
+    run_once "trd-engine-test-$(date +%s)" || true
     echo ""
 fi
 
@@ -135,12 +170,9 @@ echo "  Watch scans live:"
 echo "    kubectl logs -n $NAMESPACE -l app=trd --tail=100 -f"
 echo ""
 echo "  Run one scan right now:"
-echo "    kubectl create job --from=cronjob/trd-engine-scan manual-\$(date +%s) -n $NAMESPACE"
+echo "    ./scripts/deploy-k3s.sh --skip-build --test"
 echo ""
-echo "  Read the scorecard (uses the same image):"
-echo "    kubectl run trd-report -n $NAMESPACE --rm -it --restart=Never \\"
-echo "      --image=$IMAGE_FULL --overrides='{\"spec\":{\"containers\":[{\"name\":\"trd-report\",\"image\":\"$IMAGE_FULL\",\"args\":[\"engine\",\"report\"],\"volumeMounts\":[{\"name\":\"d\",\"mountPath\":\"/data\"}]}],\"volumes\":[{\"name\":\"d\",\"hostPath\":{\"path\":\"/Users/tomdrake/.trd-engine\"}}]}}'"
-echo ""
-echo "  Or straight from the host, same database:"
-echo "    TRD_HOME=~/.trd-engine trd engine report"
+echo "  Read the scorecard — easiest from the host, same database:"
+echo "    TRD_HOME=${ENGINE_HOME} trd engine report"
+echo "    TRD_HOME=${ENGINE_HOME} trd engine positions"
 echo ""
