@@ -40,7 +40,14 @@ from trd.models import (
     StrategyStat,
 )
 from trd.providers.base import MarketDataProvider
-from trd.repos import AccountRepo, InstrumentRepo, PriceRepo, TransactionRepo, WatchlistRepo
+from trd.repos import (
+    AccountRepo,
+    EarningsRepo,
+    InstrumentRepo,
+    PriceRepo,
+    TransactionRepo,
+    WatchlistRepo,
+)
 from trd.repos.engine import (
     EngineConfigRepo,
     EnginePositionRepo,
@@ -52,6 +59,9 @@ DEFAULT_ENGINE_ACCOUNT = "engine-sim"
 DEFAULT_ENGINE_WATCHLIST = "engine"
 DEFAULT_POSITION_SIZE = Decimal("1000")
 DEFAULT_MAX_POSITIONS = 5
+# No new entry when a print lands within this many days. Three sessions is enough
+# to keep a fresh trade out of a binary event without blacking out half the month.
+DEFAULT_EARNINGS_BLACKOUT_DAYS = 3
 
 # Ten liquid, heavily-covered names. Small enough to reason about by hand, which
 # is the point of a monitor-mode dry run — you should be able to check the
@@ -116,6 +126,7 @@ class EngineService:
         self.prices = PriceRepo(conn)
         self.txns = TransactionRepo(conn)
         self.watchlists = WatchlistRepo(conn)
+        self.earnings = EarningsRepo(conn)
         self.configs = EngineConfigRepo(conn)
         self.runs = EngineRunRepo(conn)
         self.signals = EngineSignalRepo(conn)
@@ -132,11 +143,14 @@ class EngineService:
         symbols: list[str] | None = None,
         strategies: list[str] | None = None,
         exit_params: dict[str, float] | None = None,
+        earnings_blackout_days: int = DEFAULT_EARNINGS_BLACKOUT_DAYS,
     ) -> tuple[EngineConfig, Account, list[str]]:
         """Create (or re-point) the engine: a simulation account, a watchlist
         universe, and the rule set. Returns the symbols now in the universe."""
         if position_size <= 0:
             raise TrdError("Position size must be positive.")
+        if earnings_blackout_days < 0:
+            raise TrdError("Earnings blackout days cannot be negative.")
         if max_positions < 1:
             raise TrdError("Max positions must be at least 1.")
 
@@ -172,7 +186,13 @@ class EngineService:
             self.watchlists.add_item(board.id, instrument.id)
 
         config = self.configs.upsert(
-            account.id, watchlist, position_size, max_positions, keys, params
+            account.id,
+            watchlist,
+            position_size,
+            max_positions,
+            keys,
+            params,
+            earnings_blackout_days,
         )
         universe = [i.symbol for _, i in self.watchlists.items(board.id)]
         return config, account, universe
@@ -211,6 +231,27 @@ class EngineService:
             DailyBar(date=r[0], open=r[1], high=r[2], low=r[3], close=r[4], volume=r[5])
             for r in rows
         ]
+
+    def _earnings_blackout(self, instrument_id: int, today: date, days: int) -> date | None:
+        """The earnings date blocking a new entry, or None if the way is clear.
+
+        A 2 x ATR stop bounds the loss at 1R only while price moves continuously.
+        An overnight gap skips the level entirely — `StopLoss` compares price to
+        the stop, so the exit fills at the next morning's price, not at the stop.
+        A trade the engine believes risks 1R can realise several, and because
+        `report` averages R-multiples the whole scorecard then describes a risk
+        profile the engine is not actually running.
+
+        Entries *after* a print stay allowed on purpose: the gap-and-volume day is
+        exactly what `breakout` exists to catch. This removes the coin flip, not
+        the setup it creates.
+        """
+        if days <= 0:
+            return None
+        next_date = self.earnings.next_for_instrument(instrument_id, today)
+        if next_date is None:
+            return None
+        return next_date if (next_date - today).days <= days else None
 
     @staticmethod
     def _quote_is_stale(bars: list[DailyBar], quote: Quote | None, today: date) -> bool:
@@ -401,6 +442,11 @@ class EngineService:
                 continue
             bars = self._with_live_bar(stored, quote, today)
             bar_date = bars[-1].date
+            # Computed once per symbol, but applied *after* the strategy runs: a
+            # signal blocked by earnings is a real signal on good data, unlike a
+            # stale-quote one, and the passed-over signals are half the learning.
+            blackout = self._earnings_blackout(instrument.id, today, config.earnings_blackout_days)
+            withheld = False
             short_by: list[str] = []
             for key in config.strategies:
                 strategy = STRATEGIES.get(key)
@@ -438,6 +484,9 @@ class EngineService:
                 elif stored_signal.acted:
                     continue  # already traded on this bar's signal
 
+                if blackout is not None:
+                    withheld = True
+                    continue  # fired, and logged, but earnings are too close to act on it
                 if instrument.id in held:
                     continue  # already in the name; one position per symbol
                 candidates.append(
@@ -454,6 +503,13 @@ class EngineService:
                             price=price,
                         ),
                     )
+                )
+            if withheld and blackout is not None:
+                days = (blackout - today).days
+                when = "today" if days == 0 else f"in {days}d"
+                result.skipped.append(
+                    f"{instrument.symbol}: signal held back — earnings {when} ({blackout}). "
+                    "A gap jumps the stop, so the trade would not risk the 1R it claims"
                 )
             if short_by:
                 result.skipped.append(
