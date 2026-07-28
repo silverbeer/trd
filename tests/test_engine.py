@@ -60,7 +60,14 @@ def downtrend(n: int = 260, base: float = 200.0):
 
 def test_registries_are_populated():
     assert sorted(STRATEGIES) == ["breakout", "macd_cross", "momentum", "pullback"]
-    assert [rule.key for rule in EXIT_RULES] == ["stop", "trail", "target", "indicator", "time"]
+    assert [rule.key for rule in EXIT_RULES] == [
+        "stop",
+        "trail",
+        "target",
+        "indicator",
+        "time",
+        "session_close",
+    ]
 
 
 def test_every_strategy_explains_itself():
@@ -165,19 +172,24 @@ def _position(**overrides) -> EnginePosition:
 
 
 PARAMS = exit_rules.DEFAULT_EXIT_PARAMS
+# Any mid-session moment: the clock only matters to session_close, which is off
+# unless flat_at_minute is set.
+MIDDAY = datetime(2024, 9, 16, 12, 0)
 
 
 def test_stop_fires_at_or_below_the_stop():
     bars = make_bars(uptrend())
-    assert exit_rules.StopLoss().check(_position(), bars, Decimal("91"), PARAMS) is None
-    hit = exit_rules.StopLoss().check(_position(), bars, Decimal("90"), PARAMS)
+    assert exit_rules.StopLoss().check(_position(), bars, Decimal("91"), PARAMS, MIDDAY) is None
+    hit = exit_rules.StopLoss().check(_position(), bars, Decimal("90"), PARAMS, MIDDAY)
     assert hit is not None and hit.rule == "stop"
 
 
 def test_target_fires_at_or_above_the_target():
     bars = make_bars(uptrend())
-    assert exit_rules.ProfitTarget().check(_position(), bars, Decimal("119"), PARAMS) is None
-    hit = exit_rules.ProfitTarget().check(_position(), bars, Decimal("120"), PARAMS)
+    assert (
+        exit_rules.ProfitTarget().check(_position(), bars, Decimal("119"), PARAMS, MIDDAY) is None
+    )
+    hit = exit_rules.ProfitTarget().check(_position(), bars, Decimal("120"), PARAMS, MIDDAY)
     assert hit is not None and hit.rule == "target"
 
 
@@ -185,19 +197,22 @@ def test_trailing_stop_waits_until_it_beats_the_initial_stop():
     bars = make_bars(uptrend())
     # trail_high 100, ATR 5, mult 3 -> trail stop 85, below the initial 90: inactive.
     early = _position(trail_high=Decimal("100"))
-    assert exit_rules.TrailingStop().check(early, bars, Decimal("86"), PARAMS) is None
+    assert exit_rules.TrailingStop().check(early, bars, Decimal("86"), PARAMS, MIDDAY) is None
     # trail_high 130 -> trail stop 115, now the tighter of the two.
     late = _position(trail_high=Decimal("130"))
-    assert exit_rules.TrailingStop().check(late, bars, Decimal("116"), PARAMS) is None
-    hit = exit_rules.TrailingStop().check(late, bars, Decimal("115"), PARAMS)
+    assert exit_rules.TrailingStop().check(late, bars, Decimal("116"), PARAMS, MIDDAY) is None
+    hit = exit_rules.TrailingStop().check(late, bars, Decimal("115"), PARAMS, MIDDAY)
     assert hit is not None and hit.rule == "trail"
     assert "gave back" in hit.reason
 
 
 def test_time_exit_fires_after_max_bars():
     bars = make_bars(uptrend())
-    assert exit_rules.TimeExit().check(_position(bars_held=9), bars, Decimal("101"), PARAMS) is None
-    hit = exit_rules.TimeExit().check(_position(bars_held=10), bars, Decimal("101"), PARAMS)
+    assert (
+        exit_rules.TimeExit().check(_position(bars_held=9), bars, Decimal("101"), PARAMS, MIDDAY)
+        is None
+    )
+    hit = exit_rules.TimeExit().check(_position(bars_held=10), bars, Decimal("101"), PARAMS, MIDDAY)
     assert hit is not None and hit.rule == "time"
 
 
@@ -205,7 +220,7 @@ def test_indicator_exit_fires_when_price_loses_the_20_day():
     bars = make_bars(uptrend())
     sma20 = sum(float(b.close) for b in bars[-20:]) / 20
     hit = exit_rules.IndicatorExit().check(
-        _position(bars_held=3), bars, Decimal(str(sma20 * 0.9)), PARAMS
+        _position(bars_held=3), bars, Decimal(str(sma20 * 0.9)), PARAMS, MIDDAY
     )
     assert hit is not None and hit.rule == "indicator"
     assert "20-day" in hit.reason
@@ -219,14 +234,15 @@ def test_indicator_exit_gives_a_new_entry_room_to_breathe():
     below = Decimal(str(sma20 * 0.9))
     for held in (0, 1, 2):
         assert (
-            exit_rules.IndicatorExit().check(_position(bars_held=held), bars, below, PARAMS) is None
+            exit_rules.IndicatorExit().check(_position(bars_held=held), bars, below, PARAMS, MIDDAY)
+            is None
         )
 
 
 def test_the_stop_still_runs_during_the_indicator_grace_period():
     """Grace applies to indicator exits only — capital protection never pauses."""
     bars = make_bars(uptrend())
-    decision = exit_rules.evaluate(_position(bars_held=0), bars, Decimal("89"), PARAMS)
+    decision = exit_rules.evaluate(_position(bars_held=0), bars, Decimal("89"), PARAMS, MIDDAY)
     assert decision is not None and decision.rule == "stop"
 
 
@@ -234,7 +250,7 @@ def test_capital_protection_runs_before_profit_taking():
     """A bar that trips both the stop and the target reports the stop."""
     bars = make_bars(uptrend())
     position = _position(stop_price=Decimal("130"), target_price=Decimal("120"))
-    decision = exit_rules.evaluate(position, bars, Decimal("125"), PARAMS)
+    decision = exit_rules.evaluate(position, bars, Decimal("125"), PARAMS, MIDDAY)
     assert decision is not None and decision.rule == "stop"
 
 
@@ -617,3 +633,95 @@ def test_a_name_with_no_known_earnings_date_is_unaffected(engine, provider, conn
 def test_blackout_days_cannot_be_negative(engine):
     with pytest.raises(TrdError, match="cannot be negative"):
         engine.init(symbols=[], earnings_blackout_days=-1)
+
+
+# ------------------------------------------------------------ session close
+
+
+DAY_PARAMS = {**exit_rules.DEFAULT_EXIT_PARAMS, "flat_at_minute": 1555.0}
+
+
+def test_session_close_is_off_by_default():
+    """A swing engine is built to carry overnight — the rule must stay dormant
+    unless a day-mode engine switches it on."""
+    bars = make_bars(uptrend())
+    late = datetime(2024, 9, 16, 15, 59)
+    assert exit_rules.SessionClose().check(_position(), bars, Decimal("101"), PARAMS, late) is None
+
+
+def test_session_close_fires_at_the_flat_time():
+    bars = make_bars(uptrend())
+    rule = exit_rules.SessionClose()
+    before = datetime(2024, 9, 16, 15, 54)
+    assert rule.check(_position(), bars, Decimal("101"), DAY_PARAMS, before) is None
+    hit = rule.check(_position(), bars, Decimal("101"), DAY_PARAMS, datetime(2024, 9, 16, 15, 55))
+    assert hit is not None and hit.rule == "session_close"
+    assert "15:55" in hit.reason
+
+
+def test_the_stop_still_wins_at_the_bell():
+    """Both would fire at 15:55. The stop is the truer reason, and the closed
+    trade's R-multiple should be attributed to the rule that actually decided it."""
+    bars = make_bars(uptrend())
+    decision = exit_rules.evaluate(
+        _position(), bars, Decimal("80"), DAY_PARAMS, datetime(2024, 9, 16, 15, 55)
+    )
+    assert decision is not None and decision.rule == "stop"
+
+
+def test_no_new_entries_inside_the_cutoff(engine, provider, conn):
+    """Entering at 15:50 only to be flattened at 15:55 pays the spread twice for
+    five minutes of exposure."""
+    bars = make_bars(uptrend())
+    seed(conn, "AAA", bars)
+    provider.add_symbol("AAA", price=str(float(bars[-1].close) * 0.998))
+    engine.init(
+        symbols=["AAA"],
+        strategies=["momentum"],
+        position_size=Decimal("10000"),
+        exit_params={"flat_at_minute": 1555.0},
+    )
+
+    late = engine.scan(at=datetime(2024, 9, 16, 15, 30))  # cutoff is 15:25
+    assert late.opened == []
+    assert any("session close" in line for line in late.skipped)
+
+
+def test_entries_still_run_before_the_cutoff(engine, provider, conn):
+    bars = make_bars(uptrend())
+    seed(conn, "AAA", bars)
+    provider.add_symbol("AAA", price=str(float(bars[-1].close) * 0.998))
+    engine.init(
+        symbols=["AAA"],
+        strategies=["momentum"],
+        position_size=Decimal("10000"),
+        exit_params={"flat_at_minute": 1555.0},
+    )
+
+    result = engine.scan(at=datetime(2024, 9, 16, 15, 24))
+    assert len(result.opened) == 1
+
+
+def test_a_day_engine_closes_its_position_at_the_bell(engine, provider, conn):
+    """End to end: open mid-session, flat by the bell, recorded as a sell."""
+    bars = make_bars(uptrend())
+    seed(conn, "AAA", bars)
+    provider.add_symbol("AAA", price=str(float(bars[-1].close) * 0.998))
+    engine.init(
+        symbols=["AAA"],
+        strategies=["momentum"],
+        position_size=Decimal("10000"),
+        exit_params={"flat_at_minute": 1555.0},
+    )
+
+    opened = engine.scan(at=datetime(2024, 9, 16, 10, 0))
+    assert len(opened.opened) == 1
+
+    closed = engine.scan(at=datetime(2024, 9, 16, 15, 56))
+    assert len(closed.closed) == 1
+    assert closed.closed[0].rule == "session_close"
+    assert engine.position_rows(open_only=True) == []
+    assert [t.side for t in TransactionRepo(conn).list_chronological(engine.account().id)] == [
+        "buy",
+        "sell",
+    ]

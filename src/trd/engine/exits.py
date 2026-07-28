@@ -13,6 +13,7 @@ the original risk.
 """
 
 from abc import ABC, abstractmethod
+from datetime import datetime
 from decimal import Decimal
 from typing import ClassVar
 
@@ -28,6 +29,9 @@ DEFAULT_EXIT_PARAMS: dict[str, float] = {
     "max_bars": 10.0,  # give up on a trade that has gone nowhere in N bars
     "rsi_exit": 80.0,  # blow-off exit when RSI runs this hot and rolls over
     "indicator_grace_bars": 3.0,  # let a new entry breathe before indicator exits apply
+    # Flat-by-the-bell, as HHMM in the engine's local time. 0 disables it, which is
+    # what a swing engine wants: its whole design is to carry positions overnight.
+    "flat_at_minute": 0.0,
 }
 
 
@@ -48,6 +52,7 @@ class ExitRule(ABC):
         bars: list[DailyBar],
         price: Decimal,
         params: dict[str, float],
+        now: datetime,
     ) -> ExitDecision | None:
         """Return a decision if this rule says get out, else None."""
 
@@ -66,6 +71,7 @@ class StopLoss(ExitRule):
         bars: list[DailyBar],
         price: Decimal,
         params: dict[str, float],
+        now: datetime,
     ) -> ExitDecision | None:
         if price > position.stop_price:
             return None
@@ -93,6 +99,7 @@ class TrailingStop(ExitRule):
         bars: list[DailyBar],
         price: Decimal,
         params: dict[str, float],
+        now: datetime,
     ) -> ExitDecision | None:
         mult = Decimal(str(params.get("trail_atr_mult", 3.0)))
         trail_stop = position.trail_high - position.atr_at_entry * mult
@@ -124,6 +131,7 @@ class ProfitTarget(ExitRule):
         bars: list[DailyBar],
         price: Decimal,
         params: dict[str, float],
+        now: datetime,
     ) -> ExitDecision | None:
         if price < position.target_price:
             return None
@@ -150,6 +158,7 @@ class IndicatorExit(ExitRule):
         bars: list[DailyBar],
         price: Decimal,
         params: dict[str, float],
+        now: datetime,
     ) -> ExitDecision | None:
         # A pullback entry is, by construction, below its 20-day. Without a grace
         # period this rule sells it on the next scan for a zero-P&L round trip.
@@ -197,6 +206,7 @@ class TimeExit(ExitRule):
         bars: list[DailyBar],
         price: Decimal,
         params: dict[str, float],
+        now: datetime,
     ) -> ExitDecision | None:
         max_bars = int(params.get("max_bars", 10))
         if position.bars_held < max_bars:
@@ -209,8 +219,50 @@ class TimeExit(ExitRule):
         )
 
 
+class SessionClose(ExitRule):
+    key = "session_close"
+    name = "Session Close"
+    description = (
+        "Flat by the bell. Off unless flat_at_minute is set, because a swing engine "
+        "is built to carry positions overnight — this is what turns one into a "
+        "day-mode engine, where the whole point is to hold no risk through a gap."
+    )
+
+    def check(
+        self,
+        position: EnginePosition,
+        bars: list[DailyBar],
+        price: Decimal,
+        params: dict[str, float],
+        now: datetime,
+    ) -> ExitDecision | None:
+        flat_at = int(params.get("flat_at_minute", 0))
+        if flat_at <= 0:
+            return None
+        if now.hour * 100 + now.minute < flat_at:
+            return None
+        move = position.pnl_pct_at(price)
+        drift = f"{move:+.1f}%" if move is not None else "flat"
+        return ExitDecision(
+            rule=self.key,
+            reason=(
+                f"session close at {flat_at // 100:02d}:{flat_at % 100:02d} — "
+                f"out at {drift}, holding nothing through the overnight gap"
+            ),
+        )
+
+
 # Order matters: capital protection first, profit-taking second, housekeeping last.
-RULES: list[ExitRule] = [StopLoss(), TrailingStop(), ProfitTarget(), IndicatorExit(), TimeExit()]
+# session_close sits at the end deliberately: if price is already through the stop
+# at 15:55 the stop is the truer reason, and the R-multiple should say so.
+RULES: list[ExitRule] = [
+    StopLoss(),
+    TrailingStop(),
+    ProfitTarget(),
+    IndicatorExit(),
+    TimeExit(),
+    SessionClose(),
+]
 REGISTRY: dict[str, ExitRule] = {rule.key: rule for rule in RULES}
 
 
@@ -219,10 +271,11 @@ def evaluate(
     bars: list[DailyBar],
     price: Decimal,
     params: dict[str, float],
+    now: datetime,
 ) -> ExitDecision | None:
     """First rule to fire wins."""
     for rule in RULES:
-        decision = rule.check(position, bars, price, params)
+        decision = rule.check(position, bars, price, params, now)
         if decision is not None:
             return decision
     return None
