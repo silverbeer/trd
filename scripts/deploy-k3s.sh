@@ -124,6 +124,13 @@ echo ""
 run_once() {
     local name="$1"
     shift
+    # printf with a format but zero args still runs the format once, so a bare
+    # `printf '"%s",' "$@"` yields `""` — the pod then gets one empty-string arg
+    # and the entrypoint hands it to trd, which dies on `No such command ''`.
+    local args_json=""
+    if [[ $# -gt 0 ]]; then
+        args_json=$(printf '"%s",' "$@" | sed 's/,$//')
+    fi
     kubectl run "$name" -n "$NAMESPACE" --rm -i --restart=Never \
         --image="$IMAGE_FULL" \
         --overrides="$(cat <<JSON
@@ -134,7 +141,7 @@ run_once() {
       "name": "trd",
       "image": "${IMAGE_FULL}",
       "imagePullPolicy": "Never",
-      "args": [$(printf '"%s",' "$@" | sed 's/,$//')],
+      "args": [${args_json}],
       "env": [
         {"name": "TRD_HOME", "value": "/data"},
         {"name": "TZ", "value": "America/New_York"},
