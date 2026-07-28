@@ -1,0 +1,84 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: trd-engine-scan
+  namespace: trd
+  labels:
+    app: trd
+    component: engine
+spec:
+  # Every 5 minutes, 09:00-16:55 ET, weekdays. cron cannot express "09:30-16:00",
+  # so the schedule is deliberately a little wide and the entrypoint trims the
+  # edges. timeZone means DST is handled for us — no plist to re-edit in November.
+  schedule: "*/5 9-16 * * 1-5"
+  timeZone: "America/New_York"
+
+  # DuckDB is single-writer. Forbid is load-bearing, not hygiene: two overlapping
+  # scans would fight over the same file lock.
+  concurrencyPolicy: Forbid
+
+  # A scan that starts late is worse than one that doesn't start — the next tick
+  # is only five minutes away.
+  startingDeadlineSeconds: 120
+
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      # No retries: a failed scan (provider hiccup, DB busy) just waits for the
+      # next tick. Retrying into a locked database achieves nothing.
+      backoffLimit: 0
+      # Clean up finished pods; the logs live in the retained job history.
+      ttlSecondsAfterFinished: 3600
+      template:
+        metadata:
+          labels:
+            app: trd
+            component: engine
+        spec:
+          restartPolicy: Never
+          containers:
+            - name: trd
+              image: trd:latest
+              imagePullPolicy: Never # locally built, imported with ctr
+              env:
+                - name: TRD_HOME
+                  value: /data
+                - name: TZ
+                  value: America/New_York
+                - name: NO_COLOR
+                  value: "1" # plain text in kubectl logs
+              envFrom:
+                # Telegram credentials. Optional by design: without this secret the
+                # scan still runs and just logs that it sent nothing.
+                - secretRef:
+                    name: trd-engine-telegram
+                    optional: true
+              resources:
+                requests:
+                  memory: "256Mi"
+                  cpu: "100m"
+                limits:
+                  memory: "1Gi"
+                  cpu: "1000m"
+              securityContext:
+                runAsNonRoot: true
+                # Must be able to write the hostPath below. If the mount maps to a
+                # different uid you'll see "Permission denied" on the DuckDB file —
+                # set this to the host's `id -u` (see k3s/trd-engine/README.md).
+                runAsUser: 1000
+                allowPrivilegeEscalation: false
+                capabilities:
+                  drop:
+                    - ALL
+              volumeMounts:
+                - name: trd-home
+                  mountPath: /data
+          volumes:
+            # The DuckDB file lives on the node so you can read it from the host:
+            #   TRD_HOME=~/.trd-engine trd engine report
+            # EDIT this path for the machine you deploy to.
+            - name: trd-home
+              hostPath:
+                path: /Users/tomdrake/.trd-engine
+                type: DirectoryOrCreate
