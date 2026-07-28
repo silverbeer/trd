@@ -6,21 +6,31 @@ database**, DuckDB allows one writer.
 
 ## Deploy
 
-```bash
-cd ~/gitrepos/trd && git pull
-./scripts/deploy-k3s.sh --test     # build, import, apply, then run one scan now
-```
-
-The script prints the target context and waits for confirmation — the engine
-writes trades, so deploying to the wrong cluster is not a no-op.
-
-First run needs history (the rules want 200 bars). From the host:
+Two commands. That's the whole thing.
 
 ```bash
-TRD_HOME=~/.trd-engine trd init
-TRD_HOME=~/.trd-engine trd engine init
-TRD_HOME=~/.trd-engine trd sync --full
+cd ~/gitrepos/trd && git pull && uv tool install --editable .
+./scripts/deploy-k3s.sh --test
 ```
+
+The script prints the target context and waits for a `y` — the engine writes
+trades, so deploying to the wrong cluster is not a no-op. Then it:
+
+1. **Seeds `~/.trd-engine` if it's empty** — creates the paper account, the
+   10-symbol universe, and downloads 2 years of daily bars (the rules need 200).
+   Skipped if already seeded.
+2. Builds the image and imports it into k3s.
+3. Applies the namespace and CronJob, **rewriting the hostPath to this machine's
+   home** — no hand-editing the manifest per user.
+4. With `--test`, runs one scan immediately, market-hours guard bypassed.
+
+### `~/.trd-engine` is not your real database
+
+It is a separate, paper-only DuckDB holding one simulation account and ten
+tickers' price history. Your real trd database is never opened by any of this —
+the engine cannot reach it and does not need it, because it only trades paper.
+
+Override the location with `ENGINE_HOME=/some/path ./scripts/deploy-k3s.sh`.
 
 ## Telegram feed
 
