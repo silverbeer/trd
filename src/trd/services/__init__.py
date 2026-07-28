@@ -3,6 +3,7 @@ from trd.services.dca_detail import DcaDetailService
 from trd.services.dca_projection import DcaProjectionService
 from trd.services.earnings import EarningsService
 from trd.services.equity_curve import EquityCurve, EquityCurveService
+from trd.services.exit_triggers import ExitTriggerService
 from trd.services.indicators import IndicatorService
 from trd.services.movers import MoverRow, MoversService
 from trd.services.plan import PlanService
@@ -19,6 +20,7 @@ __all__ = [
     "EarningsService",
     "EquityCurve",
     "EquityCurveService",
+    "ExitTriggerService",
     "IndicatorService",
     "MoverRow",
     "MoversService",

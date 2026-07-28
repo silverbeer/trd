@@ -35,6 +35,10 @@ trd watch add NVDA [--list ai]        # follow a symbol (creates list if needed)
 trd watch rm NVDA [--list ai]
 trd watch ls [ai]                     # quote board: price, day Δ%, 52w pos, vol/avg, next earnings
 trd earnings [--days 14]              # upcoming earnings across everything tracked
+trd exit set ABBV --account rh-agent --stop 221 [--target 244.81] [--note ...]
+                                      # stop/target exit trigger on a holding (one per account+symbol)
+trd exit ls|check|rm [--account NAME]  # ls = all triggers vs latest close; check = only breaches
+                                      # rule fires on a daily CLOSE beyond the level (run trd sync)
 trd indicators NVDA                   # indicator panel with plain-English readings
 trd indicator ls|catalog|add|rm|info  # manage followed indicators (trd indicator add ema -p period=8)
 trd dca set --account sofi --monthly 100 --day 15 --alloc SPY=40 --alloc QQQ=40 --alloc SMH=10 --alloc ARKX=10
