@@ -1383,8 +1383,9 @@ def learn(
 def backup(
     path: Annotated[Path, typer.Argument(help="Where to write the backup JSON.")],
 ) -> None:
-    """Export user-owned data (accounts, transactions, plans, watchlists, indicators)
-    to a portable JSON file. Prices/earnings are excluded — they rebuild with sync."""
+    """Export user-owned data (accounts, transactions, plans, watchlists, indicators,
+    exit triggers, engine state) to a portable JSON file. Prices/earnings are
+    excluded — they rebuild with sync."""
     import json as _json
 
     from trd.services.backup import export_data
@@ -1396,10 +1397,13 @@ def backup(
     finally:
         conn.close()
     path.write_text(_json.dumps(data, indent=2))
+    engine = data.get("engine") or {}
     console.print(
         f"Backed up [bold]{len(data['transactions'])}[/bold] transactions, "
         f"[bold]{len(data['accounts'])}[/bold] accounts, "
-        f"[bold]{len(data['plans'])}[/bold] plans to {path}."
+        f"[bold]{len(data['plans'])}[/bold] plans, "
+        f"{len(data['exit_triggers'])} exit triggers, "
+        f"{len(engine.get('positions', []))} engine positions to {path}."
     )
 
 
@@ -1432,7 +1436,9 @@ def restore(
     console.print(
         f"Restored [bold]{stats.transactions}[/bold] transactions across "
         f"[bold]{stats.accounts}[/bold] accounts, {stats.plans} plans, "
-        f"{stats.watchlists} watchlists. Run [bold]trd sync[/bold] to refresh prices."
+        f"{stats.watchlists} watchlists, {stats.exit_triggers} exit triggers, "
+        f"{stats.engine_positions} engine positions. "
+        "Run [bold]trd sync[/bold] to refresh prices."
     )
 
 

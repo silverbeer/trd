@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  launchd job: run one trading-engine scan every 5 minutes.
+
+  The wrapper exits immediately outside 09:30-16:00 ET Mon-Fri, so firing all day
+  costs nothing. StartInterval is used rather than 78 StartCalendarInterval entries
+  because launchd coalesces missed intervals after sleep instead of replaying them.
+
+  Install:
+    1) Edit deploy/engine-scan.sh so TRD_HOME/PATH match this machine.
+    2) Replace USERNAME below with your account name (absolute paths only).
+    3) cp deploy/io.silverbeer.trd.engine.plist ~/Library/LaunchAgents/
+    4) launchctl load ~/Library/LaunchAgents/io.silverbeer.trd.engine.plist
+    5) Test now:  launchctl start io.silverbeer.trd.engine
+                  tail -f ~/Library/Logs/trd-engine-run.log
+    Uninstall:    launchctl unload ~/Library/LaunchAgents/io.silverbeer.trd.engine.plist
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>io.silverbeer.trd.engine</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/zsh</string>
+        <string>/Users/USERNAME/gitrepos/trd/deploy/engine-scan.sh</string>
+    </array>
+
+    <!-- Every 5 minutes. The wrapper decides whether the market is open. -->
+    <key>StartInterval</key>
+    <integer>300</integer>
+
+    <!-- Don't fire a scan the moment the plist is loaded; wait for the interval. -->
+    <key>RunAtLoad</key>
+    <false/>
+
+    <key>StandardOutPath</key>
+    <string>/Users/USERNAME/Library/Logs/trd-engine.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/USERNAME/Library/Logs/trd-engine.err</string>
+</dict>
+</plist>

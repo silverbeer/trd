@@ -127,3 +127,91 @@ def test_cli_backup_restore_force(
 def test_version_mismatch_rejected(conn: duckdb.DuckDBPyConnection) -> None:
     with pytest.raises(TrdError, match="version"):
         restore_data(conn, {"version": 999})
+
+
+def test_v1_backups_still_restore(
+    tmp_path: Path, conn: duckdb.DuckDBPyConnection, provider
+) -> None:
+    """Backups written before exit triggers and the engine existed must still load."""
+    _populate(conn, provider)
+    data = export_data(conn)
+    data["version"] = 1
+    del data["exit_triggers"]
+    del data["engine"]
+
+    fresh = connect(tmp_path / "v1.duckdb")
+    stats = restore_data(fresh, data)
+    assert stats.transactions == 4
+    assert stats.exit_triggers == 0
+    assert stats.engine_positions == 0
+
+
+def _populate_engine(conn: duckdb.DuckDBPyConnection, provider: FakeProvider) -> None:
+    """An engine that has taken one trade and closed it, plus an exit trigger."""
+    from tests.test_engine import make_bars, seed, uptrend
+    from trd.services import EngineService, ExitTriggerService
+
+    bars = make_bars(uptrend())
+    provider.add_symbol("AAA", price=str(float(bars[-1].close)))
+    seed(conn, "AAA", bars)
+
+    engine = EngineService(conn, provider)
+    engine.init(symbols=["AAA"], strategies=["momentum"], position_size=Decimal("10000"))
+    engine.scan(at=datetime(2024, 9, 16, 10, 0))
+
+    ExitTriggerService(conn, provider).set(
+        "AAA", "engine-sim", stop=Decimal("100"), target=Decimal("500"), note="hand-set"
+    )
+
+
+def test_engine_state_survives_a_round_trip(
+    tmp_path: Path, conn: duckdb.DuckDBPyConnection, provider
+) -> None:
+    from trd.services import EngineService
+
+    _populate_engine(conn, provider)
+    before = EngineService(conn, provider).position_rows(open_only=True)[0].position
+    data = export_data(conn)
+
+    fresh = connect(tmp_path / "restored.duckdb")
+    stats = restore_data(fresh, data)
+    assert stats.engine_positions == 1
+    assert stats.engine_signals == 1
+    assert stats.exit_triggers == 1
+
+    engine = EngineService(fresh, provider)
+    config = engine.config()
+    assert config.strategies == ["momentum"]
+    assert config.position_size == Decimal("10000")
+    assert config.exit_params["target_r"] == 2.0
+
+    after = engine.position_rows(open_only=True)[0].position
+    assert after.strategy == before.strategy
+    assert after.entry_price == before.entry_price
+    assert after.quantity == before.quantity
+    assert after.stop_price == before.stop_price  # the stop travels — this is the point
+    assert after.target_price == before.target_price
+    assert after.atr_at_entry == before.atr_at_entry
+    assert after.trail_high == before.trail_high
+    assert after.signal_id is not None  # re-linked by (symbol, strategy, bar_date)
+
+    signal = engine.signal_rows()[0]
+    assert signal.signal.acted is True
+    assert signal.instrument.symbol == "AAA"
+
+
+def test_exit_triggers_survive_a_round_trip(
+    tmp_path: Path, conn: duckdb.DuckDBPyConnection, provider
+) -> None:
+    from trd.services import ExitTriggerService
+
+    _populate_engine(conn, provider)
+    fresh = connect(tmp_path / "restored.duckdb")
+    restore_data(fresh, export_data(conn))
+
+    rows = ExitTriggerService(fresh, provider).rows()
+    assert len(rows) == 1
+    assert rows[0].instrument.symbol == "AAA"
+    assert rows[0].stop_price == Decimal("100")
+    assert rows[0].target_price == Decimal("500")
+    assert rows[0].note == "hand-set"
