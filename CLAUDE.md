@@ -62,6 +62,15 @@ trd learn [TERM]                      # investing dictionary: every term + exact
 trd sync --years 10                   # deep backfill (forecast/backtest need long history)
 trd sim init --monthly 100 [--strategy ticker|momentum] [--ticker SPY] [--alloc ...] [--name NAME]
                                       # sim = plan on a paper (simulation) account; sim invest/status same
+trd engine init [--account NAME] [--size 1000] [--max 5] [--symbols A,B,...] [--strategies K,K]
+                                      # monitor-mode trading engine: paper-trades a 10-name universe
+                                      # on a simulation account. Needs 'trd sync --full' (200 bars)
+trd engine scan [--paper/--no-paper] [--json]   # one pass: exits first, then best-ranked entries
+trd engine monitor [--interval 60] [--passes N] # scan on a loop; Ctrl-C safe, every pass persisted
+trd engine positions [--all]          # open trades: entry, stop (↑ = trailing in force), target, R
+trd engine signals [-n 25] [-s KEY]   # every signal fired, taken or passed over, with its reason
+trd engine report                     # per-strategy scorecard: win%, avg win/loss, expectancy in R
+trd engine rules                      # what each entry strategy looks for + the 5 exit rules
 ```
 
 CSV import format (header required): `date,account,symbol,side,quantity,price[,fees,note]` — date is ISO, side is buy/sell.
@@ -75,6 +84,8 @@ CSV import format (header required): `date,account,symbol,side,quantity,price[,f
 - Schema changes = new numbered file in [src/trd/db/migrations](src/trd/db/migrations). Never edit an applied migration.
 - Money/quantities are `Decimal` end to end. Never float.
 - Static reference data (curated universe, FOMC/macro calendar) lives in [src/trd/data](src/trd/data) as plain Python — no YAML dep. `SundayPrepService` is pure (provider + data, no DuckDB); its briefing narrative is deterministic templates, leaving a seam for a future `--ai` pass.
+- Engine rules are code-registry entries, never config: entry strategies in [src/trd/engine/strategies.py](src/trd/engine/strategies.py) (`@register`, mirroring the indicator registry), exit rules in [src/trd/engine/exits.py](src/trd/engine/exits.py). Strategies never reimplement indicator math — they call the indicator registry. Every signal and exit carries a plain-English `reason`; a rule you can't explain doesn't ship.
+- The engine only ever trades a `simulation` account, and its fills are ordinary `txn` rows — so portfolio/equity/XIRR/drawdown work on it unchanged. `engine_position` stores only what a txn can't: strategy, stop/target, trail high-water mark, exit reason. The initial stop is immutable so closed-trade R-multiples stay meaningful.
 - Tests never hit the network. Extend `FakeProvider` in [tests/conftest.py](tests/conftest.py).
 
 ## Environment

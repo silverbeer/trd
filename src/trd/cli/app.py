@@ -1,3 +1,4 @@
+from contextlib import suppress
 from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
@@ -18,6 +19,12 @@ from trd.cli.render import (
     dca_summary_table,
     dca_symbols_table,
     earnings_table,
+    engine_exits_table,
+    engine_positions_table,
+    engine_report_table,
+    engine_scan_renderables,
+    engine_signals_table,
+    engine_strategies_table,
     equity_curve_renderables,
     equity_daily_table,
     exit_table,
@@ -45,6 +52,7 @@ from trd.services import (
     DcaDetailService,
     DcaProjectionService,
     EarningsService,
+    EngineService,
     EquityCurveService,
     ExitTriggerService,
     IndicatorService,
@@ -57,6 +65,7 @@ from trd.services import (
     SyncService,
     WatchlistService,
 )
+from trd.services.engine import DEFAULT_ENGINE_ACCOUNT
 from trd.services.indicators import seed_defaults
 from trd.services.plan import PlanStatus
 from trd.services.watchlist import DEFAULT_WATCHLIST
@@ -83,6 +92,11 @@ app.add_typer(plan_app, name="dca")
 app.add_typer(plan_app, name="plan", hidden=True)  # back-compat alias
 exit_app = typer.Typer(help="Stop/target exit triggers on holdings.", no_args_is_help=True)
 app.add_typer(exit_app, name="exit")
+engine_app = typer.Typer(
+    help="Monitor-mode trading engine: scan a universe, paper-trade the signals.",
+    no_args_is_help=True,
+)
+app.add_typer(engine_app, name="engine")
 console = Console()
 err_console = Console(stderr=True)
 
@@ -100,6 +114,11 @@ def _watchlist_service() -> WatchlistService:
 def _exit_service() -> ExitTriggerService:
     settings = get_settings()
     return ExitTriggerService(connect(settings.db_path), YFinanceProvider())
+
+
+def _engine_service() -> EngineService:
+    settings = get_settings()
+    return EngineService(connect(settings.db_path), YFinanceProvider())
 
 
 def _fail(exc: TrdError) -> None:
@@ -1429,6 +1448,169 @@ def import_csv(
         _fail(exc)
         return
     console.print(f"Imported [bold]{count}[/bold] transactions from {path}.")
+
+
+@engine_app.command("init")
+def engine_init(
+    account: Annotated[
+        str, typer.Option("--account", "-a", help="Simulation account the engine trades.")
+    ] = DEFAULT_ENGINE_ACCOUNT,
+    size: Annotated[str, typer.Option("--size", help="Dollars committed per trade.")] = "1000",
+    max_positions: Annotated[int, typer.Option("--max", help="Most positions open at once.")] = 5,
+    symbols: Annotated[
+        str | None,
+        typer.Option("--symbols", help="Comma-separated universe. Omit for the default ten."),
+    ] = None,
+    strategies: Annotated[
+        str | None,
+        typer.Option("--strategies", help="Comma-separated strategy keys. Omit for all."),
+    ] = None,
+) -> None:
+    """Set up the engine: a simulation account, a 10-name universe, and the rule set."""
+    service = _engine_service()
+    try:
+        config, acct, universe = service.init(
+            account_name=account,
+            position_size=_parse_decimal(size, "size"),
+            max_positions=max_positions,
+            symbols=[s.strip().upper() for s in symbols.split(",") if s.strip()]
+            if symbols
+            else None,
+            strategies=[s.strip() for s in strategies.split(",") if s.strip()]
+            if strategies
+            else None,
+        )
+    except TrdError as exc:
+        _fail(exc)
+        return
+    console.print(
+        f"Engine ready on [bold]{acct.name}[/bold] (simulation).\n"
+        f"Universe ({len(universe)}): {', '.join(universe)}\n"
+        f"Strategies: {', '.join(config.strategies)}\n"
+        f"Size {fmt_money(config.position_size)}/trade, max {config.max_positions} open.\n\n"
+        "Next: [bold]trd sync --full[/bold] (the rules need 200 bars of history), "
+        "then [bold]trd engine scan[/bold]."
+    )
+
+
+@engine_app.command("scan")
+def engine_scan(
+    paper: Annotated[
+        bool, typer.Option("--paper/--no-paper", help="Take paper fills, or only log signals.")
+    ] = True,
+    as_json: Annotated[bool, typer.Option("--json", help="Emit the scan result as JSON.")] = False,
+) -> None:
+    """Run one scan pass: manage exits, then take the best new entries."""
+    service = _engine_service()
+    try:
+        result = service.scan(paper=paper)
+    except TrdError as exc:
+        _fail(exc)
+        return
+    if as_json:
+        console.print_json(result.model_dump_json())
+        return
+    for renderable in engine_scan_renderables(result):
+        console.print(renderable)
+
+
+@engine_app.command("monitor")
+def engine_monitor(
+    interval: Annotated[int, typer.Option("--interval", "-i", help="Seconds between scans.")] = 60,
+    paper: Annotated[
+        bool, typer.Option("--paper/--no-paper", help="Take paper fills, or only log signals.")
+    ] = True,
+    passes: Annotated[
+        int | None, typer.Option("--passes", help="Stop after N scans. Omit to run until Ctrl-C.")
+    ] = None,
+) -> None:
+    """Scan on a loop. Ctrl-C to stop — every pass is already persisted."""
+    import time
+
+    service = _engine_service()
+    count = 0
+    console.print(f"[dim]Monitoring every {interval}s. Ctrl-C to stop.[/dim]")
+    try:
+        while passes is None or count < passes:
+            try:
+                result = service.scan(paper=paper)
+            except TrdError as exc:
+                _fail(exc)
+                return
+            for renderable in engine_scan_renderables(result):
+                console.print(renderable)
+            count += 1
+            if passes is not None and count >= passes:
+                break
+            time.sleep(interval)
+    except KeyboardInterrupt:
+        console.print(f"\n[dim]Stopped after {count} scan(s).[/dim]")
+
+
+@engine_app.command("signals")
+def engine_signals(
+    limit: Annotated[int, typer.Option("--limit", "-n", help="How many to show.")] = 25,
+    strategy: Annotated[
+        str | None, typer.Option("--strategy", "-s", help="Filter to one strategy key.")
+    ] = None,
+) -> None:
+    """Signal history — everything the rules saw, taken or passed over."""
+    service = _engine_service()
+    try:
+        rows = service.signal_rows(limit=limit, strategy=strategy)
+    except TrdError as exc:
+        _fail(exc)
+        return
+    if not rows:
+        console.print("No signals yet. Run [bold]trd engine scan[/bold].")
+        return
+    console.print(engine_signals_table(rows))
+
+
+@engine_app.command("positions")
+def engine_positions(
+    all_: Annotated[
+        bool, typer.Option("--all", help="Include closed trades, not just open ones.")
+    ] = False,
+) -> None:
+    """Engine positions with live P&L and where the stops sit."""
+    service = _engine_service()
+    try:
+        rows = service.position_rows(open_only=not all_)
+    except TrdError as exc:
+        _fail(exc)
+        return
+    if not rows:
+        console.print("No engine positions yet. Run [bold]trd engine scan[/bold].")
+        return
+    title = "Engine positions — all" if all_ else "Engine positions — open"
+    console.print(engine_positions_table(rows, title, show_exit=all_))
+
+
+@engine_app.command("report")
+def engine_report() -> None:
+    """Per-strategy scorecard over closed trades: win rate, avg win/loss, expectancy."""
+    service = _engine_service()
+    try:
+        stats = service.report()
+    except TrdError as exc:
+        _fail(exc)
+        return
+    if not stats:
+        console.print("No trades yet. Run [bold]trd engine scan[/bold] for a while first.")
+        return
+    console.print(engine_report_table(stats))
+
+
+@engine_app.command("rules")
+def engine_rules() -> None:
+    """What every entry strategy looks for and how each exit rule works."""
+    service = _engine_service()
+    params = None
+    with suppress(TrdError):  # rules are readable before the engine is configured
+        params = service.config().exit_params
+    console.print(engine_strategies_table())
+    console.print(engine_exits_table(params))
 
 
 def main() -> None:
