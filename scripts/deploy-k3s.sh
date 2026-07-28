@@ -6,7 +6,12 @@
 #   ./scripts/deploy-k3s.sh                 # build image, import, apply manifests
 #   ./scripts/deploy-k3s.sh --skip-build    # apply manifests against the existing image
 #   ./scripts/deploy-k3s.sh --test          # apply, then run one scan now (ignores market hours)
+#   ./scripts/deploy-k3s.sh --day           # the day-mode engine (~/.trd-day) instead
 #
+# Two engines can run side by side: they share the image, the namespace and the
+# optional Telegram secret, and differ only in which database they mount. The
+# manifest is rewritten per deployment rather than duplicated, so there is one
+# file to keep correct.
 set -e
 
 RED='\033[0;31m'
@@ -22,21 +27,38 @@ NAMESPACE="trd"
 
 SKIP_BUILD=false
 RUN_TEST=false
+DAY_MODE=false
 while [[ $# -gt 0 ]]; do
     case $1 in
         --skip-build) SKIP_BUILD=true; shift ;;
         --test) RUN_TEST=true; shift ;;
-        *) echo "Unknown option: $1"; echo "Usage: $0 [--skip-build] [--test]"; exit 1 ;;
+        --day) DAY_MODE=true; shift ;;
+        *)
+            echo "Unknown option: $1"
+            echo "Usage: $0 [--skip-build] [--test] [--day]"
+            exit 1
+            ;;
     esac
 done
 
-# The engine's own database. Deliberately NOT your real trd database: this one
-# holds a paper account and ten tickers' price history, nothing else.
-ENGINE_HOME="${ENGINE_HOME:-$HOME/.trd-engine}"
+# Which engine this invocation deploys. The name is load-bearing: it becomes the
+# CronJob name, so without it a second deployment would REPLACE the first and
+# silently repoint the running engine at the other database.
+if [[ "$DAY_MODE" == true ]]; then
+    ENGINE_NAME="${ENGINE_NAME:-trd-day}"
+    ENGINE_HOME="${ENGINE_HOME:-$HOME/.trd-day}"
+    DAY_FLAG=" --day"
+else
+    ENGINE_NAME="${ENGINE_NAME:-trd-engine}"
+    # The engine's own database. Deliberately NOT your real trd database: this
+    # one holds a paper account and its universe's price history, nothing else.
+    ENGINE_HOME="${ENGINE_HOME:-$HOME/.trd-engine}"
+    DAY_FLAG=""
+fi
 
 CURRENT_CONTEXT=$(kubectl config current-context)
 echo -e "${BLUE}========================================${NC}"
-echo -e "${BLUE}K3s Deployment: trd engine${NC}"
+echo -e "${BLUE}K3s Deployment: ${ENGINE_NAME}${NC}"
 echo -e "${BLUE}========================================${NC}"
 echo -e "Context:     ${YELLOW}${CURRENT_CONTEXT}${NC}"
 echo -e "Engine DB:   ${YELLOW}${ENGINE_HOME}${NC}  (paper only)"
@@ -95,13 +117,24 @@ if [[ "$SKIP_BUILD" == false ]]; then
     echo ""
 fi
 
+# One manifest, rewritten per deployment:
+#   - hostPath   -> this machine's engine home (the committed value is a default)
+#   - name       -> ${ENGINE_NAME}-scan, so two engines are two CronJobs
+#   - component  -> ${ENGINE_NAME}, so `kubectl logs -l component=trd-day` picks
+#                   out one engine. `app: trd` stays on both, keeping the
+#                   existing `-l app=trd` recipe working across all of them.
+render_manifest() {
+    sed -E \
+        -e "s#path: /Users/[^[:space:]]+#path: ${ENGINE_HOME}#" \
+        -e "s#name: trd-engine-scan#name: ${ENGINE_NAME}-scan#" \
+        -e "s#component: engine#component: ${ENGINE_NAME}#" \
+        k3s/trd-engine/cronjob.yaml
+}
+
 echo -e "${YELLOW}⚙️  Applying manifests...${NC}"
 kubectl apply -f k3s/trd-engine/namespace.yaml
-# Rewrite the hostPath to this machine's engine home, so the manifest does not
-# have to be hand-edited per user. The committed value is only a default.
-sed -E "s#path: /Users/[^[:space:]]+#path: ${ENGINE_HOME}#" k3s/trd-engine/cronjob.yaml \
-    | kubectl apply -f -
-echo -e "${GREEN}✅ Applied${NC} (hostPath → ${ENGINE_HOME})"
+render_manifest | kubectl apply -f -
+echo -e "${GREEN}✅ Applied${NC} (${ENGINE_NAME}-scan, hostPath → ${ENGINE_HOME})"
 echo ""
 
 if ! kubectl get secret trd-engine-telegram -n "$NAMESPACE" &>/dev/null; then
@@ -164,7 +197,7 @@ JSON
 if [[ "$RUN_TEST" == true ]]; then
     echo -e "${YELLOW}🚀 Running one scan now (market-hours guard bypassed)...${NC}"
     # No args -> the entrypoint's normal path: guard, daily sync, scan, publish.
-    run_once "trd-engine-test-$(date +%s)" || true
+    run_once "${ENGINE_NAME}-test-$(date +%s)" || true
     echo ""
 fi
 
@@ -173,11 +206,11 @@ echo -e "${GREEN}✅ Deployment Complete${NC}"
 echo -e "${GREEN}========================================${NC}"
 echo ""
 echo -e "${BLUE}Useful commands:${NC}"
-echo "  Watch scans live:"
-echo "    kubectl logs -n $NAMESPACE -l app=trd --tail=100 -f"
+echo "  Watch this engine's scans live (drop the selector for all engines):"
+echo "    kubectl logs -n $NAMESPACE -l component=${ENGINE_NAME} --tail=100 -f"
 echo ""
 echo "  Run one scan right now:"
-echo "    ./scripts/deploy-k3s.sh --skip-build --test"
+echo "    ./scripts/deploy-k3s.sh --skip-build --test${DAY_FLAG}"
 echo ""
 echo "  Read the scorecard — easiest from the host, same database:"
 echo "    TRD_HOME=${ENGINE_HOME} trd engine report"
