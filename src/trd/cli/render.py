@@ -6,7 +6,7 @@ from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 
-from trd.models import BoardRow, EarningsEvent, LotPosition, Position
+from trd.models import BoardRow, EarningsEvent, ExitCheckRow, ExitStatus, LotPosition, Position
 from trd.repos import PrepSnapshotRow
 from trd.services.dashboard import Dashboard, Holding
 from trd.services.dca_detail import PlanDetail
@@ -128,6 +128,44 @@ def positions_table(
             fmt_signed(total_pl),
             heat_pct(total_pl_pct),
         )
+    return table
+
+
+_EXIT_STATUS_LABEL = {
+    ExitStatus.STOP_HIT: "[bold red]⚠ STOP HIT[/bold red]",
+    ExitStatus.TARGET_HIT: "[bold green]✓ TARGET[/bold green]",
+    ExitStatus.OK: "[dim]holding[/dim]",
+    ExitStatus.NO_PRICE: "[yellow]no close — sync[/yellow]",
+}
+
+
+def exit_table(rows: list[ExitCheckRow], title: str, show_account: bool = True) -> Table:
+    """Exit triggers vs the latest close: stop, cushion, target, room, and status."""
+    table = Table(title=title, title_justify="left")
+    if show_account:
+        table.add_column("Account", style="dim")
+    table.add_column("Symbol", style="bold")
+    table.add_column("Last Close", justify="right")
+    table.add_column("Stop", justify="right")
+    table.add_column("Cushion", justify="right")
+    table.add_column("Target", justify="right")
+    table.add_column("Room", justify="right")
+    table.add_column("Status")
+    table.add_column("Note", style="dim")
+    for row in rows:
+        cells = [
+            row.instrument.symbol,
+            fmt_money(row.last_close),
+            fmt_money(row.stop_price),
+            fmt_signed_pct(row.stop_cushion_pct),
+            fmt_money(row.target_price),
+            fmt_signed_pct(row.target_upside_pct),
+            _EXIT_STATUS_LABEL[row.status],
+            row.note or "",
+        ]
+        if show_account:
+            cells.insert(0, row.account)
+        table.add_row(*cells)
     return table
 
 
