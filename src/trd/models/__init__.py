@@ -19,6 +19,16 @@ from trd.models.core import (
     Transaction,
     Watchlist,
 )
+from trd.models.engine import (
+    EngineConfig,
+    EnginePosition,
+    EngineRun,
+    EngineSignal,
+    PositionRow,
+    PositionStatus,
+    SignalRow,
+    StrategyStat,
+)
 
 __all__ = [
     "Account",
@@ -27,6 +37,10 @@ __all__ = [
     "DailyBar",
     "EarningsDate",
     "EarningsEvent",
+    "EngineConfig",
+    "EnginePosition",
+    "EngineRun",
+    "EngineSignal",
     "ExitCheckRow",
     "ExitStatus",
     "ExitTrigger",
@@ -36,8 +50,12 @@ __all__ = [
     "InstrumentType",
     "LotPosition",
     "Position",
+    "PositionRow",
+    "PositionStatus",
     "Quote",
     "Side",
+    "SignalRow",
+    "StrategyStat",
     "Transaction",
     "Watchlist",
 ]
