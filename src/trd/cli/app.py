@@ -1484,6 +1484,13 @@ def engine_init(
             help="Take no new entry within this many days of a print. 0 disables.",
         ),
     ] = DEFAULT_EARNINGS_BLACKOUT_DAYS,
+    flat_at: Annotated[
+        int,
+        typer.Option(
+            "--flat-at",
+            help="Day mode: flatten at this time (HHMM, e.g. 1555). 0 = carry overnight.",
+        ),
+    ] = 0,
 ) -> None:
     """Set up the engine: a simulation account, a 10-name universe, and the rule set."""
     service = _engine_service()
@@ -1499,15 +1506,24 @@ def engine_init(
             strategies=[s.strip() for s in strategies.split(",") if s.strip()]
             if strategies
             else None,
+            exit_params={"flat_at_minute": float(flat_at)} if flat_at else None,
         )
     except TrdError as exc:
         _fail(exc)
         return
+    flat = int(config.exit_params.get("flat_at_minute", 0))
     console.print(
         f"Engine ready on [bold]{acct.name}[/bold] (simulation).\n"
         f"Universe ({len(universe)}): {', '.join(universe)}\n"
         f"Strategies: {', '.join(config.strategies)}\n"
         f"Size {fmt_money(config.position_size)}/trade, max {config.max_positions} open.\n"
+        + (
+            f"Day mode: flat at {flat // 100:02d}:{flat % 100:02d}, "
+            f"no new entries after {(flat // 100 * 60 + flat % 100 - 30) // 60:02d}:"
+            f"{(flat // 100 * 60 + flat % 100 - 30) % 60:02d}.\n"
+            if flat
+            else "Swing mode: positions carry overnight.\n"
+        )
         + (
             f"No new entry within {config.earnings_blackout_days}d of earnings.\n\n"
             if config.earnings_blackout_days
