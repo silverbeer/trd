@@ -46,6 +46,16 @@ class EarningsRepo:
             for r in rows
         ]
 
+    def dates_for_instrument(self, instrument_id: int) -> list[date]:
+        """Every known earnings date for one instrument, oldest first. The backtest
+        loads these once and checks its blackout window in memory — one query per
+        symbol instead of one per simulated day."""
+        rows = self.conn.execute(
+            "SELECT date FROM earnings_event WHERE instrument_id = ? ORDER BY date",
+            [instrument_id],
+        ).fetchall()
+        return [r[0] for r in rows]
+
     def next_for_instrument(self, instrument_id: int, start: date | None = None) -> date | None:
         start = start or date.today()
         row = self.conn.execute(

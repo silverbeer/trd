@@ -31,6 +31,20 @@ class PriceRepo:
             )
         return len(bars)
 
+    def daily_bars(self, instrument_id: int) -> list[DailyBar]:
+        """The full stored daily series, oldest first."""
+        rows = self.conn.execute(
+            """
+            SELECT date, open, high, low, close, volume FROM price_daily
+            WHERE instrument_id = ? ORDER BY date
+            """,
+            [instrument_id],
+        ).fetchall()
+        return [
+            DailyBar(date=r[0], open=r[1], high=r[2], low=r[3], close=r[4], volume=r[5])
+            for r in rows
+        ]
+
     def insert_snapshot(
         self, instrument_id: int, price: Decimal, prev_close: Decimal | None
     ) -> None:

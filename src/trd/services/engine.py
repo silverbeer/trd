@@ -119,6 +119,83 @@ class ScanResult(BaseModel):
         return not self.signals and not self.opened and not self.closed
 
 
+class EntryPlan(BaseModel):
+    """A sized fill at the last bar's close: how much, and where the exits sit."""
+
+    quantity: Decimal
+    stop_price: Decimal
+    target_price: Decimal
+    atr: Decimal
+
+
+def plan_entry(
+    bars: list[DailyBar], position_size: Decimal, exit_params: dict[str, float]
+) -> tuple[EntryPlan | None, str | None]:
+    """Quantity, initial stop and target for an entry at the last bar's close.
+
+    Shared by the live engine and the backtest so their fills cannot drift apart.
+    Returns (plan, skip_reason); both None when the numbers refuse without a story
+    worth telling (non-positive price, or a stop that would sit below zero).
+
+    Fractional quantity, because flooring to whole shares silently un-fixes
+    fixed-dollar sizing: a $340 name in a $1000 slot gets $680 of exposure and a
+    $1278 name gets none at all, so price alone re-weights the book and quietly
+    drops the expensive half of the universe. 6dp matches broker fill precision
+    and sits well inside the DECIMAL(24, 8) the txn and position tables store.
+    """
+    price = bars[-1].close
+    if price <= 0:
+        return None, None
+    quantity = (position_size / price).quantize(Decimal("0.000001"), rounding=ROUND_DOWN)
+    if quantity <= 0:
+        return None, (
+            f"{price:.2f}/share against a {position_size:.0f} position size rounds to nothing"
+        )
+    atr = last(indicator("atr", bars, period=14)["value"])
+    if atr is None or atr <= 0:
+        return None, "no ATR yet — cannot size the stop"
+    atr_dec = Decimal(str(atr))
+    stop = price - atr_dec * Decimal(str(exit_params.get("stop_atr_mult", 2.0)))
+    if stop <= 0:
+        return None, None
+    target = price + (price - stop) * Decimal(str(exit_params.get("target_r", 2.0)))
+    return EntryPlan(quantity=quantity, stop_price=stop, target_price=target, atr=atr_dec), None
+
+
+def strategy_stats(
+    closed: list[EnginePosition], open_counts: dict[str, int] | None = None
+) -> list[StrategyStat]:
+    """Group closed trades into the per-strategy scorecard. Shared by the live
+    report and the backtest so the two read on the same scale."""
+    open_counts = open_counts or {}
+    grouped: dict[str, list[EnginePosition]] = {}
+    for position in closed:
+        grouped.setdefault(position.strategy, []).append(position)
+
+    stats: list[StrategyStat] = []
+    for key in sorted(set(grouped) | set(open_counts)):
+        trades = grouped.get(key, [])
+        wins = [p for p in trades if (p.realized_pnl or Decimal(0)) > 0]
+        losses = [p for p in trades if (p.realized_pnl or Decimal(0)) <= 0]
+        win_pcts = [p.pnl_pct_at(p.exit_price) for p in wins]
+        loss_pcts = [p.pnl_pct_at(p.exit_price) for p in losses]
+        rs = [p.realized_r for p in trades if p.realized_r is not None]
+        stats.append(
+            StrategyStat(
+                strategy=key,
+                trades=len(trades),
+                wins=len(wins),
+                losses=len(losses),
+                total_pnl=sum((p.realized_pnl or Decimal(0) for p in trades), Decimal(0)),
+                avg_win_pct=_mean(win_pcts),
+                avg_loss_pct=_mean(loss_pcts),
+                avg_r=_mean(rs),
+                open_trades=open_counts.get(key, 0),
+            )
+        )
+    return stats
+
+
 class EngineService:
     def __init__(self, conn: duckdb.DuckDBPyConnection, provider: MarketDataProvider) -> None:
         self.conn = conn
@@ -222,17 +299,7 @@ class EngineService:
     # ------------------------------------------------------------ bar plumbing
 
     def _stored_bars(self, instrument_id: int) -> list[DailyBar]:
-        rows = self.conn.execute(
-            """
-            SELECT date, open, high, low, close, volume FROM price_daily
-            WHERE instrument_id = ? ORDER BY date
-            """,
-            [instrument_id],
-        ).fetchall()
-        return [
-            DailyBar(date=r[0], open=r[1], high=r[2], low=r[3], close=r[4], volume=r[5])
-            for r in rows
-        ]
+        return self.prices.daily_bars(instrument_id)
 
     @staticmethod
     def _entry_cutoff(params: dict[str, float]) -> int | None:
@@ -578,36 +645,17 @@ class EngineService:
         result: ScanResult,
     ) -> ScanFill | None:
         price = bars[-1].close
-        if price <= 0:
+        plan, skip = plan_entry(bars, config.position_size, config.exit_params)
+        if plan is None:
+            if skip is not None:
+                result.skipped.append(f"{instrument.symbol}: {skip}")
             return None
-        # Fractional, because flooring to whole shares silently un-fixes fixed-dollar
-        # sizing: a $340 name in a $1000 slot gets $680 of exposure and a $1278 name
-        # gets none at all, so price alone re-weights the book and quietly drops the
-        # expensive half of the universe. 6dp matches broker fill precision and sits
-        # well inside the DECIMAL(24, 8) the txn and position tables already store.
-        quantity = (config.position_size / price).quantize(Decimal("0.000001"), rounding=ROUND_DOWN)
-        if quantity <= 0:
-            result.skipped.append(
-                f"{instrument.symbol}: {price:.2f}/share against a "
-                f"{config.position_size:.0f} position size rounds to nothing"
-            )
-            return None
-
-        atr = last(indicator("atr", bars, period=14)["value"])
-        if atr is None or atr <= 0:
-            result.skipped.append(f"{instrument.symbol}: no ATR yet — cannot size the stop")
-            return None
-        atr_dec = Decimal(str(atr))
-        stop = price - atr_dec * Decimal(str(config.exit_params.get("stop_atr_mult", 2.0)))
-        if stop <= 0:
-            return None
-        target = price + (price - stop) * Decimal(str(config.exit_params.get("target_r", 2.0)))
 
         self.txns.insert(
             account_id=account.id,
             instrument_id=instrument.id,
             side=Side.BUY,
-            quantity=quantity,
+            quantity=plan.quantity,
             price=price,
             fees=Decimal(0),
             executed_at=now,
@@ -620,10 +668,10 @@ class EngineService:
             strategy=scan_signal.strategy,
             opened_at=now,
             entry_price=price,
-            quantity=quantity,
-            stop_price=stop,
-            target_price=target,
-            atr_at_entry=atr_dec,
+            quantity=plan.quantity,
+            stop_price=plan.stop_price,
+            target_price=plan.target_price,
+            atr_at_entry=plan.atr,
             last_bar_date=bars[-1].date,
         )
         if signal_id is not None:
@@ -634,7 +682,7 @@ class EngineService:
         return ScanFill(
             symbol=instrument.symbol,
             strategy=scan_signal.strategy,
-            quantity=quantity,
+            quantity=plan.quantity,
             price=price,
             reason=scan_signal.reason,
         )
@@ -665,37 +713,11 @@ class EngineService:
     def report(self) -> list[StrategyStat]:
         """Per-strategy scorecard over closed trades. The reason the dry run exists."""
         account = self.account()
-        closed = self.positions.list_closed(account.id)
+        closed = [position for position, _ in self.positions.list_closed(account.id)]
         open_counts: dict[str, int] = {}
         for position, _ in self.positions.list_open(account.id):
             open_counts[position.strategy] = open_counts.get(position.strategy, 0) + 1
-
-        grouped: dict[str, list[EnginePosition]] = {}
-        for position, _ in closed:
-            grouped.setdefault(position.strategy, []).append(position)
-
-        stats: list[StrategyStat] = []
-        for key in sorted(set(grouped) | set(open_counts)):
-            trades = grouped.get(key, [])
-            wins = [p for p in trades if (p.realized_pnl or Decimal(0)) > 0]
-            losses = [p for p in trades if (p.realized_pnl or Decimal(0)) <= 0]
-            win_pcts = [p.pnl_pct_at(p.exit_price) for p in wins]
-            loss_pcts = [p.pnl_pct_at(p.exit_price) for p in losses]
-            rs = [p.realized_r for p in trades if p.realized_r is not None]
-            stats.append(
-                StrategyStat(
-                    strategy=key,
-                    trades=len(trades),
-                    wins=len(wins),
-                    losses=len(losses),
-                    total_pnl=sum((p.realized_pnl or Decimal(0) for p in trades), Decimal(0)),
-                    avg_win_pct=_mean(win_pcts),
-                    avg_loss_pct=_mean(loss_pcts),
-                    avg_r=_mean(rs),
-                    open_trades=open_counts.get(key, 0),
-                )
-            )
-        return stats
+        return strategy_stats(closed, open_counts)
 
 
 def scan_events(result: ScanResult) -> list[dict]:

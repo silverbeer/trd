@@ -21,6 +21,7 @@ from trd.models import (
     StrategyStat,
 )
 from trd.repos import PrepSnapshotRow
+from trd.services.backtest import BacktestResult as EngineBacktestResult
 from trd.services.dashboard import Dashboard, Holding
 from trd.services.dca_detail import PlanDetail
 from trd.services.dca_projection import BacktestResult, ForecastResult
@@ -1277,3 +1278,34 @@ def engine_exits_table(params: dict[str, float] | None = None) -> Table:
         table.caption = "  ".join(f"{k}={v:g}" for k, v in sorted(params.items()))
         table.caption_justify = "left"
     return table
+
+
+def engine_backtest_renderables(result: EngineBacktestResult) -> list[RenderableType]:
+    """A backtest run: the headline, the same scorecard the live report uses
+    (that sameness is the point — one scale for both), and the caveat, which is
+    not decoration: the number is an upper bound."""
+    out: list[RenderableType] = []
+    ret = result.total_return_pct
+    header = (
+        f"[bold]engine backtest[/bold]  {result.start} → {result.end}  ·  "
+        f"{len(result.symbols)} symbols  ·  fill: {result.fill}\n"
+        f"{len(result.trades)} closed trades  ·  {result.open_at_end} still open  ·  "
+        + (
+            f"earnings blackout {result.earnings_blackout_days}d "
+            f"({result.blackout_blocked} signals blocked)"
+            if result.earnings_blackout_days
+            else "earnings blackout off"
+        )
+        + f"\nequity {fmt_money(result.start_value)} → {fmt_money(result.end_value)}"
+        + (f" ({ret:+.1f}%)" if ret is not None else "")
+        + f"  ·  max drawdown {result.max_drawdown_pct:.1f}%"
+    )
+    out.append(Panel(header, expand=False, border_style="cyan"))
+    if result.stats:
+        out.append(engine_report_table(result.stats))
+    else:
+        out.append(Text("No completed trades in this window.", style="dim"))
+    for note in result.skipped:
+        out.append(Text(f"  {note}", style="dim"))
+    out.append(Panel(result.caveat, border_style="yellow", title="Caveat", title_align="left"))
+    return out

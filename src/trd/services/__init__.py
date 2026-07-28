@@ -1,3 +1,4 @@
+from trd.services.backtest import BacktestService
 from trd.services.dashboard import DashboardService
 from trd.services.dca_detail import DcaDetailService
 from trd.services.dca_projection import DcaProjectionService
@@ -15,6 +16,7 @@ from trd.services.sync import SyncResult, SyncService
 from trd.services.watchlist import WatchlistService
 
 __all__ = [
+    "BacktestService",
     "DashboardService",
     "DcaDetailService",
     "DcaProjectionService",

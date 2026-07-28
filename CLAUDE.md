@@ -71,6 +71,10 @@ trd engine positions [--all]          # open trades: entry, stop (↑ = trailing
 trd engine signals [-n 25] [-s KEY]   # every signal fired, taken or passed over, with its reason
 trd engine report                     # per-strategy scorecard: win%, avg win/loss, expectancy in R
 trd engine rules                      # what each entry strategy looks for + the 5 exit rules
+trd engine backtest [--years N] [--fill intrabar|close] [--no-blackout] [--symbols A,B]
+                                      # replay the rules against stored history — same scorecard as
+                                      # 'report', hundreds of trades per run. Needs 'trd sync
+                                      # --years 10'; day-mode (flat_at) configs are refused
 trd engine scan --ndjson --notify     # one JSON event per line (log shipping) + Telegram on fills
 ```
 
