@@ -24,10 +24,39 @@ trades, so deploying to the wrong cluster is not a no-op. Then it:
    home** — no hand-editing the manifest per user.
 4. With `--test`, runs one scan immediately, market-hours guard bypassed.
 
+### Running more than one engine
+
+`--day` deploys a second engine against `~/.trd-day`:
+
+```bash
+./scripts/deploy-k3s.sh --skip-build --day
+```
+
+The two share the image, the namespace and the Telegram secret, and differ only
+in which database they mount — a swing engine carrying positions overnight, and
+a day-mode one that flattens at `flat_at_minute`.
+
+The CronJob **name** is what keeps them apart (`trd-engine-scan` vs
+`trd-day-scan`). Without that, applying the manifest twice would replace the
+first engine and silently repoint it at the other database, which looks like
+nothing happening until you notice one engine's trades landing in the other's
+account.
+
+Each engine's pods carry `component: <engine-name>`, so:
+
+```bash
+kubectl logs -n trd -l component=trd-day --tail=100 -f   # one engine
+kubectl logs -n trd -l app=trd --tail=100 -f             # all of them
+```
+
+`concurrencyPolicy: Forbid` is per CronJob, so it does not stop two *different*
+engines running at once — that is fine, because they hold separate DuckDB files
+and never contend for the same writer lock.
+
 ### `~/.trd-engine` is not your real database
 
-It is a separate, paper-only DuckDB holding one simulation account and ten
-tickers' price history. Your real trd database is never opened by any of this —
+It is a separate, paper-only DuckDB holding one simulation account and its
+universe's price history. Your real trd database is never opened by any of this —
 the engine cannot reach it and does not need it, because it only trades paper.
 
 Override the location with `ENGINE_HOME=/some/path ./scripts/deploy-k3s.sh`.
@@ -138,7 +167,7 @@ Bot tokens never reach a log line — HTTP errors are re-raised without the URL
 | Phone | Telegram channel — a message per fill, with the reason |
 | MacBook Air | `iCloud/trd/engine/status.txt`, or `trd restore` the published backup |
 | Grafana | promtail tails the pod logs; every scan emits NDJSON, one event per line |
-| Terminal | `kubectl logs -n trd -l app=trd --tail=100 -f` |
+| Terminal | `kubectl logs -n trd -l app=trd --tail=100 -f` (all engines) or `-l component=trd-day` for one |
 | Mini | `TRD_HOME=~/.trd-engine trd engine report` — same DB, via the hostPath |
 
 ### Reaching the Air: why the engine does not live in iCloud
