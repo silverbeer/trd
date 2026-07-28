@@ -20,6 +20,7 @@ from trd.cli.render import (
     dca_summary_table,
     dca_symbols_table,
     earnings_table,
+    engine_backtest_renderables,
     engine_exits_table,
     engine_positions_table,
     engine_report_table,
@@ -68,6 +69,7 @@ from trd.services import (
     SyncService,
     WatchlistService,
 )
+from trd.services.backtest import BacktestService, FillMode
 from trd.services.engine import (
     DEFAULT_EARNINGS_BLACKOUT_DAYS,
     DEFAULT_ENGINE_ACCOUNT,
@@ -1691,6 +1693,71 @@ def engine_report() -> None:
         console.print("No trades yet. Run [bold]trd engine scan[/bold] for a while first.")
         return
     console.print(engine_report_table(stats))
+
+
+@engine_app.command("backtest")
+def engine_backtest(
+    years: Annotated[
+        int | None, typer.Option("--years", help="Replay the last N years. Omit for everything.")
+    ] = None,
+    start: Annotated[
+        str | None, typer.Option("--start", help="First trading date (ISO). Earlier bars warm up.")
+    ] = None,
+    end: Annotated[str | None, typer.Option("--end", help="Last date to replay (ISO).")] = None,
+    fill: Annotated[
+        str,
+        typer.Option(
+            "--fill",
+            help="Exit fill model: 'intrabar' checks stops/targets against each bar's "
+            "range (gaps fill at the open); 'close' only ever fills at the close.",
+        ),
+    ] = "intrabar",
+    blackout: Annotated[
+        bool,
+        typer.Option(
+            "--blackout/--no-blackout",
+            help="Honour the earnings blackout, or switch it off to compare.",
+        ),
+    ] = True,
+    symbols: Annotated[
+        str | None,
+        typer.Option(
+            "--symbols",
+            help="Comma-separated universe override — vet a candidate name against "
+            "history without touching the live watchlist.",
+        ),
+    ] = None,
+    as_json: Annotated[bool, typer.Option("--json", help="Emit the result as JSON.")] = False,
+) -> None:
+    """Replay the engine's rules against stored history. Same rules, same
+    scorecard as 'trd engine report' — hundreds of trades in one run instead of
+    four years of waiting. Needs depth: run 'trd sync --years 10' first."""
+    settings = get_settings()
+    service = BacktestService(connect(settings.db_path))
+    try:
+        fill_mode = FillMode(fill)
+    except ValueError:
+        err_console.print(f"[red]error:[/red] --fill must be 'intrabar' or 'close', not {fill!r}")
+        raise typer.Exit(code=1) from None
+    start_at = _parse_date(start)
+    end_at = _parse_date(end)
+    try:
+        result = service.run(
+            years=years,
+            start=start_at.date() if start_at else None,
+            end=end_at.date() if end_at else None,
+            fill=fill_mode,
+            blackout=blackout,
+            symbols=[s for s in symbols.split(",")] if symbols else None,
+        )
+    except TrdError as exc:
+        _fail(exc)
+        return
+    if as_json:
+        console.print_json(result.model_dump_json())
+        return
+    for renderable in engine_backtest_renderables(result):
+        console.print(renderable)
 
 
 @engine_app.command("rules")
