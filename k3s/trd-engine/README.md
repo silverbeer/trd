@@ -44,10 +44,62 @@ stale world.
 
 | Where | How |
 |---|---|
-| Phone / Air | Telegram channel — a message per fill, with the reason |
+| Phone | Telegram channel — a message per fill, with the reason |
+| MacBook Air | `iCloud/trd/engine/status.txt`, or `trd restore` the published backup |
 | Grafana | promtail tails the pod logs; every scan emits NDJSON, one event per line |
 | Terminal | `kubectl logs -n trd -l app=trd --tail=100 -f` |
-| Host | `TRD_HOME=~/.trd-engine trd engine report` — same DB, via the hostPath |
+| Mini | `TRD_HOME=~/.trd-engine trd engine report` — same DB, via the hostPath |
+
+### Reaching the Air: why the engine does not live in iCloud
+
+The engine's database is **local to the mini**, not in iCloud, for two reasons:
+
+1. A k3s pod runs in a Linux VM and cannot see `~/Library/Mobile Documents` —
+   that is a macOS FileProvider path. DuckDB also needs real POSIX advisory
+   locks, which do not survive that trip.
+2. iCloud whole-file-syncs a binary and resolves conflicts by making duplicate
+   copies, not by merging. Writing a DuckDB file every five minutes while a
+   second Mac may also open it is the standard way to corrupt one.
+
+Instead, each scan writes two small files next to the database, and a launchd job
+on the host copies them into iCloud. It copies files only — it never opens the
+database, so it can never contend with a scan.
+
+```
+pod  ──► ~/.trd-engine/status.txt          (positions + scorecard)
+     └─► ~/.trd-engine/engine-backup.json  (full engine state + txns)
+                │
+   engine-publish.sh (launchd, every 5 min)
+                ▼
+        iCloud/trd/engine/
+```
+
+On the Air:
+
+```bash
+cat "$HOME/Library/Mobile Documents/com~apple~CloudDocs/trd/engine/status.txt"
+
+# or, for the full CLI against a local copy:
+TRD_HOME=~/.trd-engine-view trd restore \
+  "$HOME/Library/Mobile Documents/com~apple~CloudDocs/trd/engine/engine-backup.json" --force
+TRD_HOME=~/.trd-engine-view trd engine report
+```
+
+The backup carries stops, targets, ATR and trail high-water marks, so a restored
+trade reads exactly like the original.
+
+Install the publisher on the mini:
+
+```bash
+# edit USERNAME in the plist first
+cp deploy/io.silverbeer.trd.enginepublish.plist ~/Library/LaunchAgents/
+launchctl load ~/Library/LaunchAgents/io.silverbeer.trd.enginepublish.plist
+launchctl start io.silverbeer.trd.enginepublish
+cat ~/Library/Logs/trd-engine-publish.log
+```
+
+This is the one launchd agent that *does* belong alongside k3s — it schedules a
+file copy, not a scan, so there is no second writer.
 
 Event stream (`trd engine scan --ndjson`):
 

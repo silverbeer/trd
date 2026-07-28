@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  launchd job: copy the engine's snapshot files into iCloud every 5 minutes.
+
+  Runs on the HOST (not in k3s) because a k3s pod lives in a Linux VM and cannot
+  see ~/Library/Mobile Documents. It only copies files — it never opens the
+  DuckDB database, so it can never contend with a running scan.
+
+  Install:
+    1) Edit deploy/engine-publish.sh if your paths differ.
+    2) Replace USERNAME below with your account name (absolute paths only).
+    3) cp deploy/io.silverbeer.trd.enginepublish.plist ~/Library/LaunchAgents/
+    4) launchctl load ~/Library/LaunchAgents/io.silverbeer.trd.enginepublish.plist
+    5) Test now:  launchctl start io.silverbeer.trd.enginepublish
+                  cat ~/Library/Logs/trd-engine-publish.log
+    Uninstall:    launchctl unload ~/Library/LaunchAgents/io.silverbeer.trd.enginepublish.plist
+
+  If the log says it cannot write the iCloud folder, grant Full Disk Access to
+  /bin/zsh (or to launchd) in System Settings → Privacy & Security.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>io.silverbeer.trd.enginepublish</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/zsh</string>
+        <string>/Users/USERNAME/gitrepos/trd/deploy/engine-publish.sh</string>
+    </array>
+
+    <!-- Same cadence as the scan. Copying two small files is cheap; the script
+         skips the copy entirely when nothing changed. -->
+    <key>StartInterval</key>
+    <integer>300</integer>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>StandardOutPath</key>
+    <string>/Users/USERNAME/Library/Logs/trd-engine-publish.out</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/USERNAME/Library/Logs/trd-engine-publish.err</string>
+</dict>
+</plist>
