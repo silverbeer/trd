@@ -23,6 +23,8 @@ class EngineConfig(BaseModel):
     max_positions: int
     strategies: list[str]
     exit_params: dict[str, float]
+    # No new entry when a known earnings date falls within this many days. 0 is off.
+    earnings_blackout_days: int = 3
 
 
 class EngineSignal(BaseModel):

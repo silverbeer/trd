@@ -68,7 +68,12 @@ from trd.services import (
     SyncService,
     WatchlistService,
 )
-from trd.services.engine import DEFAULT_ENGINE_ACCOUNT, ScanResult, scan_events
+from trd.services.engine import (
+    DEFAULT_EARNINGS_BLACKOUT_DAYS,
+    DEFAULT_ENGINE_ACCOUNT,
+    ScanResult,
+    scan_events,
+)
 from trd.services.indicators import seed_defaults
 from trd.services.plan import PlanStatus
 from trd.services.watchlist import DEFAULT_WATCHLIST
@@ -1472,11 +1477,19 @@ def engine_init(
         str | None,
         typer.Option("--strategies", help="Comma-separated strategy keys. Omit for all."),
     ] = None,
+    earnings_blackout: Annotated[
+        int,
+        typer.Option(
+            "--earnings-blackout",
+            help="Take no new entry within this many days of a print. 0 disables.",
+        ),
+    ] = DEFAULT_EARNINGS_BLACKOUT_DAYS,
 ) -> None:
     """Set up the engine: a simulation account, a 10-name universe, and the rule set."""
     service = _engine_service()
     try:
         config, acct, universe = service.init(
+            earnings_blackout_days=earnings_blackout,
             account_name=account,
             position_size=_parse_decimal(size, "size"),
             max_positions=max_positions,
@@ -1494,8 +1507,13 @@ def engine_init(
         f"Engine ready on [bold]{acct.name}[/bold] (simulation).\n"
         f"Universe ({len(universe)}): {', '.join(universe)}\n"
         f"Strategies: {', '.join(config.strategies)}\n"
-        f"Size {fmt_money(config.position_size)}/trade, max {config.max_positions} open.\n\n"
-        "Next: [bold]trd sync --full[/bold] (the rules need 200 bars of history), "
+        f"Size {fmt_money(config.position_size)}/trade, max {config.max_positions} open.\n"
+        + (
+            f"No new entry within {config.earnings_blackout_days}d of earnings.\n\n"
+            if config.earnings_blackout_days
+            else "Earnings blackout off.\n\n"
+        )
+        + "Next: [bold]trd sync --full[/bold] (the rules need 200 bars of history), "
         "then [bold]trd engine scan[/bold]."
     )
 

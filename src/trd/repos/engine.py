@@ -14,7 +14,13 @@ from trd.models import (
 )
 from trd.repos.instruments import _row_to_instrument
 
-_CONFIG_COLS = "id, account_id, watchlist, position_size, max_positions, strategies, exit_params"
+# Kept here rather than imported from the service: repos must not depend on services.
+DEFAULT_EARNINGS_BLACKOUT_DAYS = 3
+
+_CONFIG_COLS = (
+    "id, account_id, watchlist, position_size, max_positions, strategies, exit_params, "
+    "earnings_blackout_days"
+)
 _SIGNAL_COLS = (
     "id, run_id, instrument_id, strategy, bar_date, fired_at, price, score, reason, acted"
 )
@@ -35,6 +41,9 @@ def _row_to_config(row: tuple) -> EngineConfig:
         max_positions=row[4],
         strategies=json.loads(row[5]),
         exit_params=json.loads(row[6]),
+        # Nullable in the schema: the column is added bare because DuckDB rejects
+        # ADD COLUMN with a constraint, so a pre-migration row can still read NULL.
+        earnings_blackout_days=row[7] if row[7] is not None else DEFAULT_EARNINGS_BLACKOUT_DAYS,
     )
 
 
@@ -108,13 +117,15 @@ class EngineConfigRepo:
         max_positions: int,
         strategies: list[str],
         exit_params: dict[str, float],
+        earnings_blackout_days: int = DEFAULT_EARNINGS_BLACKOUT_DAYS,
     ) -> EngineConfig:
         self.conn.execute("DELETE FROM engine_config WHERE account_id = ?", [account_id])
         row = self.conn.execute(
             f"""
             INSERT INTO engine_config
-                (account_id, watchlist, position_size, max_positions, strategies, exit_params)
-            VALUES (?, ?, ?, ?, ?, ?)
+                (account_id, watchlist, position_size, max_positions, strategies, exit_params,
+                 earnings_blackout_days)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             RETURNING {_CONFIG_COLS}
             """,
             [
@@ -124,6 +135,7 @@ class EngineConfigRepo:
                 max_positions,
                 json.dumps(strategies),
                 json.dumps(exit_params),
+                earnings_blackout_days,
             ],
         ).fetchone()
         assert row is not None
