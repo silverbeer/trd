@@ -140,6 +140,60 @@ class Watchlist(BaseModel):
     name: str
 
 
+class ExitStatus(StrEnum):
+    OK = "ok"  # close sits between stop and target — keep holding
+    STOP_HIT = "stop_hit"  # latest close at/below the stop — thesis-break exit
+    TARGET_HIT = "target_hit"  # latest close at/above the target — reassess/trim
+    NO_PRICE = "no_price"  # no stored close — run `trd sync`
+
+
+class ExitTrigger(BaseModel):
+    """A stop and/or target price tied to a holding (account + instrument)."""
+
+    id: int
+    account_id: int
+    instrument_id: int
+    stop_price: Decimal | None = None
+    target_price: Decimal | None = None
+    note: str | None = None
+
+
+class ExitCheckRow(BaseModel):
+    """One exit trigger evaluated against the latest daily close. The rule fires on
+    a *close* beyond the level, never an intraday wick — wicks shake you out."""
+
+    instrument: Instrument
+    account: str
+    stop_price: Decimal | None = None
+    target_price: Decimal | None = None
+    note: str | None = None
+    last_close: Decimal | None = None
+
+    @property
+    def status(self) -> ExitStatus:
+        if self.last_close is None:
+            return ExitStatus.NO_PRICE
+        if self.stop_price is not None and self.last_close <= self.stop_price:
+            return ExitStatus.STOP_HIT
+        if self.target_price is not None and self.last_close >= self.target_price:
+            return ExitStatus.TARGET_HIT
+        return ExitStatus.OK
+
+    @property
+    def stop_cushion_pct(self) -> Decimal | None:
+        """How far the close sits above the stop, as % of close. Positive = cushion."""
+        if self.last_close is None or self.stop_price is None or self.last_close == 0:
+            return None
+        return (self.last_close - self.stop_price) / self.last_close * 100
+
+    @property
+    def target_upside_pct(self) -> Decimal | None:
+        """How far the close is below the target, as % of close. Positive = room to run."""
+        if self.last_close is None or self.target_price is None or self.last_close == 0:
+            return None
+        return (self.target_price - self.last_close) / self.last_close * 100
+
+
 class IndicatorConfig(BaseModel):
     """One row of the user's followed-indicator list."""
 

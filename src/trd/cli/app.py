@@ -20,6 +20,7 @@ from trd.cli.render import (
     earnings_table,
     equity_curve_renderables,
     equity_daily_table,
+    exit_table,
     fmt_money,
     fmt_signed,
     fmt_signed_pct,
@@ -45,6 +46,7 @@ from trd.services import (
     DcaProjectionService,
     EarningsService,
     EquityCurveService,
+    ExitTriggerService,
     IndicatorService,
     MoversService,
     PlanService,
@@ -79,6 +81,8 @@ plan_app = typer.Typer(
 )
 app.add_typer(plan_app, name="dca")
 app.add_typer(plan_app, name="plan", hidden=True)  # back-compat alias
+exit_app = typer.Typer(help="Stop/target exit triggers on holdings.", no_args_is_help=True)
+app.add_typer(exit_app, name="exit")
 console = Console()
 err_console = Console(stderr=True)
 
@@ -91,6 +95,11 @@ def _portfolio_service() -> PortfolioService:
 def _watchlist_service() -> WatchlistService:
     settings = get_settings()
     return WatchlistService(connect(settings.db_path), YFinanceProvider())
+
+
+def _exit_service() -> ExitTriggerService:
+    settings = get_settings()
+    return ExitTriggerService(connect(settings.db_path), YFinanceProvider())
 
 
 def _fail(exc: TrdError) -> None:
@@ -516,6 +525,96 @@ def watch_ls(
         return
     title = f"Watch — {list_name}" if list_name else "Watch — all lists"
     console.print(board_table(rows, title, show_list_column=list_name is None))
+
+
+@exit_app.command("set")
+def exit_set(
+    symbol: Annotated[str, typer.Argument(help="Ticker the trigger applies to.")],
+    account: AccountOpt = DEFAULT_ACCOUNT,
+    stop: Annotated[
+        str | None, typer.Option("--stop", help="Stop price: exit if a daily close is ≤ this.")
+    ] = None,
+    target: Annotated[
+        str | None, typer.Option("--target", help="Target price: flag if a daily close is ≥ this.")
+    ] = None,
+    note: NoteOpt = None,
+) -> None:
+    """Set (or replace) a stop/target exit trigger on a holding. One per account+symbol."""
+    service = _exit_service()
+    stop_dec = _parse_decimal(stop, "stop") if stop is not None else None
+    target_dec = _parse_decimal(target, "target") if target is not None else None
+    try:
+        service.set(symbol, account, stop=stop_dec, target=target_dec, note=note)
+    except TrdError as exc:
+        _fail(exc)
+        return
+    parts = []
+    if stop_dec is not None:
+        parts.append(f"stop {fmt_money(stop_dec)}")
+    if target_dec is not None:
+        parts.append(f"target {fmt_money(target_dec)}")
+    console.print(
+        f"Exit trigger set on [bold]{symbol.upper()}[/bold] ({account}): {', '.join(parts)}."
+    )
+
+
+@exit_app.command("rm")
+def exit_rm(
+    symbol: Annotated[str, typer.Argument(help="Ticker to clear the trigger for.")],
+    account: AccountOpt = DEFAULT_ACCOUNT,
+) -> None:
+    """Remove a holding's exit trigger."""
+    service = _exit_service()
+    try:
+        service.remove(symbol, account)
+    except TrdError as exc:
+        _fail(exc)
+        return
+    console.print(f"Removed exit trigger on [bold]{symbol.upper()}[/bold] ({account}).")
+
+
+@exit_app.command("ls")
+def exit_ls(
+    account: Annotated[
+        str | None, typer.Option("--account", "-a", help="Scope to one account. Omit for all.")
+    ] = None,
+) -> None:
+    """List exit triggers vs the latest close (run 'trd sync' to refresh closes)."""
+    service = _exit_service()
+    try:
+        rows = service.rows(account)
+    except TrdError as exc:
+        _fail(exc)
+        return
+    if not rows:
+        console.print(
+            "No exit triggers set. Add one with [bold]trd exit set SYMBOL --stop P[/bold]."
+        )
+        return
+    title = f"Exit triggers — {account}" if account else "Exit triggers — all accounts"
+    console.print(exit_table(rows, title, show_account=account is None))
+
+
+@exit_app.command("check")
+def exit_check(
+    account: Annotated[
+        str | None, typer.Option("--account", "-a", help="Scope to one account. Omit for all.")
+    ] = None,
+) -> None:
+    """Flag triggers whose latest close has breached its stop or target."""
+    service = _exit_service()
+    try:
+        rows = service.rows(account, breaches_only=True)
+    except TrdError as exc:
+        _fail(exc)
+        return
+    if not rows:
+        console.print(
+            "[green]✓ No exit triggers breached.[/green] All holdings within their levels."
+        )
+        return
+    title = f"Exit triggers breached — {account}" if account else "Exit triggers breached"
+    console.print(exit_table(rows, title, show_account=account is None))
 
 
 @app.command()
