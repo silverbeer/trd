@@ -409,7 +409,9 @@ def test_missing_history_is_reported_not_crashed(engine, provider, conn):
 
 def test_short_history_names_the_missing_bars(engine, provider, conn):
     bars = make_bars(uptrend(40))
-    provider.add_symbol("AAA", price=str(float(bars[-1].close)))
+    # A live price of its own, so the run reaches the bar-count check instead of
+    # stopping at the stale-quote guard — this series ends long before `at`.
+    provider.add_symbol("AAA", price=str(float(bars[-1].close) * 1.01))
     seed(conn, "AAA", bars)
     engine.init(symbols=["AAA"], strategies=["momentum"])
     result = engine.scan(at=datetime(2024, 9, 16, 10, 0))
@@ -441,3 +443,92 @@ def test_live_quote_can_push_a_name_out_of_the_setup(engine, provider, conn):
     result = engine.scan(at=datetime(2024, 9, 16, 10, 0))
     assert result.signals == []
     assert result.opened == []
+
+
+# ------------------------------------------------------------- stale quotes
+
+
+def test_a_quote_that_is_only_yesterdays_close_takes_no_entry(engine, provider, conn):
+    """A name that has not printed yet still answers a quote request — with the
+    prior close. Trading that builds the whole position on a price that never
+    existed, so the pass skips the symbol and says why."""
+    bars = make_bars(uptrend())
+    seed(conn, "AAA", bars)
+    provider.add_symbol("AAA", price=str(float(bars[-1].close)))
+    engine.init(symbols=["AAA"], strategies=["momentum"], position_size=Decimal("10000"))
+
+    # One day past the last stored bar: today's bar would be synthetic.
+    result = engine.scan(at=datetime(2024, 9, 17, 9, 30))
+
+    assert result.opened == []
+    assert result.signals == []  # the signal itself would be an artifact
+    assert any("no trade print yet today" in line for line in result.skipped)
+
+
+def test_a_missing_quote_is_not_treated_as_a_flat_day(engine, provider, conn):
+    """No quote at all is the same fiction as a stale one: filling at the stored
+    close prices a trade off a bar that has not happened."""
+    bars = make_bars(uptrend())
+    seed(conn, "AAA", bars)
+    provider.add_symbol("AAA", price=str(float(bars[-1].close)))
+    engine.init(symbols=["AAA"], strategies=["momentum"], position_size=Decimal("10000"))
+    provider.drop_quote("AAA")
+
+    result = engine.scan(at=datetime(2024, 9, 17, 9, 30))
+
+    assert result.opened == []
+    assert any("no trade print yet today" in line for line in result.skipped)
+
+
+def test_a_real_bar_for_today_lets_a_matching_quote_through(engine, provider, conn):
+    """Once today's bar is real, a quote equal to its close is a flat tape, not a
+    stale feed — the guard must not swallow it."""
+    bars = make_bars(uptrend())
+    seed(conn, "AAA", bars)
+    provider.add_symbol("AAA", price=str(float(bars[-1].close)))
+    engine.init(symbols=["AAA"], strategies=["momentum"], position_size=Decimal("10000"))
+
+    # bars[-1].date IS 2024-09-16, so the stored series already covers today.
+    result = engine.scan(at=datetime(2024, 9, 16, 10, 0))
+
+    assert len(result.opened) == 1
+
+
+# ---------------------------------------------------------- fractional sizing
+
+
+def test_position_size_is_filled_exactly_with_fractional_shares(engine, provider, conn):
+    """Flooring to whole shares un-fixes fixed-dollar sizing. $1000 into a $340
+    name is 2.94 shares, not 2 — otherwise the slot is silently 68% funded."""
+    bars = make_bars(uptrend())
+    seed(conn, "AAA", bars)
+    live = Decimal(str(round(float(bars[-1].close) * 0.998, 4)))
+    provider.add_symbol("AAA", price=str(live))
+    engine.init(symbols=["AAA"], strategies=["momentum"], position_size=Decimal("1000"))
+
+    result = engine.scan(at=datetime(2024, 9, 16, 10, 0))
+
+    assert len(result.opened) == 1
+    quantity = result.opened[0].quantity
+    assert quantity != quantity.to_integral_value()  # genuinely fractional
+    # The slot is funded to the cent, not to the nearest whole share.
+    assert abs(quantity * live - Decimal("1000")) < Decimal("0.01")
+    assert quantity.as_tuple().exponent >= -6  # 6dp, inside DECIMAL(24, 8)
+
+
+def test_a_share_priced_above_the_slot_is_still_tradeable(engine, provider, conn):
+    """A share priced above the whole slot — SNDK at $1278 against $1000 — used to
+    be dropped from the universe without ever surfacing as a signal. It buys a
+    fraction of a share now."""
+    bars = make_bars(uptrend())
+    seed(conn, "AAA", bars)
+    live = Decimal(str(round(float(bars[-1].close) * 0.998, 4)))
+    provider.add_symbol("AAA", price=str(live))
+    # A slot smaller than one share, the same shape as $1000 against SNDK.
+    engine.init(symbols=["AAA"], strategies=["momentum"], position_size=live / 2)
+
+    result = engine.scan(at=datetime(2024, 9, 16, 10, 0))
+
+    assert len(result.opened) == 1
+    assert result.opened[0].quantity < 1
+    assert result.skipped == []

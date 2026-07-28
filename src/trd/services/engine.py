@@ -213,6 +213,28 @@ class EngineService:
         ]
 
     @staticmethod
+    def _quote_is_stale(bars: list[DailyBar], quote: Quote | None, today: date) -> bool:
+        """True when the quote carries nothing the last settled bar didn't already say.
+
+        A symbol that has not printed yet still answers a quote request — yfinance
+        hands back the prior close as `last_price`. Folded in by `_with_live_bar`
+        that becomes a forming bar whose open, high, low and close are all
+        yesterday's close, indistinguishable from a real flat day. An entry taken
+        on it fills at a price that never traded, and because the initial stop is
+        immutable the whole trade keeps that fictional basis for life.
+
+        Only applies while today's bar is still synthetic. Once a real bar for
+        today exists the quote is refining known-good data, not inventing it.
+        """
+        if quote is None:
+            return True
+        if not bars:
+            return True
+        if bars[-1].date == today:
+            return False
+        return quote.price == bars[-1].close
+
+    @staticmethod
     def _with_live_bar(bars: list[DailyBar], quote: Quote | None, today: date) -> list[DailyBar]:
         """Fold the live quote into the series as today's forming bar. Daily math,
         intraday reaction — the same bar the close will become."""
@@ -370,7 +392,14 @@ class EngineService:
                     f"{instrument.symbol}: no price history — run 'trd sync --full'"
                 )
                 continue
-            bars = self._with_live_bar(stored, quotes.get(instrument.symbol), today)
+            quote = quotes.get(instrument.symbol)
+            if self._quote_is_stale(stored, quote, today):
+                result.skipped.append(
+                    f"{instrument.symbol}: no trade print yet today — the quote still reads "
+                    f"{stored[-1].close}, the prior close, so a fill here would be fiction"
+                )
+                continue
+            bars = self._with_live_bar(stored, quote, today)
             bar_date = bars[-1].date
             short_by: list[str] = []
             for key in config.strategies:
@@ -468,11 +497,16 @@ class EngineService:
         price = bars[-1].close
         if price <= 0:
             return None
-        quantity = (config.position_size / price).to_integral_value(rounding=ROUND_DOWN)
-        if quantity < 1:
+        # Fractional, because flooring to whole shares silently un-fixes fixed-dollar
+        # sizing: a $340 name in a $1000 slot gets $680 of exposure and a $1278 name
+        # gets none at all, so price alone re-weights the book and quietly drops the
+        # expensive half of the universe. 6dp matches broker fill precision and sits
+        # well inside the DECIMAL(24, 8) the txn and position tables already store.
+        quantity = (config.position_size / price).quantize(Decimal("0.000001"), rounding=ROUND_DOWN)
+        if quantity <= 0:
             result.skipped.append(
-                f"{instrument.symbol}: {price:.2f}/share exceeds the "
-                f"{config.position_size:.0f} position size"
+                f"{instrument.symbol}: {price:.2f}/share against a "
+                f"{config.position_size:.0f} position size rounds to nothing"
             )
             return None
 
