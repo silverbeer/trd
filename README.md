@@ -11,6 +11,7 @@ trd portfolio        # holdings, sorted by size, with weights + 30-day change
 trd equity           # equity curve: value over time, return, XIRR, max drawdown
 trd dca show -a sofi # a DCA plan's XIRR, per-symbol drift, cadence
 trd sunday-prep      # week-ahead briefing: futures, macro events, earnings, levels, themes
+trd engine report    # paper-trading engine: win rate, avg win/loss, expectancy per strategy
 trd learn xirr       # the formula behind any number trd shows
 ```
 
@@ -31,6 +32,40 @@ trd sunday-prep --date 2026-06-14   # build for a specific reference date
 
 To have it run itself every Sunday evening on an always-on Mac (and sync the snapshot
 to your other Macs via iCloud), see [deploy/README.md](deploy/README.md).
+
+## The trading engine — paper-trading on rules
+
+`trd engine` scans a small universe, fires entry signals, and manages every open trade
+through five exit rules — all on a **simulation** account, so no real money is involved.
+Its point is the scorecard: after running for a while, `trd engine report` tells you which
+rules actually earned their risk.
+
+```bash
+trd engine init        # simulation account + 10-name universe + rule set
+trd engine scan        # one pass: exits first, then the best-ranked new entries
+trd engine positions   # open trades: entry, stop (↑ = trailing in force), target, R
+trd engine signals     # every signal fired, taken or passed over, with its reason
+trd engine report      # win rate, avg win/loss, expectancy in R, per strategy
+trd engine rules       # what each entry strategy looks for, and all five exit rules
+```
+
+Four entry strategies (`momentum`, `breakout`, `pullback`, `macd_cross`), all gated on the
+200-day trend filter. Exits run in a fixed order — `stop → trail → target → indicator →
+time` — so capital protection always precedes profit-taking. Fills are ordinary
+transactions, so `trd portfolio`, `trd equity` and XIRR work on the engine account
+unchanged.
+
+Read **expectancy** before win rate: 40% winners at +0.5R beats 70% winners that give it
+back on the losers.
+
+**Running it unattended:**
+
+| How | Where |
+|---|---|
+| k3s CronJob every 5 min, with a Telegram feed to your phone | [k3s/trd-engine/README.md](k3s/trd-engine/README.md) |
+| launchd agent on a Mac, no cluster needed | [deploy/README.md](deploy/README.md) |
+
+Run one or the other, never both — DuckDB allows a single writer.
 
 ## Requirements
 
