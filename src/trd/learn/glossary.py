@@ -338,10 +338,12 @@ _ENTRIES: list[GlossaryEntry] = [
         definition=(
             "Replaying a strategy against real history: 'if I had run this exact plan for "
             "the last N years, what would have happened?' Honest only with adjusted closes "
-            "and disclosed windows — past performance still doesn't promise the future."
+            "and disclosed windows — past performance still doesn't promise the future. "
+            "The engine's backtest replays its live entry/exit rules bar by bar; treat its "
+            "numbers as an upper bound (survivorship, no slippage or spread)."
         ),
         related=["adjusted-close", "monte-carlo", "benchmark"],
-        used_in=["trd dca backtest"],
+        used_in=["trd dca backtest", "trd engine backtest"],
     ),
     # ── accounts & tax ────────────────────────────────────────────────────
     GlossaryEntry(
