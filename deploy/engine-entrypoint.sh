@@ -58,4 +58,32 @@ fi
 # NDJSON because the consumer is promtail, not a human — one event per line, each
 # independently queryable in Loki. --notify pushes fills to Telegram; with no
 # token configured it degrades to a warning, so an unconfigured cluster still scans.
-exec trd engine scan --ndjson --notify
+trd engine scan --ndjson --notify
+
+# --- publish a host-readable snapshot -----------------------------------------
+# Written next to the database, NOT to iCloud: this pod runs in a Linux VM and
+# cannot see a macOS FileProvider path. deploy/engine-publish.sh (a launchd job
+# on the host) copies these two files into iCloud, so the MacBook Air can read
+# the engine without ever opening the database — no lock contention, no 23 MB
+# binary syncing every five minutes.
+#
+# Each trd command opens and closes its own connection, so these run cleanly
+# after the scan has released the writer lock.
+STATUS="${TRD_HOME}/status.txt"
+{
+    echo "trd engine — last scan $(date)"
+    echo
+    trd engine positions
+    echo
+    trd engine report
+} > "${STATUS}.tmp" && mv "${STATUS}.tmp" "$STATUS"
+
+# Full engine state (config, signals, positions with stops/targets/trail marks)
+# plus every transaction — restorable on another machine with `trd restore`.
+BACKUP="${TRD_HOME}/engine-backup.json"
+if trd backup "${BACKUP}.tmp" >/dev/null 2>&1; then
+    mv "${BACKUP}.tmp" "$BACKUP"
+else
+    rm -f "${BACKUP}.tmp"
+    echo "backup snapshot failed (scan itself succeeded)"
+fi
