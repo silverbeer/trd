@@ -37,18 +37,99 @@ Override the location with `ENGINE_HOME=/some/path ./scripts/deploy-k3s.sh`.
 Fills — and only fills — get pushed. Scans are quiet the overwhelming majority
 of the time; pushing every pass would train you to ignore the channel.
 
+### 1. Create the bot
+
+Message [@BotFather](https://t.me/BotFather) → `/newbot` → pick a name and a
+username. It replies with a token like `123456789:AAH...`. That token is the
+password to the bot — treat it like one.
+
+### 2. Pick where messages land, and get its chat id
+
+**The two options behave differently, and this is where people get stuck.**
+
+<details open>
+<summary><b>Option A — a channel</b> (recommended: readable on phone and Mac, easy to mute)</summary>
+
+1. Create a channel in Telegram.
+2. **Add the bot as an administrator** with "Post Messages" permission. A bot
+   that is merely a member cannot post, and the API returns 403.
+3. Post any message in the channel yourself.
+4. Read the id — note `channel_post`, **not** `message`:
+
+```bash
+curl -s "https://api.telegram.org/bot<TOKEN>/getUpdates" \
+  | jq '.result[].channel_post.chat.id'
+```
+
+Channel ids are negative and begin with `-100`, e.g. `-1001234567890`.
+</details>
+
+<details>
+<summary><b>Option B — a direct message to yourself</b> (simplest)</summary>
+
+1. Open a chat with your bot and send it `/start`.
+2. Read the id:
+
+```bash
+curl -s "https://api.telegram.org/bot<TOKEN>/getUpdates" \
+  | jq '.result[].message.chat.id'
+```
+
+Direct chat ids are positive.
+</details>
+
+If `getUpdates` returns `{"ok":true,"result":[]}`:
+
+- you haven't posted since creating the bot — post again, then retry;
+- or a webhook is set, which suppresses `getUpdates` entirely —
+  clear it with `curl -s "https://api.telegram.org/bot<TOKEN>/deleteWebhook"`;
+- or you used the wrong JSON path for your case (see the two options above).
+
+### 3. Prove it works *before* deploying
+
+Do not skip this. It takes five seconds and turns a silent misconfiguration into
+an immediate answer:
+
+```bash
+curl -s -X POST "https://api.telegram.org/bot<TOKEN>/sendMessage" \
+  -d chat_id='<CHAT_ID>' -d text='trd engine test' | jq '.ok'
+```
+
+`true` and a message on your phone means both values are right. `false` comes
+with a `description` naming the problem — usually `chat not found` (wrong id) or
+`bot is not a member of the channel chat` (step 2.2 skipped).
+
+### 4. Create the secret
+
 ```bash
 kubectl create secret generic trd-engine-telegram \
   --namespace trd \
-  --from-literal=TELEGRAM_BOT_TOKEN='...' \
-  --from-literal=TELEGRAM_CHAT_ID='...'
+  --from-literal=TELEGRAM_BOT_TOKEN='123456789:AAH...' \
+  --from-literal=TELEGRAM_CHAT_ID='-1001234567890'
 ```
 
-Token from @BotFather; chat id from `getUpdates` (see `secret.example.yaml`).
-The secret is `optional: true` — with no secret the engine still scans and just
-logs that it sent nothing. Notification failures never fail a scan: the trade is
-already recorded, and failing the pass would make the next one re-evaluate a
-stale world.
+The namespace only exists after a deploy, so run this after
+`./scripts/deploy-k3s.sh`. Then trigger one scan to confirm the wiring:
+
+```bash
+JOB=tg-test-$(date +%s)
+kubectl create job --from=cronjob/trd-engine-scan "$JOB" -n trd
+kubectl set env job/"$JOB" -n trd TRD_ENGINE_FORCE=1
+kubectl logs -n trd job/"$JOB" -f
+```
+
+You'll only get a Telegram message if that scan actually filled something. To
+prove the path end to end regardless, run the `curl` from step 3.
+
+### How it fails
+
+The secret is `optional: true`. With none configured the engine still scans and
+logs that it sent nothing — trading never depends on the chat. A delivery failure
+is warned about and swallowed: the trades are already recorded, and failing the
+pass would make the next one re-evaluate a stale world.
+
+Bot tokens never reach a log line — HTTP errors are re-raised without the URL
+(there's a test for exactly that).
 
 ## Visibility
 

@@ -71,7 +71,25 @@ trd engine positions [--all]          # open trades: entry, stop (↑ = trailing
 trd engine signals [-n 25] [-s KEY]   # every signal fired, taken or passed over, with its reason
 trd engine report                     # per-strategy scorecard: win%, avg win/loss, expectancy in R
 trd engine rules                      # what each entry strategy looks for + the 5 exit rules
+trd engine scan --ndjson --notify     # one JSON event per line (log shipping) + Telegram on fills
 ```
+
+## Deployment
+
+Unattended runs live in two places — use one, never both (DuckDB is single-writer):
+
+- **k3s CronJob** (the real one): [k3s/trd-engine/README.md](k3s/trd-engine/README.md).
+  `./scripts/deploy-k3s.sh --test` seeds `~/.trd-engine`, builds + imports the image,
+  applies the manifests with the hostPath rewritten to this machine, and runs one scan.
+  Telegram setup (bot, chat id, verification) is documented there.
+- **launchd agents** (no cluster): [deploy/README.md](deploy/README.md) — Sunday Prep,
+  the engine scan, and `engine-publish.sh`, which copies the engine's `status.txt` and
+  `engine-backup.json` into iCloud. The publisher pairs with *either* runner because it
+  only copies files and never opens the database.
+
+The engine's DB (`~/.trd-engine`) is deliberately separate from the real one and never in
+iCloud: a k3s pod can't see a macOS FileProvider path, and iCloud resolves binary
+conflicts by duplicating rather than merging.
 
 CSV import format (header required): `date,account,symbol,side,quantity,price[,fees,note]` — date is ISO, side is buy/sell.
 
