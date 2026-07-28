@@ -21,6 +21,11 @@ class ProviderError(TrdError):
     """Market data provider failed (network, upstream change, unknown symbol)."""
 
 
+class NotifyError(TrdError):
+    """A notifier could not deliver. Never fatal — a scan that traded successfully
+    must not fail because a chat message didn't send."""
+
+
 class DatabaseBusyError(TrdError):
     def __init__(self) -> None:
         super().__init__(

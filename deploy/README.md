@@ -57,6 +57,12 @@ plist so it lands after 6 PM ET in your timezone.
 
 # Trading engine (mac mini)
 
+> **There are two ways to run this.** The launchd agent below needs nothing but a
+> Mac and is the fastest way to start collecting data. The k3s CronJob in
+> [k3s/trd-engine](../k3s/trd-engine/README.md) adds a Telegram feed and a Grafana
+> dashboard. **Run one, not both** — DuckDB allows a single writer, and two
+> schedulers on one database will collide.
+
 Run `trd engine scan` every 5 minutes during the regular session, so the engine
 paper-trades a small universe unattended for a week and produces a per-strategy
 scorecard at the end of it.

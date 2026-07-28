@@ -581,6 +581,78 @@ class EngineService:
         return stats
 
 
+def scan_events(result: ScanResult) -> list[dict]:
+    """One flat dict per thing that happened, ordered closes -> opens -> signals ->
+    summary. Emitted as NDJSON for log shipping, so each event is independently
+    queryable instead of buried in a rendered table.
+
+    Money is floats here on purpose: this is telemetry headed for a dashboard, not
+    the ledger. Every stored value stays Decimal.
+    """
+
+    def num(value: Decimal | None) -> float | None:
+        return float(value) if value is not None else None
+
+    stamp = result.at.isoformat()
+    events: list[dict] = []
+    for fill in result.closed:
+        events.append(
+            {
+                "ev": "close",
+                "ts": stamp,
+                "symbol": fill.symbol,
+                "strategy": fill.strategy,
+                "rule": fill.rule,
+                "quantity": num(fill.quantity),
+                "price": num(fill.price),
+                "pnl": num(fill.pnl),
+                "r_multiple": num(fill.r_multiple),
+                "reason": fill.reason,
+            }
+        )
+    for fill in result.opened:
+        events.append(
+            {
+                "ev": "open",
+                "ts": stamp,
+                "symbol": fill.symbol,
+                "strategy": fill.strategy,
+                "quantity": num(fill.quantity),
+                "price": num(fill.price),
+                "reason": fill.reason,
+            }
+        )
+    for signal in result.signals:
+        events.append(
+            {
+                "ev": "signal",
+                "ts": stamp,
+                "symbol": signal.symbol,
+                "strategy": signal.strategy,
+                "score": signal.score,
+                "price": num(signal.price),
+                "acted": signal.acted,
+                "reason": signal.reason,
+            }
+        )
+    events.append(
+        {
+            "ev": "scan",
+            "ts": stamp,
+            "run_id": result.run_id,
+            "paper": result.paper,
+            "scanned": result.scanned,
+            "signals": len(result.signals),
+            "opened": len(result.opened),
+            "closed": len(result.closed),
+            "open_positions": result.open_positions,
+            "capacity": result.capacity,
+            "skipped": len(result.skipped),
+        }
+    )
+    return events
+
+
 def _mean(values: Sequence[Decimal | None]) -> Decimal | None:
     present = [v for v in values if v is not None]
     if not present:

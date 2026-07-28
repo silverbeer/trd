@@ -1,3 +1,4 @@
+import json as _json
 from contextlib import suppress
 from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
@@ -45,6 +46,8 @@ from trd.config import DEFAULT_ACCOUNT, get_settings
 from trd.db.connection import connect
 from trd.errors import TrdError
 from trd.models import AccountType, Side
+from trd.notify import scan_messages
+from trd.notify.telegram import from_env as notify_from_env
 from trd.providers import YFinanceProvider
 from trd.repos import AccountRepo
 from trd.services import (
@@ -65,7 +68,7 @@ from trd.services import (
     SyncService,
     WatchlistService,
 )
-from trd.services.engine import DEFAULT_ENGINE_ACCOUNT
+from trd.services.engine import DEFAULT_ENGINE_ACCOUNT, ScanResult, scan_events
 from trd.services.indicators import seed_defaults
 from trd.services.plan import PlanStatus
 from trd.services.watchlist import DEFAULT_WATCHLIST
@@ -1386,8 +1389,6 @@ def backup(
     """Export user-owned data (accounts, transactions, plans, watchlists, indicators,
     exit triggers, engine state) to a portable JSON file. Prices/earnings are
     excluded — they rebuild with sync."""
-    import json as _json
-
     from trd.services.backup import export_data
 
     settings = get_settings()
@@ -1499,12 +1500,55 @@ def engine_init(
     )
 
 
+def _emit_scan(result: ScanResult, as_json: bool, ndjson: bool) -> None:
+    """Render one scan in whichever shape the consumer wants: a human at a
+    terminal, a log shipper, or a one-shot JSON blob."""
+    if ndjson:
+        # One event per line, unindented — this is what promtail tails.
+        for event in scan_events(result):
+            print(_json.dumps(event, separators=(",", ":")))
+        return
+    if as_json:
+        console.print_json(result.model_dump_json())
+        return
+    for renderable in engine_scan_renderables(result):
+        console.print(renderable)
+
+
+def _notify_scan(result: ScanResult) -> None:
+    """Push fills to a chat, if one is configured. A delivery failure is reported
+    and swallowed: the trades are already recorded, and failing the scan over an
+    undelivered message would make the next pass re-evaluate a stale world."""
+    messages = scan_messages(result)
+    if not messages:
+        return
+    notifier = notify_from_env()
+    if notifier is None:
+        err_console.print(
+            "[yellow]warning:[/yellow] --notify set but TELEGRAM_BOT_TOKEN / "
+            "TELEGRAM_CHAT_ID are not configured — nothing sent."
+        )
+        return
+    for message in messages:
+        try:
+            notifier.send(message)
+        except TrdError as exc:
+            err_console.print(f"[yellow]warning:[/yellow] notification failed: {exc}")
+
+
 @engine_app.command("scan")
 def engine_scan(
     paper: Annotated[
         bool, typer.Option("--paper/--no-paper", help="Take paper fills, or only log signals.")
     ] = True,
     as_json: Annotated[bool, typer.Option("--json", help="Emit the scan result as JSON.")] = False,
+    ndjson: Annotated[
+        bool,
+        typer.Option("--ndjson", help="Emit one JSON event per line (for log shipping)."),
+    ] = False,
+    notify: Annotated[
+        bool, typer.Option("--notify", help="Push fills to the configured chat (Telegram).")
+    ] = False,
 ) -> None:
     """Run one scan pass: manage exits, then take the best new entries."""
     service = _engine_service()
@@ -1513,11 +1557,9 @@ def engine_scan(
     except TrdError as exc:
         _fail(exc)
         return
-    if as_json:
-        console.print_json(result.model_dump_json())
-        return
-    for renderable in engine_scan_renderables(result):
-        console.print(renderable)
+    _emit_scan(result, as_json, ndjson)
+    if notify:
+        _notify_scan(result)
 
 
 @engine_app.command("monitor")
@@ -1529,13 +1571,21 @@ def engine_monitor(
     passes: Annotated[
         int | None, typer.Option("--passes", help="Stop after N scans. Omit to run until Ctrl-C.")
     ] = None,
+    ndjson: Annotated[
+        bool,
+        typer.Option("--ndjson", help="Emit one JSON event per line (for log shipping)."),
+    ] = False,
+    notify: Annotated[
+        bool, typer.Option("--notify", help="Push fills to the configured chat (Telegram).")
+    ] = False,
 ) -> None:
     """Scan on a loop. Ctrl-C to stop — every pass is already persisted."""
     import time
 
     service = _engine_service()
     count = 0
-    console.print(f"[dim]Monitoring every {interval}s. Ctrl-C to stop.[/dim]")
+    if not ndjson:
+        console.print(f"[dim]Monitoring every {interval}s. Ctrl-C to stop.[/dim]")
     try:
         while passes is None or count < passes:
             try:
@@ -1543,8 +1593,9 @@ def engine_monitor(
             except TrdError as exc:
                 _fail(exc)
                 return
-            for renderable in engine_scan_renderables(result):
-                console.print(renderable)
+            _emit_scan(result, as_json=False, ndjson=ndjson)
+            if notify:
+                _notify_scan(result)
             count += 1
             if passes is not None and count >= passes:
                 break
