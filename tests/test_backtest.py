@@ -350,6 +350,47 @@ def test_warmup_shortfall_is_named_not_silent():
     assert result.skipped and "trd sync" in result.skipped[0]
 
 
+def test_windows_slice_trades_by_exit_date():
+    """The drift detector: one simulation, regraded over trailing windows. A
+    2019 trade shows up in the full column but not the 3y/1y ones."""
+    era1 = shifted_breakout(date(2019, 6, 1))
+    _e1, _s1, target1 = entry_levels(era1)
+    era1 = [*era1, bar(era1[-1].date + timedelta(days=1), 102.0, float(target1) + 1, 101.5, 103.0)]
+
+    flat2 = [
+        bar(date(2023, 1, 1) + timedelta(days=i), 200.0, 201.0, 199.0, 200.0) for i in range(60)
+    ]
+    breakout2 = bar(flat2[-1].date + timedelta(days=1), 200.0, 202.5, 199.5, 202.0, 3_000_000)
+    prefix2 = [*era1, *flat2, breakout2]
+    _e2, _s2, target2 = entry_levels(prefix2)
+    exit2 = bar(breakout2.date + timedelta(days=1), 203.0, float(target2) + 1, 202.5, 205.0)
+    series = [*prefix2, exit2]
+
+    result = run({"AAA": series})
+    assert len(result.trades) == 2
+
+    by_key = {w.key: w for w in result.windows}
+    # 5y would reach back before the run's own start, so it is dropped rather
+    # than rendered as a duplicate of the full column.
+    assert list(by_key) == ["full", "3y", "1y", "6m", "ytd"]
+
+    def breakout_trades(window):
+        stat = next((s for s in window.stats if s.strategy == "breakout"), None)
+        return stat.trades if stat else 0
+
+    assert breakout_trades(by_key["full"]) == 2
+    assert breakout_trades(by_key["3y"]) == 1  # the 2019 exit has aged out
+    assert breakout_trades(by_key["1y"]) == 1
+    assert breakout_trades(by_key["ytd"]) == 1
+
+
+def test_windows_older_than_the_run_are_dropped():
+    """A two-month run gets a full column only — trailing windows that would
+    just repeat it are not rendered as fake variety."""
+    result = run({"AAA": breakout_series()})
+    assert [w.key for w in result.windows] == ["full"]
+
+
 # ----------------------------------------------------------- service loading
 
 
