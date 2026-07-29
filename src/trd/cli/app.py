@@ -47,7 +47,7 @@ from trd.config import DEFAULT_ACCOUNT, get_settings
 from trd.db.connection import connect
 from trd.errors import TrdError
 from trd.models import AccountType, Side
-from trd.notify import scan_messages
+from trd.notify import label_from_env, scan_messages
 from trd.notify.telegram import from_env as notify_from_env
 from trd.providers import YFinanceProvider
 from trd.repos import AccountRepo
@@ -1551,11 +1551,11 @@ def _emit_scan(result: ScanResult, as_json: bool, ndjson: bool) -> None:
         console.print(renderable)
 
 
-def _notify_scan(result: ScanResult) -> None:
+def _notify_scan(result: ScanResult, label: str | None = None) -> None:
     """Push fills to a chat, if one is configured. A delivery failure is reported
     and swallowed: the trades are already recorded, and failing the scan over an
     undelivered message would make the next pass re-evaluate a stale world."""
-    messages = scan_messages(result)
+    messages = scan_messages(result, label)
     if not messages:
         return
     notifier = notify_from_env()
@@ -1595,7 +1595,7 @@ def engine_scan(
         return
     _emit_scan(result, as_json, ndjson)
     if notify:
-        _notify_scan(result)
+        _notify_scan(result, label_from_env(service.config().exit_params))
 
 
 @engine_app.command("monitor")
@@ -1631,7 +1631,7 @@ def engine_monitor(
                 return
             _emit_scan(result, as_json=False, ndjson=ndjson)
             if notify:
-                _notify_scan(result)
+                _notify_scan(result, label_from_env(service.config().exit_params))
             count += 1
             if passes is not None and count >= passes:
                 break

@@ -123,11 +123,13 @@ fi
 #   - component  -> ${ENGINE_NAME}, so `kubectl logs -l component=trd-day` picks
 #                   out one engine. `app: trd` stays on both, keeping the
 #                   existing `-l app=trd` recipe working across all of them.
+#   - TRD_ENGINE_LABEL -> ${ENGINE_NAME}, so pushed fills name their sender.
 render_manifest() {
     sed -E \
         -e "s#path: /Users/[^[:space:]]+#path: ${ENGINE_HOME}#" \
         -e "s#name: trd-engine-scan#name: ${ENGINE_NAME}-scan#" \
         -e "s#component: engine#component: ${ENGINE_NAME}#" \
+        -e "s#value: trd-engine\$#value: ${ENGINE_NAME}#" \
         k3s/trd-engine/cronjob.yaml
 }
 

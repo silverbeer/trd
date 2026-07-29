@@ -50,6 +50,25 @@ class TelegramNotifier:
             raise NotifyError(f"Could not reach Telegram: {exc.reason}") from None
 
 
+def label_from_env(
+    exit_params: dict[str, float] | None = None, env: dict[str, str] | None = None
+) -> str:
+    """Which engine a pushed fill came from.
+
+    `TRD_ENGINE_LABEL` wins — the k3s deploy sets it per CronJob, so two engines
+    label themselves with their own names. Unset, it falls back to what the rule
+    set already says about the engine: a `flat_at_minute` is what makes a day
+    engine, and everything else carries overnight. That fallback means the label
+    is right with no configuration at all, which matters because the failure mode
+    is silent — an unlabelled fill still looks like a perfectly good message.
+    """
+    source = env if env is not None else dict(os.environ)
+    explicit = source.get("TRD_ENGINE_LABEL", "").strip()
+    if explicit:
+        return explicit
+    return "day" if (exit_params or {}).get("flat_at_minute", 0) > 0 else "swing"
+
+
 def from_env(env: dict[str, str] | None = None) -> TelegramNotifier | None:
     """Build a notifier from TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID.
 
