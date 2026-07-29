@@ -1305,7 +1305,33 @@ def engine_backtest_renderables(result: EngineBacktestResult) -> list[Renderable
         out.append(engine_report_table(result.stats))
     else:
         out.append(Text("No completed trades in this window.", style="dim"))
+    if len(result.windows) > 1:
+        out.append(engine_backtest_windows_table(result))
     for note in result.skipped:
         out.append(Text(f"  {note}", style="dim"))
     out.append(Panel(result.caveat, border_style="yellow", title="Caveat", title_align="left"))
     return out
+
+
+def engine_backtest_windows_table(result: EngineBacktestResult) -> Table:
+    """Expectancy by trailing window — the drift detector. Read across a row: a
+    durable edge holds its grade in every column; a grade that fades toward the
+    recent windows was earned in a market that may be gone. Cells under 30
+    trades are dimmed: that is a vibe, not a measurement."""
+    table = Table(title="Expectancy by window — does the edge still show up?", title_justify="left")
+    table.add_column("Strategy", style="bold")
+    for window in result.windows:
+        table.add_column(window.label, justify="right")
+    for key in sorted(result.strategies):
+        cells = [key]
+        for window in result.windows:
+            stat = next((s for s in window.stats if s.strategy == key), None)
+            if stat is None or stat.trades == 0 or stat.expectancy_r is None:
+                cells.append("[dim]—[/dim]")
+                continue
+            grade = f"{stat.expectancy_r:+.2f}R ({stat.trades})"
+            cells.append(f"[dim]{grade}[/dim]" if stat.trades < 30 else grade)
+        table.add_row(*cells)
+    table.caption = "trade counts in parentheses; dim = under 30 trades, read as noise"
+    table.caption_justify = "left"
+    return table

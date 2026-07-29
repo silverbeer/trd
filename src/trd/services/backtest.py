@@ -88,6 +88,17 @@ class EquityPoint(BaseModel):
     value: Decimal
 
 
+class WindowStats(BaseModel):
+    """The scorecard recomputed over a trailing slice of the run — the drift
+    detector. A strategy whose lifetime grade was earned years ago shows a
+    strong 'full' column and an empty recent one."""
+
+    key: str
+    label: str
+    start: date
+    stats: list[StrategyStat]
+
+
 class BacktestResult(BaseModel):
     start: date
     end: date
@@ -105,6 +116,7 @@ class BacktestResult(BaseModel):
     start_value: Decimal
     end_value: Decimal
     max_drawdown_pct: float
+    windows: list[WindowStats] = []
     skipped: list[str] = []
     caveat: str = CAVEAT
 
@@ -180,6 +192,30 @@ def _check_exit(
     if decision is not None:
         return bar.close, decision
     return None
+
+
+def _window_stats(
+    closed: list[EnginePosition], trading_start: date, end: date
+) -> list[WindowStats]:
+    """Regrade the closed trades over trailing slices of the run, newest-biased.
+
+    One simulation, many report cards: a trade lands in a window when its exit
+    date does. Windows whose cutoff falls at or before the run's start are
+    dropped — they would just repeat the full column."""
+    spans = [
+        ("5y", "5y", end - timedelta(days=round(365.25 * 5))),
+        ("3y", "3y", end - timedelta(days=round(365.25 * 3))),
+        ("1y", "1y", end - timedelta(days=365)),
+        ("6m", "6mo", end - timedelta(days=182)),
+        ("ytd", "YTD", date(end.year, 1, 1)),
+    ]
+    out = [WindowStats(key="full", label="full", start=trading_start, stats=strategy_stats(closed))]
+    for key, label, cutoff in spans:
+        if cutoff <= trading_start:
+            continue
+        subset = [p for p in closed if p.closed_at is not None and p.closed_at.date() >= cutoff]
+        out.append(WindowStats(key=key, label=label, start=cutoff, stats=strategy_stats(subset)))
+    return out
 
 
 def _in_blackout(earnings: list[date] | None, today: date, days: int) -> bool:
@@ -390,6 +426,7 @@ def simulate(
         start_value=start_value,
         end_value=equity[-1].value if equity else start_value,
         max_drawdown_pct=max_drawdown,
+        windows=_window_stats(closed, trading_start, dates[-1]),
         skipped=skipped,
     )
 
