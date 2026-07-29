@@ -150,6 +150,24 @@ kubectl logs -n trd job/"$JOB" -f
 You'll only get a Telegram message if that scan actually filled something. To
 prove the path end to end regardless, run the `curl` from step 3.
 
+### Which engine sent it
+
+One secret feeds every engine, so a swing engine and a day engine push to the
+same chat — and the same symbol can sit in both universes. Fills are therefore
+prefixed with the sender:
+
+```
+[trd-day] 🟢 BUY MSFT x2 @ 512.40
+```
+
+The deploy script sets `TRD_ENGINE_LABEL` to the engine's name, so this needs no
+configuration. Running the CLI by hand (`trd engine scan --notify`) with no such
+variable set falls back to `swing` or `day`, read from whether the rule set has a
+`flat_at_minute`. Set `TRD_ENGINE_LABEL` yourself to name an engine anything else.
+
+Want the two feeds separated entirely? Create a second channel and give the day
+engine its own secret — the CronJob's `envFrom` name is the only thing to change.
+
 ### How it fails
 
 The secret is `optional: true`. With none configured the engine still scans and
