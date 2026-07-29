@@ -48,6 +48,12 @@ spec:
                   value: America/New_York
                 - name: NO_COLOR
                   value: "1" # plain text in kubectl logs
+                # Names this engine in pushed fills. Two engines share one chat
+                # and the same symbol can be in both universes, so an unlabelled
+                # fill can't say whether it will be held overnight. The deploy
+                # script rewrites this to ${ENGINE_NAME}, same as the name above.
+                - name: TRD_ENGINE_LABEL
+                  value: trd-engine
               envFrom:
                 # Telegram credentials. Optional by design: without this secret the
                 # scan still runs and just logs that it sent nothing.

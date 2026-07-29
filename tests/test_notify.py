@@ -7,7 +7,7 @@ import pytest
 
 from trd.errors import NotifyError
 from trd.notify import close_message, open_message, scan_messages
-from trd.notify.telegram import TelegramNotifier, from_env
+from trd.notify.telegram import TelegramNotifier, from_env, label_from_env
 from trd.services.engine import ScanFill, ScanResult, ScanSignal, scan_events
 
 
@@ -113,6 +113,31 @@ def test_closes_are_reported_before_opens():
     assert len(messages) == 2
     assert messages[0].startswith("🔴")  # the loss closed
     assert messages[1].startswith("🟢")
+
+
+# -------------------------------------------------------------- engine label
+
+
+def test_messages_name_the_engine_that_sent_them():
+    """Two engines share one chat and MSFT sits in both universes — without the
+    label a fill can't say whether it will be held overnight."""
+    messages = scan_messages(_result(opened=[OPEN_FILL], closed=[CLOSE_FILL]), label="trd-day")
+    assert all(m.startswith("[trd-day] ") for m in messages)
+    assert "BUY GOOGL" in messages[1]  # the label prefixes, it doesn't replace
+
+
+def test_label_falls_back_to_the_rule_set():
+    """A flat_at_minute is what makes an engine a day engine; everything else
+    carries overnight. So the label is right with no configuration at all."""
+    assert label_from_env({"flat_at_minute": 1555.0}, env={}) == "day"
+    assert label_from_env({"flat_at_minute": 0.0}, env={}) == "swing"
+    assert label_from_env(None, env={}) == "swing"
+
+
+def test_explicit_label_wins_over_the_fallback():
+    env = {"TRD_ENGINE_LABEL": "trd-day"}
+    assert label_from_env({"flat_at_minute": 0.0}, env=env) == "trd-day"
+    assert label_from_env({}, env={"TRD_ENGINE_LABEL": "  "}) == "swing"  # blank is unset
 
 
 # ----------------------------------------------------------------- telegram
