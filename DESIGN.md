@@ -34,7 +34,12 @@ Runs locally on two Macs (M5 mini + MacBook Air). No server, no cloud dependency
 - Columnar, fast aggregations over years of daily OHLCV across hundreds of tickers.
 - Single file, zero ops, perfect for local-first.
 - SQL window functions make indicator computation (moving averages, RSI components) easy in-database.
-- Caveat: single-writer. Fine for a CLI. If a background sync daemon ever appears, route all writes through one process.
+- Native `DECIMAL(24, 8)`, which is what makes "money is `Decimal` end to end, never float" enforceable at the storage boundary rather than by convention.
+- Caveat: single-writer. This stopped being theoretical once the engine started scanning every five minutes from a k3s CronJob — a writer excludes all readers, so the CLI became unusable against a live engine database during market hours.
+
+  The lesson turned out not to be about DuckDB. Measured, a scan held the lock for 6.27s, of which **6.23s (99.5%) was the yfinance network call doing no database work at all** — the connection was opened at process start and held across the round trip. Fetching quotes before opening the connection dropped the window to 0.04s. Holding an exclusive lock across network I/O would hurt in any single-writer store, and SQLite's WAL would have masked it while costing the decimal storage above.
+
+  Standing rule: **never hold a connection across a network call.** Read what you need, close, fetch, reopen to write. `connect()` also retries a held lock with bounded backoff, so a collision is a pause rather than an error.
 
 ### Why yfinance (and its risk)
 
@@ -51,14 +56,16 @@ Runs locally on two Macs (M5 mini + MacBook Air). No server, no cloud dependency
 ├─────────────────────────────────────────────┤
 │  Services (business logic)                  │
 │  PortfolioService, WatchlistService,        │
-│  SyncService, EarningsService,              │
-│  IndicatorService, SimulationService        │
+│  SyncService, EarningsService, PlanService, │
+│  IndicatorService, SundayPrepService,       │
+│  EngineService, BacktestService             │
 ├──────────────────────┬──────────────────────┤
 │  Repositories        │  MarketDataProvider  │
 │  (DuckDB access)     │  (protocol)          │
 │                      │  └─ YFinanceProvider │
 ├──────────────────────┴──────────────────────┤
-│  DuckDB (~/.trd/trd.duckdb)                 │
+│  DuckDB (~/.trd/trd.duckdb, and one file   │
+│  per engine: ~/.trd-engine, ~/.trd-day)    │
 └─────────────────────────────────────────────┘
 ```
 
@@ -67,7 +74,11 @@ Rules:
 - CLI layer never touches the DB or yfinance directly.
 - Services never import Typer/Rich — pure logic, fully testable.
 - All external data validated through Pydantic models at the provider boundary.
-- One DB connection manager; migrations as numbered SQL files applied at startup.
+- One DB connection manager; migrations as numbered SQL files applied at startup. Never edit an applied migration.
+- Money and quantities are `Decimal` end to end. Never float.
+- Holdings are always derived from transactions via FIFO — never stored as mutable balances.
+- Never hold a database connection across a network call (see Why DuckDB).
+- Tests never hit the network; extend `FakeProvider` in `tests/conftest.py`.
 
 ### Package layout
 
@@ -80,25 +91,30 @@ trd/
 │   └── skills/               # Claude tasks that drive the CLI (see below)
 ├── src/trd/
 │   ├── __init__.py
-│   ├── cli/                  # Typer apps, one module per command group
-│   │   ├── app.py            # root app, wires subcommands
-│   │   ├── portfolio.py
-│   │   ├── watch.py
-│   │   ├── earnings.py
-│   │   ├── sim.py
-│   │   └── sync.py
+│   ├── cli/
+│   │   ├── app.py            # every Typer command, one root app
+│   │   └── render.py         # every Rich renderable — no service imports Rich
 │   ├── models/               # Pydantic domain models
-│   ├── services/
+│   ├── services/             # business logic, never imports Typer/Rich
 │   ├── repos/                # DuckDB repositories
 │   ├── providers/
 │   │   ├── base.py           # MarketDataProvider protocol
-│   │   └── yfinance.py
+│   │   └── yf.py
 │   ├── db/
 │   │   ├── connection.py
 │   │   └── migrations/       # 001_init.sql, 002_...
-│   └── indicators/           # pure functions: sma, ema, rsi, macd, ...
+│   ├── indicators/           # code registry: sma, ema, rsi, macd, atr, ...
+│   ├── engine/               # code registry: entry strategies + exit rules
+│   ├── learn/                # the `trd learn` glossary
+│   ├── notify/               # Telegram push for engine fills
+│   ├── data/                 # static reference data (curated universe, macro calendar)
+│   └── build.py              # which commit this build is, for provenance
+├── k3s/                      # CronJob manifests for the engine
+├── deploy/                   # launchd agents + container entrypoint
 └── tests/
 ```
+
+The CLI is one `app.py` rather than a module per command group: Typer wires subcommands from a single tree, and splitting it bought indirection without removing anything. `render.py` is the hard boundary — services never import Rich, so every service is testable without a terminal.
 
 ## Data Model
 
@@ -113,6 +129,10 @@ Core entities (DuckDB tables, mirrored by Pydantic models):
 - **earnings_event** — instrument, date, time-of-day (BMO/AMC), EPS estimate, actual (filled after report).
 - **indicator_config** — the user's evolving list of followed indicators (see Indicator Data Model below).
 - **indicator_value** *(later phase)* — optional cache of computed indicator values (see below).
+- **plan** / **plan_leg** — DCA plans: cadence, monthly amount, per-symbol allocation. Contributions are recorded as ordinary transactions.
+- **exit_trigger** — a stop/target level watched on a holding; fires on a daily close beyond the level.
+- **engine_config** / **engine_run** / **engine_signal** / **engine_position** — the trading engine (below).
+- **prep_snapshot** — archived Sunday Prep briefings.
 
 Derived views (SQL views, not tables): current holdings per account, cost basis, unrealized P&L, portfolio value time series.
 
@@ -141,7 +161,92 @@ trd indicator ls|catalog|add|rm|info   # manage the followed-indicator list (see
 trd sim init --monthly 100        # create simulation account
 trd sim invest                    # execute this month's $100 buy (strategy-driven)
 trd sim status                    # sim performance vs benchmark (SPY)
+
+trd dca set|invest|show|forecast|backtest   # recurring contributions on any account
+trd exit set|ls|check              # stop/target triggers on a holding
+trd prep [--snapshot]              # week-ahead briefing (futures, macro, levels, themes)
+trd learn [TERM]                   # the dictionary: every term + the exact formula trd uses
+
+trd engine init|scan|monitor       # the trading engine (see below)
+trd engine status|runs|positions|report|signals|rules
+trd engine backtest [--years 10]   # replay the same rules against history
 ```
+
+Every read command takes `--json`: the underlying model, full precision, stable
+keys, errors as JSON with a non-zero exit. Rich tables truncate to terminal
+width — never parse them.
+
+## The trading engine
+
+The largest thing built since this document was first written, and the reason
+Phase 5 arrived earlier than planned. `trd engine` scans a small universe on a
+schedule, fires entry signals, and manages every open trade through exit rules —
+all on a **simulation** account, so no real money is involved.
+
+### Rules are code, never config
+
+Entry strategies live in `engine/strategies.py` and exit rules in
+`engine/exits.py`, both as `@register`-style code registries mirroring the
+indicator one. Strategies never reimplement indicator math — they call the
+indicator registry. Every signal and exit carries a plain-English `reason`: a
+rule you cannot explain does not ship.
+
+Exits run in a fixed order, capital protection before profit-taking:
+
+```
+stop → trail → target → indicator → time → session_close
+```
+
+The initial stop never moves. 1R is measured from it, so a drifting stop would
+make every closed trade's R-multiple mean something different.
+
+### Fills are ordinary transactions
+
+The engine only ever trades a `simulation` account, and its fills are plain `txn`
+rows — so portfolio, equity, XIRR and drawdown work on the engine account without
+a line of new code. `engine_position` stores only what a transaction cannot
+express: which rule fired, the stop and target, the trailing high-water mark, and
+the exit reason.
+
+### Two engines, two databases
+
+A **swing** engine (`~/.trd-engine`) carries positions overnight. A **day** engine
+(`~/.trd-day`) sets `flat_at_minute` and is flat by the bell, refusing new entries
+in the last 30 minutes. Both run as k3s CronJobs every 5 minutes during market
+hours, against separate databases — deliberately *not* the real one, and never in
+iCloud, since a pod cannot see a macOS FileProvider path and iCloud resolves
+binary conflicts by duplicating rather than merging.
+
+### Backtesting: the statistical-power problem
+
+The engine could explain every rule but not justify any of them. For a 2R-target
+system the per-trade spread is ~1.2R, so telling a 0.2R edge from noise needs
+~144 trades **per strategy** — about four years of live paper trading. `trd engine
+backtest` replays the same rule code over stored daily bars and produces that
+sample in about a minute.
+
+It is a *driver* around the live rules, never a second copy: entries from the
+strategy registry, exits from `evaluate_exits`, sizing from the same `plan_entry`
+the live engine uses. What daily bars cannot express is decided explicitly rather
+than silently — gaps fill at the open, a bar touching both stop and target counts
+the stop, and day-mode configs are refused outright because daily bars have no
+clock. Lookahead is guarded structurally (a strategy sees only `bars[:i+1]`) and
+tested by rewriting the future and asserting past decisions are unchanged.
+
+Results are an upper bound, not a forecast: survivorship, no slippage or spread,
+and retroactively adjusted prices. The output says so every time.
+
+### Operational lessons worth keeping
+
+- **A deployed engine must state its provenance.** A stale image once ran rules
+  from before `session_close` existed for a full session — the day engine held
+  overnight, every test passed, and nothing anywhere said which code was running.
+  The git SHA is now baked at image build and surfaces in `trd engine status`,
+  `status.txt` and every scan event. A config that switches on a parameter whose
+  rule is missing from the build now refuses to trade.
+- **Silence and failure must be distinguishable.** `trd engine runs` shows the
+  interval between scans, because "the engine did nothing" and "the engine never
+  ran" look identical without the cadence.
 
 ## Indicator Data Model (evolvable by design)
 
@@ -253,6 +358,11 @@ Later (Phase 6) these evolve into scheduled agents (cron via Claude scheduled ta
 
 ## Phased Roadmap
 
+Status as of July 2026: Phases 1–4 are **done**. Phase 5 was overtaken by the
+trading engine, which delivered the R-multiple journal and rule-driven execution
+it called for, on daily bars and a simulation account rather than intraday data.
+Phase 6 has not started.
+
 ### Phase 1 — Portfolio core
 Scaffold (uv, ruff, ty, pytest, CI-ready). Migrations, instrument/account/transaction tables. yfinance provider behind protocol. `trd init/sync/buy/sell/import/portfolio/quote`. Enter all existing real holdings. **Exit criteria: `trd portfolio` shows true positions with live-ish prices and P&L.**
 
@@ -265,21 +375,32 @@ Indicator code registry + `indicator_config` table + `trd indicator` management 
 ### Phase 4 — Simulation account
 Sim account type, `trd sim` commands, pluggable monthly strategy (start: fixed ticker or "strongest momentum on watchlist"), benchmark vs SPY.
 
-### Phase 5 — Day-trading prep
-Intraday data (yfinance 1m/5m bars), VWAP/gap/relative-volume, premarket scanner, trade journal (plan vs execution, R-multiple tracking). Gated on FINRA rule change for real money; works against sim account regardless.
+### Phase 5 — Day-trading prep *(superseded by the trading engine)*
+Originally: intraday data (yfinance 1m/5m bars), VWAP/gap/relative-volume, premarket scanner, trade journal with R-multiple tracking.
 
-### Phase 6 — AI agents
+What shipped instead: the engine above, plus Sunday Prep (`trd prep`) for the week-ahead briefing. R-multiple tracking, rule-driven entries and exits, and the plan-vs-execution journal all exist — on daily bars with a live quote folded in as the forming bar, rather than on intraday bars. Genuine intraday data remains unbuilt and is not currently needed: the day engine reacts to quotes within a 5-minute scan loop. Still gated on FINRA's PDT change for real money; the simulation account works regardless.
+
+### Phase 6 — AI agents *(not started)*
 Trend-scan agent over watchlist, buy-candidate screener with rationale, scheduled morning brief. Built on Claude Agent SDK + the CLI as tool surface.
+
+The groundwork is the CLI itself: every read command emits `--json` — the underlying model, full precision, stable keys, errors as JSON with a non-zero exit — so an agent parses a contract rather than scraping Rich tables, which truncate to terminal width and say nothing about it.
 
 ## Non-Goals (for now)
 
-- No brokerage API integration (no auto-execution).
+- No brokerage API integration (no auto-execution). The engine paper-trades and records; a human executes.
 - No web UI.
-- No real-time streaming data — sync-on-demand + scheduled syncs are enough until Phase 5.
+- No real-time streaming data — scheduled syncs plus a live quote folded into the forming bar have been enough, including for the day engine.
 - No tax-lot optimization (track FIFO lots, defer fancy accounting).
 
 ## Open Questions
 
-- CSV import format: which brokerage(s)? Define mapping when first export is in hand.
-- Intraday data retention policy (DuckDB will be fine for years of daily bars; minute bars need pruning).
-- Sim strategy plug-in interface — decide after Phase 1 reveals service shapes.
+Resolved:
+
+- ~~CSV import format~~ — `date,account,symbol,side,quantity,price[,fees,note]`, defined once a real export was in hand.
+- ~~Sim strategy plug-in interface~~ — answered twice over: DCA plans for scheduled contributions, and the engine's code registries for rule-driven trading. Both landed as registries rather than plug-ins, so a new rule is one class and no configuration.
+
+Open:
+
+- Intraday data retention, if minute bars are ever stored. Daily bars are comfortable — 37k rows across 15 symbols and a decade — but minute data would need pruning.
+- Whether the engine should trim strategies automatically. The backtest grades them (breakout +0.29R over 286 trades; pullback +0.03R over 451), and the drift panel shows when an edge expires, but acting on that stays a human decision. Deliberately: the tool builds confidence in a choice, it does not make the choice.
+- How to keep two machines' engine databases coherent. `trd backup` / `trd restore` handles the real database, but the engine databases are excluded from iCloud on purpose and currently live on one machine.
