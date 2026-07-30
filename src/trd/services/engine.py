@@ -22,7 +22,8 @@ from decimal import ROUND_DOWN, Decimal
 import duckdb
 from pydantic import BaseModel
 
-from trd.engine import DEFAULT_EXIT_PARAMS, evaluate_exits
+from trd.build import build_version
+from trd.engine import DEFAULT_EXIT_PARAMS, EXIT_REGISTRY, evaluate_exits, missing_rules
 from trd.engine import REGISTRY as STRATEGIES
 from trd.engine.base import indicator, last
 from trd.errors import ProviderError, TrdError
@@ -282,6 +283,28 @@ class EngineService:
             raise TrdError("No engine configured. Run 'trd engine init' first.")
         return config
 
+    @staticmethod
+    def _verify_rules(config: EngineConfig) -> None:
+        """Refuse to trade a rule set this build cannot honour.
+
+        A stored config can outlive the code that understands it, and the failure
+        is silent in the worst direction: a day engine whose `session_close` rule
+        is missing does not error, it just carries positions overnight — exactly
+        the risk the setting exists to forbid. Failing every scan with a loud
+        message is the better outcome, because a stopped engine gets noticed and
+        a quietly wrong one does not.
+        """
+        gaps = missing_rules(config.exit_params)
+        if not gaps:
+            return
+        detail = ", ".join(f"{param} needs the '{rule}' rule" for param, rule in gaps)
+        raise TrdError(
+            f"This build cannot honour the configured rule set ({detail}). "
+            f"Running {build_version()}, whose exit rules are: "
+            f"{', '.join(sorted(EXIT_REGISTRY))}. The database was configured by a "
+            "newer build than the one executing — redeploy before trading again."
+        )
+
     def account(self) -> Account:
         account = next(
             (a for a in self.accounts.list_all() if a.id == self.config().account_id), None
@@ -398,6 +421,7 @@ class EngineService:
     def scan(self, paper: bool = True, at: datetime | None = None) -> ScanResult:
         """One pass: manage exits first (freeing capacity), then take new entries."""
         config = self.config()
+        self._verify_rules(config)
         account = self.account()
         now = at or datetime.now()
         today = now.date()
@@ -778,6 +802,9 @@ def scan_events(result: ScanResult) -> list[dict]:
         {
             "ev": "scan",
             "ts": stamp,
+            # Which code produced this. Groupable in Loki, so a stale rollout shows
+            # up as a version that stopped changing instead of as absent behaviour.
+            "version": build_version(),
             "run_id": result.run_id,
             "paper": result.paper,
             "scanned": result.scanned,
