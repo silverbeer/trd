@@ -1671,6 +1671,7 @@ def engine_positions(
     service = _engine_service()
     try:
         rows = service.position_rows(open_only=not all_)
+        max_positions = service.config().max_positions
     except TrdError as exc:
         _fail(exc)
         return
@@ -1678,7 +1679,7 @@ def engine_positions(
         console.print("No engine positions yet. Run [bold]trd engine scan[/bold].")
         return
     title = "Engine positions — all" if all_ else "Engine positions — open"
-    console.print(engine_positions_table(rows, title, show_exit=all_))
+    console.print(engine_positions_table(rows, title, show_exit=all_, max_positions=max_positions))
 
 
 @engine_app.command("report")

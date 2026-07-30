@@ -1179,11 +1179,24 @@ def _effective_stop(row: PositionRow) -> str:
     return fmt_money(initial)
 
 
-def engine_positions_table(rows: list[PositionRow], title: str, show_exit: bool = False) -> Table:
-    """Open trades with live P&L and where the stop currently sits."""
+def engine_positions_table(
+    rows: list[PositionRow],
+    title: str,
+    show_exit: bool = False,
+    max_positions: int | None = None,
+) -> Table:
+    """Open trades with live P&L and where the stop currently sits.
+
+    `Opened` carries the time, not just the date: a day engine takes every entry
+    intraday and must be flat by the bell, so the clock is the interesting part.
+    The caption answers "is the book full?" — the fact that decides whether any
+    new signal can be acted on at all, and previously only visible by counting
+    rows by hand.
+    """
     table = Table(title=title, title_justify="left")
     table.add_column("Symbol", style="bold")
     table.add_column("Strategy")
+    table.add_column("Opened", style="dim")
     table.add_column("Qty", justify="right")
     table.add_column("Entry", justify="right")
     table.add_column("Now", justify="right")
@@ -1200,6 +1213,7 @@ def engine_positions_table(rows: list[PositionRow], title: str, show_exit: bool 
         cells = [
             row.instrument.symbol,
             position.strategy,
+            position.opened_at.strftime("%m-%d %H:%M"),
             fmt_qty(position.quantity),
             fmt_money(position.entry_price),
             fmt_money(mark),
@@ -1216,6 +1230,26 @@ def engine_positions_table(rows: list[PositionRow], title: str, show_exit: bool 
                 else "[green]open[/green]"
             )
         table.add_row(*cells)
+
+    open_rows = [r for r in rows if r.position.status != PositionStatus.CLOSED]
+    if open_rows:
+        committed = sum((r.position.cost for r in open_rows), Decimal(0))
+        pnl = sum((r.position.pnl_at(r.mark) or Decimal(0) for r in open_rows), Decimal(0))
+        held = (
+            f"{len(open_rows)} of {max_positions} open"
+            if max_positions
+            else f"{len(open_rows)} open"
+        )
+        parts = [held]
+        if max_positions is not None:
+            room = max_positions - len(open_rows)
+            parts.append(
+                "no capacity — nothing new can be taken" if room <= 0 else f"room for {room}"
+            )
+        parts.append(f"{fmt_money(committed)} committed")
+        parts.append(f"{fmt_signed(pnl)} unrealized")
+        table.caption = "  ·  ".join(parts)
+        table.caption_justify = "left"
     return table
 
 

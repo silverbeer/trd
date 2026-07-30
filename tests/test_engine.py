@@ -801,3 +801,65 @@ def test_scan_is_unaffected_when_every_configured_rule_is_present(engine, provid
     engine.init(symbols=["AAA"], exit_params={"flat_at_minute": 1555.0})
     result = engine.scan()  # must not raise
     assert result.scanned == 1
+
+
+# ------------------------------------------------------------ positions view
+
+
+def _position_row(symbol: str, opened: datetime, max_pos: int = 5):
+    from trd.models import Instrument, InstrumentType, PositionRow
+
+    position = EnginePosition(
+        id=1,
+        account_id=1,
+        instrument_id=1,
+        strategy="pullback",
+        opened_at=opened,
+        entry_price=Decimal("100"),
+        quantity=Decimal("2"),
+        stop_price=Decimal("95"),
+        target_price=Decimal("110"),
+        atr_at_entry=Decimal("2.5"),
+        trail_high=Decimal("100"),
+    )
+    instrument = Instrument(id=1, symbol=symbol, name=symbol, type=InstrumentType.STOCK)
+    return PositionRow(position=position, instrument=instrument, price=Decimal("104"))
+
+
+def test_positions_table_shows_when_the_trade_was_entered():
+    """A day engine takes every entry intraday and must be flat by the bell, so
+    the clock — not just the date — is the interesting part."""
+    from trd.cli.render import engine_positions_table
+
+    row = _position_row("AAA", datetime(2026, 7, 30, 9, 30))
+    table = engine_positions_table([row], "t", max_positions=5)
+    assert "Opened" in [c.header for c in table.columns]
+    rendered = _render(table)
+    assert "07-30 09:30" in rendered
+
+
+def test_positions_table_says_whether_the_book_is_full():
+    """'Is there capacity' decides whether any new signal can be acted on, and
+    used to require counting rows by hand."""
+    from trd.cli.render import engine_positions_table
+
+    rows = [_position_row(s, datetime(2026, 7, 30, 9, 30)) for s in ("AAA", "BBB")]
+    caption = engine_positions_table(rows, "t", max_positions=5).caption or ""
+    assert "2 of 5 open" in caption
+    assert "room for 3" in caption
+    assert "400.00 committed" in caption  # 2 positions x 2 shares x 100
+
+    full = engine_positions_table(rows, "t", max_positions=2).caption or ""
+    assert "no capacity" in full
+
+    # Without a configured maximum the count still shows, the capacity cannot.
+    bare = engine_positions_table(rows, "t").caption or ""
+    assert "2 open" in bare and "capacity" not in bare
+
+
+def _render(table) -> str:
+    from rich.console import Console
+
+    console = Console(width=200, no_color=True, record=True)
+    console.print(table)
+    return console.export_text()
