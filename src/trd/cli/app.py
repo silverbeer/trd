@@ -26,6 +26,7 @@ from trd.cli.render import (
     engine_exits_table,
     engine_positions_table,
     engine_report_table,
+    engine_runs_table,
     engine_scan_renderables,
     engine_signals_table,
     engine_status_renderables,
@@ -1824,6 +1825,32 @@ def engine_report(as_json: JsonOpt = False) -> None:
         console.print("No trades yet. Run [bold]trd engine scan[/bold] for a while first.")
         return
     console.print(engine_report_table(stats))
+
+
+@engine_app.command("runs")
+def engine_runs(
+    limit: Annotated[int, typer.Option("--limit", "-n", help="How many scans to show.")] = 25,
+    today: Annotated[bool, typer.Option("--today", help="Every scan since midnight.")] = False,
+    as_json: JsonOpt = False,
+) -> None:
+    """Scan history with the interval between passes. The gaps are the point: a
+    CronJob that stopped, or a scan that never fired, is invisible everywhere
+    else — 'the engine did nothing' and 'the engine never ran' look identical
+    until you can see the cadence."""
+    _use_json(as_json)
+    service = _engine_service()
+    try:
+        runs = service.run_rows(limit=limit, today=today)
+    except TrdError as exc:
+        _fail(exc)
+        return
+    if as_json:
+        _emit_json(runs)
+        return
+    if not runs:
+        console.print("No scans recorded yet. Run [bold]trd engine scan[/bold].")
+        return
+    console.print(engine_runs_table(runs))
 
 
 @engine_app.command("status")
