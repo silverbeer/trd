@@ -132,6 +132,26 @@ def _engine_service() -> EngineService:
     return EngineService(connect(settings.db_path), YFinanceProvider())
 
 
+def _prefetched_quotes(symbols_of) -> dict:
+    """Fetch quotes with the database closed, then hand them to the real call.
+
+    DuckDB allows one writer, so any connection this process holds blocks every
+    other reader. The provider call takes seconds and touches no database, so
+    doing it on an open connection is several seconds of lock held for nothing —
+    which is what made the CLI unusable against a live engine during market hours.
+
+    Two short connections either side of the network call cost about 20ms each.
+    """
+    service = _engine_service()
+    try:
+        symbols = symbols_of(service)
+    finally:
+        service.conn.close()
+    if not symbols:
+        return {}
+    return service._quotes(symbols)
+
+
 def _fail(exc: TrdError) -> None:
     err_console.print(f"[red]error:[/red] {exc}")
     raise typer.Exit(code=1)
@@ -1588,9 +1608,10 @@ def engine_scan(
     ] = False,
 ) -> None:
     """Run one scan pass: manage exits, then take the best new entries."""
-    service = _engine_service()
     try:
-        result = service.scan(paper=paper)
+        quotes = _prefetched_quotes(lambda s: s.quote_symbols())
+        service = _engine_service()
+        result = service.scan(paper=paper, quotes=quotes)
     except TrdError as exc:
         _fail(exc)
         return
@@ -1619,20 +1640,26 @@ def engine_monitor(
     """Scan on a loop. Ctrl-C to stop — every pass is already persisted."""
     import time
 
-    service = _engine_service()
     count = 0
     if not ndjson:
         console.print(f"[dim]Monitoring every {interval}s. Ctrl-C to stop.[/dim]")
     try:
         while passes is None or count < passes:
+            # Connect per pass, not once for the whole loop: a monitor that held
+            # the connection would keep DuckDB's single writer lock for its entire
+            # run, blocking every other trd command for as long as it watches.
             try:
-                result = service.scan(paper=paper)
+                quotes = _prefetched_quotes(lambda s: s.quote_symbols())
+                service = _engine_service()
+                result = service.scan(paper=paper, quotes=quotes)
+                params = service.config().exit_params
+                service.conn.close()
             except TrdError as exc:
                 _fail(exc)
                 return
             _emit_scan(result, as_json=False, ndjson=ndjson)
             if notify:
-                _notify_scan(result, label_from_env(service.config().exit_params))
+                _notify_scan(result, label_from_env(params))
             count += 1
             if passes is not None and count >= passes:
                 break
@@ -1668,9 +1695,10 @@ def engine_positions(
     ] = False,
 ) -> None:
     """Engine positions with live P&L and where the stops sit."""
-    service = _engine_service()
     try:
-        rows = service.position_rows(open_only=not all_)
+        quotes = _prefetched_quotes(lambda s: s.quote_symbols())
+        service = _engine_service()
+        rows = service.position_rows(open_only=not all_, quotes=quotes)
         max_positions = service.config().max_positions
     except TrdError as exc:
         _fail(exc)
