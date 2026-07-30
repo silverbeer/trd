@@ -6,6 +6,7 @@ from trd.services.earnings import EarningsService
 from trd.services.engine import EngineService, ScanFill, ScanResult, ScanSignal
 from trd.services.equity_curve import EquityCurve, EquityCurveService
 from trd.services.exit_triggers import ExitTriggerService
+from trd.services.history import HistoryResult, HistoryRow, HistoryService
 from trd.services.indicators import IndicatorService
 from trd.services.movers import MoverRow, MoversService
 from trd.services.plan import PlanService
@@ -25,6 +26,9 @@ __all__ = [
     "EquityCurve",
     "EquityCurveService",
     "ExitTriggerService",
+    "HistoryResult",
+    "HistoryRow",
+    "HistoryService",
     "IndicatorService",
     "MoverRow",
     "MoversService",

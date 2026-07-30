@@ -19,6 +19,7 @@ from trd.models import (
     Position,
     PositionRow,
     PositionStatus,
+    Side,
     SignalRow,
     StrategyStat,
 )
@@ -29,6 +30,7 @@ from trd.services.dca_detail import PlanDetail
 from trd.services.dca_projection import BacktestResult, ForecastResult
 from trd.services.engine import ScanResult
 from trd.services.equity_curve import EquityCurve
+from trd.services.history import HistoryResult
 from trd.services.movers import MoverRow
 from trd.services.plan import PlanStatus
 from trd.services.sunday_prep import SundayPrepBriefing
@@ -1495,4 +1497,59 @@ def engine_runs_table(runs: list[EngineRun]) -> Table:
     if flagged:
         table.caption = f"usual cadence {typical / 60:.0f}m — ⚠ marks scans that went missing"
         table.caption_justify = "left"
+    return table
+
+
+def history_table(result: HistoryResult) -> Table:
+    """What was bought and sold, newest first, and whether the period made money.
+
+    Sells carry their realized result; buys do not, because a buy has not
+    produced anything yet — its outcome lives in `trd portfolio` as unrealized
+    P&L until the day it is sold.
+    """
+    window = f"since {result.since}" if result.since else "all time"
+    table = Table(title=f"Transaction history — {window}", title_justify="left")
+    table.add_column("Date", style="bold")
+    table.add_column("Account", style="dim")
+    table.add_column("Side")
+    table.add_column("Symbol", style="bold")
+    table.add_column("Qty", justify="right")
+    table.add_column("Price", justify="right")
+    table.add_column("Total", justify="right")
+    table.add_column("Realized", justify="right")
+    table.add_column("Note", style="dim")
+
+    for row in result.rows:
+        txn = row.txn
+        buy = txn.side == Side.BUY
+        realized = "—"
+        if row.realized_pnl is not None:
+            pct = f" ({row.realized_pct:+.1f}%)" if row.realized_pct is not None else ""
+            realized = f"{fmt_signed(row.realized_pnl)}{pct}"
+        table.add_row(
+            txn.executed_at.strftime("%Y-%m-%d %H:%M"),
+            row.account,
+            "[green]buy[/green]" if buy else "[red]sell[/red]",
+            row.instrument.symbol,
+            fmt_qty(txn.quantity),
+            fmt_money(txn.price),
+            fmt_money(row.gross),
+            realized,
+            (txn.note or "")[:40],
+        )
+
+    parts = [f"{len(result.rows)} transactions"]
+    parts.append(f"bought {fmt_money(result.bought)}")
+    parts.append(f"sold {fmt_money(result.sold)}")
+    if result.sells_with_result:
+        pct = f" ({result.realized_pct:+.1f}%)" if result.realized_pct is not None else ""
+        parts.append(f"realized {fmt_signed(result.realized_pnl)}{pct}")
+    else:
+        # Saying "realized 0.00" would read as breaking even rather than as
+        # never having closed anything.
+        parts.append("[dim]nothing sold — no realized result yet[/dim]")
+    if result.fees:
+        parts.append(f"fees {fmt_money(result.fees)}")
+    table.caption = "  ·  ".join(parts)
+    table.caption_justify = "left"
     return table
