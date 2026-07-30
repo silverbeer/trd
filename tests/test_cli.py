@@ -418,3 +418,60 @@ def test_trend_change_pct_and_arrow() -> None:
     assert "red" in down and "↓30%" in down
     assert trend_change([100, 100]) == "[dim]→0%[/dim]"  # flat
     assert trend_change([100.0]) == "—"  # too short
+
+
+# --------------------------------------------------------------- json contract
+
+
+def test_json_output_is_parseable_and_untruncated(cli_env: FakeProvider) -> None:
+    """The reason --json exists: a Rich table at a narrow width silently replaces
+    every number with an ellipsis, and nothing signals the loss."""
+    import json
+
+    assert runner.invoke(app, ["init"]).exit_code == 0
+    assert runner.invoke(app, ["buy", "AAPL", "10", "--price", "150.123456"]).exit_code == 0
+
+    result = runner.invoke(app, ["portfolio", "--json"])
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload[0]["instrument"]["symbol"] == "AAPL"
+    # Full precision, as a number — not "150.12" and not a formatted string.
+    assert float(payload[0]["quantity"]) == 10.0
+
+
+def test_json_errors_are_json_with_a_nonzero_exit(cli_env: FakeProvider) -> None:
+    """An agent hits failure paths constantly. A decorated human error on stdout
+    turns every one into a parse failure instead of a handled state."""
+    import json
+
+    assert runner.invoke(app, ["init"]).exit_code == 0
+    result = runner.invoke(app, ["engine", "report", "--json"])
+    assert result.exit_code == 1
+    payload = json.loads(result.output)
+    assert payload["error"]
+    assert "engine init" in payload["message"]
+
+
+def test_human_errors_stay_human(cli_env: FakeProvider) -> None:
+    """Without --json nothing changes: no JSON leaks into a human's terminal."""
+    assert runner.invoke(app, ["init"]).exit_code == 0
+    result = runner.invoke(app, ["engine", "report"])
+    assert result.exit_code == 1
+    assert "error:" in result.output
+    assert "{" not in result.output
+
+
+def test_json_output_carries_no_ansi_or_wrapping(cli_env: FakeProvider) -> None:
+    """console.print_json colours and re-wraps to terminal width; both corrupt a
+    pipe, so machine output goes through plain print instead."""
+    import json
+
+    assert runner.invoke(app, ["init"]).exit_code == 0
+    for symbol in ("AAPL", "NVDA", "BTC-USD"):
+        runner.invoke(app, ["watch", "add", symbol])
+
+    result = runner.invoke(app, ["watch", "ls", "--json"])
+    assert result.exit_code == 0, result.output
+    assert "\x1b[" not in result.output  # no ANSI escapes
+    assert len(result.output.strip().splitlines()) == 1  # one document, one line
+    assert isinstance(json.loads(result.output), list)
