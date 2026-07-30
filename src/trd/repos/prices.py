@@ -45,6 +45,22 @@ class PriceRepo:
             for r in rows
         ]
 
+    def coverage(self) -> tuple[int, date | None, date | None]:
+        """(total bars, earliest date, latest date) across every instrument.
+
+        How much history the engine can actually reason over — the rules need 200
+        bars before the first signal can fire, and the backtest needs far more.
+        """
+        row = self.conn.execute("SELECT count(*), min(date), max(date) FROM price_daily").fetchone()
+        return (row[0], row[1], row[2]) if row else (0, None, None)
+
+    def bar_counts(self) -> dict[int, int]:
+        """Bars held per instrument id, for spotting a symbol too short to trade."""
+        rows = self.conn.execute(
+            "SELECT instrument_id, count(*) FROM price_daily GROUP BY instrument_id"
+        ).fetchall()
+        return {r[0]: r[1] for r in rows}
+
     def insert_snapshot(
         self, instrument_id: int, price: Decimal, prev_close: Decimal | None
     ) -> None:

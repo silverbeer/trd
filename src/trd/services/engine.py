@@ -33,6 +33,7 @@ from trd.models import (
     DailyBar,
     EngineConfig,
     EnginePosition,
+    EngineStatus,
     Instrument,
     PositionRow,
     Quote,
@@ -766,6 +767,63 @@ class EngineService:
             price = quote.price if quote is not None else self.prices.latest_close(instrument.id)
             rows.append(PositionRow(position=position, instrument=instrument, price=price))
         return rows
+
+    def status(self, db_path: str = "") -> EngineStatus:
+        """One object answering "what is this engine, and is it healthy?".
+
+        No network call on purpose: this is the command you reach for when
+        something looks wrong, and it must still answer when the provider is the
+        thing that is wrong. Positions are marked at their last stored close, so
+        the P&L is as fresh as the last sync rather than live.
+        """
+        config = self.config()
+        account = self.account()
+        universe = self.universe()
+        open_pairs = self.positions.list_open(account.id)
+
+        committed = sum((p.cost for p, _ in open_pairs), Decimal(0))
+        unrealized = Decimal(0)
+        stale = False
+        for position, instrument in open_pairs:
+            close = self.prices.latest_close(instrument.id)
+            if close is None:
+                stale = True
+                continue
+            unrealized += position.pnl_at(close) or Decimal(0)
+
+        total, first, last_bar = self.prices.coverage()
+        counts = self.prices.bar_counts()
+        enabled = [STRATEGIES[k] for k in config.strategies if k in STRATEGIES]
+        warmup = max((s.min_bars for s in enabled), default=0)
+        short = sorted(
+            (i.symbol, counts.get(i.id, 0)) for i in universe if counts.get(i.id, 0) < warmup
+        )
+
+        recent = self.runs.list_recent(1)
+        midnight = datetime.combine(date.today(), datetime.min.time())
+        return EngineStatus(
+            build=build_version(),
+            db_path=db_path,
+            account=account.name,
+            watchlist=config.watchlist,
+            universe=[i.symbol for i in universe],
+            strategies=list(config.strategies),
+            position_size=config.position_size,
+            max_positions=config.max_positions,
+            earnings_blackout_days=config.earnings_blackout_days,
+            flat_at_minute=int(config.exit_params.get("flat_at_minute", 0)),
+            open_positions=len(open_pairs),
+            committed=committed,
+            unrealized=unrealized,
+            marks_are_stale=stale,
+            bars_total=total,
+            bars_first=first,
+            bars_last=last_bar,
+            warmup_bars=warmup,
+            short_history=short,
+            last_scan=recent[0].started_at if recent else None,
+            scans_today=self.runs.count_since(midnight),
+        )
 
     def report(self) -> list[StrategyStat]:
         """Per-strategy scorecard over closed trades. The reason the dry run exists."""

@@ -27,6 +27,7 @@ from trd.cli.render import (
     engine_report_table,
     engine_scan_renderables,
     engine_signals_table,
+    engine_status_renderables,
     engine_strategies_table,
     equity_curve_renderables,
     equity_daily_table,
@@ -1723,6 +1724,27 @@ def engine_report() -> None:
         console.print("No trades yet. Run [bold]trd engine scan[/bold] for a while first.")
         return
     console.print(engine_report_table(stats))
+
+
+@engine_app.command("status")
+def engine_status(
+    as_json: Annotated[bool, typer.Option("--json", help="Emit the status as JSON.")] = False,
+) -> None:
+    """What this engine is and whether it is healthy: build, database, rule set,
+    capacity, data depth, and whether it is actually running. No network call —
+    it answers even when the data provider is the thing that is broken."""
+    settings = get_settings()
+    service = _engine_service()
+    try:
+        status = service.status(db_path=str(settings.db_path))
+    except TrdError as exc:
+        _fail(exc)
+        return
+    if as_json:
+        console.print_json(status.model_dump_json())
+        return
+    for renderable in engine_status_renderables(status):
+        console.print(renderable)
 
 
 @engine_app.command("backtest")
