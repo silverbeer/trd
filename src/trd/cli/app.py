@@ -1991,8 +1991,18 @@ def history(
         _emit_json(result)
         return
     if not result.rows:
-        window = "ever" if all_time else f"in the last {days} days"
-        console.print(f"No transactions {window}. Record one with [bold]trd buy[/bold].")
+        if result.latest_outside_window is not None:
+            # There IS history, just not here. Saying only "none in 30 days" reads
+            # as an empty database and sends people looking for a bug.
+            ago = (date.today() - result.latest_outside_window).days
+            console.print(
+                f"No transactions in the last {days} days — the most recent was "
+                f"[bold]{result.latest_outside_window}[/bold] ({ago} days ago).\n"
+                f"Try [bold]trd history --days {max(60, ago + 15)}[/bold] "
+                "or [bold]trd history --all-time[/bold]."
+            )
+            return
+        console.print("No transactions recorded. Add one with [bold]trd buy[/bold].")
         return
     console.print(history_table(result))
 
