@@ -59,6 +59,8 @@ trd sunday-prep [--json] [--snapshot] [--date ISO]   # alias 'trd prep'
                                       # watchlist, risks. Deterministic narrative; --snapshot writes
                                       # TRD_HOME/prep/<date>.{json,md} (the scheduled mini job uses this)
 trd learn [TERM]                      # investing dictionary: every term + exact formula trd uses
+                                      # incl. engine terms (r-multiple, expectancy, survivorship);
+                                      # indicator/strategy/exit entries generate from the registries
 trd sync --years 10                   # deep backfill (forecast/backtest need long history)
 trd sim init --monthly 100 [--strategy ticker|momentum] [--ticker SPY] [--alloc ...] [--name NAME]
                                       # sim = plan on a paper (simulation) account; sim invest/status same
