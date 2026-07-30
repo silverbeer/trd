@@ -1,12 +1,18 @@
 """The learn-to-invest dictionary: every term trd shows and every formula trd
 computes, with worked examples. Numbers on screen -> `trd learn <term>` -> the
-exact formula used. Indicator entries are generated from the indicator
-registry so descriptions live in one place."""
+exact formula used.
+
+Indicator, entry-strategy and exit-rule entries are generated from their code
+registries, so a rule's description lives with the rule and the dictionary
+cannot drift from what actually runs. Everything else is written by hand,
+because a concept like lookahead bias has no registry to read it from."""
 
 from enum import StrEnum
 
 from pydantic import BaseModel
 
+from trd.engine import EXIT_RULES
+from trd.engine import REGISTRY as STRATEGY_REGISTRY
 from trd.indicators import REGISTRY as INDICATOR_REGISTRY
 
 
@@ -15,6 +21,7 @@ class Category(StrEnum):
     RETURNS = "returns"
     DCA = "dca"
     INDICATORS = "indicators"
+    ENGINE = "engine"
     ACCOUNTS_TAX = "accounts & tax"
 
 
@@ -450,8 +457,235 @@ _ENTRIES: list[GlossaryEntry] = [
         ),
         formula="win rate = positions up / (positions up + positions down) x 100",
         example="18 up, 15 down -> 18/33 = 55%.",
-        related=["total-return"],
-        used_in=["trd dashboard --full"],
+        related=["total-return", "expectancy", "r-multiple"],
+        used_in=["trd dashboard --full", "trd engine report", "trd engine backtest"],
+    ),
+    # ── engine ────────────────────────────────────────────────────────────
+    # The trading engine reports in units of risk, not dollars, because a $10
+    # day trade and a $1,000 swing trade are only comparable once both are
+    # expressed as multiples of what they put at risk.
+    GlossaryEntry(
+        key="r-multiple",
+        term="R-multiple (R)",
+        category=Category.ENGINE,
+        definition=(
+            "A trade's result measured in units of what it risked. 1R is the distance "
+            "from entry to the initial stop, so +2R means the trade made twice what it "
+            "stood to lose. This is how the engine compares a $10 day trade with a "
+            "$1,000 swing trade — dollars would say nothing useful."
+        ),
+        formula=(
+            "1R = entry price - initial stop  (risk per share)\n"
+            "R-multiple = (exit price - entry price) / 1R"
+        ),
+        example=(
+            "Bought at 100 with a stop at 95 -> 1R = $5. Sold at 110 -> "
+            "R = (110-100)/5 = +2.0R. Stopped out at 95 instead -> -1.0R."
+        ),
+        related=["expectancy", "initial-stop", "profit-target", "trailing-stop"],
+        used_in=["trd engine positions", "trd engine report", "trd engine backtest"],
+    ),
+    GlossaryEntry(
+        key="expectancy",
+        term="Expectancy",
+        category=Category.ENGINE,
+        definition=(
+            "The average R a strategy earns per trade — the number to read first on any "
+            "scorecard. Above 0 means the rule paid for the risk it took. It beats win "
+            "rate because it accounts for size: 40% winners at +2R each is a good "
+            "system, while 70% winners that give it all back on the losers is not.\n\n"
+            "Expectancy needs a sample before it means anything. With a ~1.2R spread "
+            "per trade, telling a 0.2R edge from noise takes roughly 144 trades per "
+            "strategy — which is why 'trd engine backtest' exists."
+        ),
+        formula="expectancy = mean(R-multiple of every closed trade)",
+        example=(
+            "breakout over 286 backtested trades: +0.29R. Risking $100 a trade, that is "
+            "about $29 of edge per trade before costs."
+        ),
+        related=["r-multiple", "win-rate", "backtest", "survivorship"],
+        used_in=["trd engine report", "trd engine backtest"],
+    ),
+    GlossaryEntry(
+        key="initial-stop",
+        term="Initial stop",
+        category=Category.ENGINE,
+        definition=(
+            "The price at which the engine admits the trade was wrong, set once at entry "
+            "and never moved. Volatility-scaled via ATR, so a jumpy name gets a wider "
+            "stop than a calm one and both risk about the same dollars.\n\n"
+            "It never moves on purpose: 1R is measured from it, so a stop that drifted "
+            "would make every closed trade's R-multiple mean something different and the "
+            "scorecard would describe a risk profile the engine is not running."
+        ),
+        formula="initial stop = entry - stop_atr_mult x ATR(14)   (stop_atr_mult default 2.0)",
+        example="Entry 100, ATR(14) = 2.50 -> stop = 100 - 2x2.50 = 95.00, so 1R = $5.",
+        related=["r-multiple", "trailing-stop", "atr", "exit-stop"],
+        used_in=["trd engine positions", "trd engine rules"],
+    ),
+    GlossaryEntry(
+        key="trailing-stop",
+        term="Trailing stop (chandelier)",
+        category=Category.ENGINE,
+        definition=(
+            "A stop that rides up behind the highest close the trade has seen, locking in "
+            "gains as they appear. It only takes over once it sits above the initial stop, "
+            "so it can tighten risk but never widen it. In 'trd engine positions' an "
+            "up-arrow on the stop means the trail is the one in force."
+        ),
+        formula=(
+            "trail stop = highest close since entry - trail_atr_mult x ATR at entry\n"
+            "in force only while trail stop > initial stop   (trail_atr_mult default 3.0)"
+        ),
+        example=(
+            "Entry 100, ATR 2.50, initial stop 95. Price peaks at 115 -> trail = "
+            "115 - 3x2.50 = 107.50, now above 95, so the trade cannot lose money."
+        ),
+        related=["initial-stop", "r-multiple", "atr", "exit-trail"],
+        used_in=["trd engine positions", "trd engine rules"],
+    ),
+    GlossaryEntry(
+        key="profit-target",
+        term="Profit target",
+        category=Category.ENGINE,
+        definition=(
+            "Where the engine takes the win, set as a multiple of the initial risk. A 2R "
+            "target only needs to be right slightly more than a third of the time to "
+            "break even — that arithmetic, not prediction, is what the engine is built on."
+        ),
+        formula="target = entry + target_r x (entry - initial stop)   (target_r default 2.0)",
+        example="Entry 100, stop 95 -> 1R = $5 -> 2R target = 100 + 2x5 = 110.",
+        related=["r-multiple", "initial-stop", "expectancy", "exit-target"],
+        used_in=["trd engine positions", "trd engine rules"],
+    ),
+    GlossaryEntry(
+        key="position-sizing",
+        term="Position sizing (fixed dollar)",
+        category=Category.ENGINE,
+        definition=(
+            "Every engine trade commits the same dollar amount, so no single name "
+            "dominates the book. Share counts are fractional, which matters more than it "
+            "sounds: rounding down to whole shares would give a $340 stock $680 of a "
+            "$1,000 slot and a $1,278 stock nothing at all, so price alone would "
+            "re-weight the portfolio and quietly drop the expensive half of the universe."
+        ),
+        formula="quantity = position_size / entry price   (rounded down to 6 decimals)",
+        example="$1,000 slot, entry 340.12 -> 2.940138 shares, not 2.",
+        related=["r-multiple", "paper-trading"],
+        used_in=["trd engine init", "trd engine positions"],
+    ),
+    GlossaryEntry(
+        key="max-drawdown",
+        term="Maximum drawdown",
+        category=Category.ENGINE,
+        definition=(
+            "The deepest peak-to-trough fall in account value over a period — the worst "
+            "stretch you would have had to sit through. The number that decides whether a "
+            "strategy is survivable in practice rather than just profitable on paper: a "
+            "system returning +300% through a -50% drawdown is one most people abandon "
+            "at the bottom."
+        ),
+        formula="drawdown% at each point = (value - running peak) / running peak x 100\n"
+        "max drawdown = the most negative of those",
+        example=(
+            "Backtested equity peaks at 20,000 then falls to 14,080 before recovering -> "
+            "max drawdown = -29.6%."
+        ),
+        related=["expectancy", "backtest", "equity-curve"],
+        used_in=["trd equity", "trd engine backtest"],
+    ),
+    GlossaryEntry(
+        key="earnings-blackout",
+        term="Earnings blackout",
+        category=Category.ENGINE,
+        definition=(
+            "The engine refuses new entries when a company reports within the next few "
+            "days. A stop bounds the loss at 1R only while price moves continuously; an "
+            "overnight earnings gap skips straight past the level, so a trade that "
+            "believes it risks 1R can realise several — and because the scorecard averages "
+            "R-multiples, a few of those quietly misdescribe the whole system's risk.\n\n"
+            "Entries *after* a print stay allowed on purpose: the gap-and-volume day is "
+            "exactly what the breakout rule exists to catch. This removes the coin flip, "
+            "not the setup it creates."
+        ),
+        formula="blocked when 0 <= (next earnings date - today) <= earnings_blackout_days"
+        "   (default 3)",
+        example=(
+            "NVDA reports in 2 days and momentum fires -> the signal is logged with its "
+            "reason but not taken."
+        ),
+        related=["r-multiple", "initial-stop", "session-close"],
+        used_in=["trd engine scan", "trd engine backtest", "trd earnings"],
+    ),
+    GlossaryEntry(
+        key="session-close",
+        term="Flat by the bell (day mode)",
+        category=Category.ENGINE,
+        definition=(
+            "A day-mode engine closes everything before the market shuts, holding no "
+            "position overnight. This is the whole difference between a day engine and a "
+            "swing engine: swing trades are designed to carry for days, day trades refuse "
+            "to hold gap risk at all. Entries also stop 30 minutes before the flat time, "
+            "since a fill that gets flattened minutes later just pays the spread twice."
+        ),
+        formula="flat_at_minute as HHMM in the engine's local time; 0 disables it (swing mode)",
+        example="flat_at_minute = 1555 -> flat at 15:55, no new entries after 15:25.",
+        related=["earnings-blackout", "exit-session-close", "paper-trading"],
+        used_in=["trd engine init --flat-at", "trd engine rules"],
+    ),
+    GlossaryEntry(
+        key="survivorship",
+        term="Survivorship bias",
+        category=Category.ENGINE,
+        definition=(
+            "Backtesting today's watchlist over ten years only ever tests the companies "
+            "that made it to today. The ones that were obvious buys in 2018 and later "
+            "collapsed are simply absent, so results look better than any decision you "
+            "could actually have made at the time. It is the main reason a backtest is an "
+            "upper bound rather than a forecast — alongside paying no spread or slippage, "
+            "and using prices that were retroactively adjusted for splits."
+        ),
+        example=(
+            "A 15-name universe picked in 2026 replayed from 2016 never holds a name that "
+            "went to zero in between, because it was never in the list."
+        ),
+        related=["backtest", "lookahead", "expectancy", "adjusted-close"],
+        used_in=["trd engine backtest"],
+    ),
+    GlossaryEntry(
+        key="lookahead",
+        term="Lookahead bias",
+        category=Category.ENGINE,
+        definition=(
+            "A backtest accidentally using information that did not exist yet — tomorrow's "
+            "close, a later high — when deciding what to do today. It is the most "
+            "dangerous bug in this kind of code because it does not look like a bug: it "
+            "produces a spectacular edge and reads as success.\n\n"
+            "trd guards against it structurally: at each step a strategy is handed only "
+            "the bars up to and including that day, and a test rewrites the future to "
+            "prove the decisions already made do not change."
+        ),
+        example=(
+            "Checking a stop against a bar's low is honest; deciding to buy because the "
+            "*next* bar gapped up is lookahead."
+        ),
+        related=["backtest", "survivorship", "expectancy"],
+        used_in=["trd engine backtest"],
+    ),
+    GlossaryEntry(
+        key="equity-curve",
+        term="Equity curve",
+        category=Category.ENGINE,
+        definition=(
+            "Account value plotted over time — cash plus the market value of everything "
+            "held, marked at each day's close. The shape matters as much as the endpoint: "
+            "two strategies can finish at the same number, one climbing steadily and the "
+            "other lurching through drawdowns that would have been hard to hold."
+        ),
+        formula="value on a day = cash + sum(quantity x that day's close) for every open position",
+        example="Starting 5,000 -> ending 19,776 over ten years, with a -29.6% worst stretch.",
+        related=["max-drawdown", "xirr", "backtest"],
+        used_in=["trd equity", "trd engine backtest"],
     ),
 ]
 
@@ -472,7 +706,42 @@ def _indicator_entries() -> list[GlossaryEntry]:
     return entries
 
 
-GLOSSARY: dict[str, GlossaryEntry] = {e.key: e for e in _ENTRIES + _indicator_entries()}
+def _strategy_entries() -> list[GlossaryEntry]:
+    """Entry rules, straight from the code registry — the same generated-not-copied
+    treatment the indicators get, so a rule's description lives in one place."""
+    return [
+        GlossaryEntry(
+            key=strategy.key.replace("_", "-"),
+            term=f"{strategy.name} (entry rule)",
+            category=Category.ENGINE,
+            definition=strategy.description,
+            formula=f"needs {strategy.min_bars} bars of history before it can fire",
+            related=["expectancy", "r-multiple", "initial-stop"],
+            used_in=["trd engine rules", "trd engine signals", "trd engine report"],
+        )
+        for strategy in STRATEGY_REGISTRY.values()
+    ]
+
+
+def _exit_entries() -> list[GlossaryEntry]:
+    """Exit rules, in the fixed order they are checked. Keys are prefixed because
+    bare 'stop' or 'time' are too generic to be useful dictionary entries."""
+    return [
+        GlossaryEntry(
+            key=f"exit-{rule.key.replace('_', '-')}",
+            term=f"{rule.name} (exit rule {i} of {len(EXIT_RULES)})",
+            category=Category.ENGINE,
+            definition=rule.description,
+            related=["r-multiple", "initial-stop", "trailing-stop", "profit-target"],
+            used_in=["trd engine rules", "trd engine positions"],
+        )
+        for i, rule in enumerate(EXIT_RULES, start=1)
+    ]
+
+
+GLOSSARY: dict[str, GlossaryEntry] = {
+    e.key: e for e in _ENTRIES + _indicator_entries() + _strategy_entries() + _exit_entries()
+}
 
 
 def all_entries() -> list[GlossaryEntry]:
@@ -480,8 +749,13 @@ def all_entries() -> list[GlossaryEntry]:
 
 
 def lookup(query: str) -> GlossaryEntry | list[GlossaryEntry]:
-    """Exact key match, else fuzzy candidates (substring on key or term)."""
-    q = query.strip().lower().replace(" ", "-")
+    """Exact key match, else fuzzy candidates (substring on key or term).
+
+    Underscores normalise to hyphens so the keys trd prints elsewhere resolve as
+    typed: `trd engine report` shows `macd_cross`, and looking up exactly what is
+    on screen has to work.
+    """
+    q = query.strip().lower().replace(" ", "-").replace("_", "-")
     if q in GLOSSARY:
         return GLOSSARY[q]
     plain = query.strip().lower()
