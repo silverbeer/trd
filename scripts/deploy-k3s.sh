@@ -48,12 +48,17 @@ if [[ "$DAY_MODE" == true ]]; then
     ENGINE_NAME="${ENGINE_NAME:-trd-day}"
     ENGINE_HOME="${ENGINE_HOME:-$HOME/.trd-day}"
     DAY_FLAG=" --day"
+    # Load-bearing: an engine seeded without this is a swing engine wearing a day
+    # engine's name — it would carry positions overnight, the one thing day mode
+    # exists to prevent.
+    INIT_FLAGS=(--flat-at "${FLAT_AT:-1555}")
 else
     ENGINE_NAME="${ENGINE_NAME:-trd-engine}"
     # The engine's own database. Deliberately NOT your real trd database: this
     # one holds a paper account and its universe's price history, nothing else.
     ENGINE_HOME="${ENGINE_HOME:-$HOME/.trd-engine}"
     DAY_FLAG=""
+    INIT_FLAGS=()
 fi
 
 CURRENT_CONTEXT=$(kubectl config current-context)
@@ -79,12 +84,25 @@ if ! command -v trd &> /dev/null; then
     exit 1
 fi
 
-if ! TRD_HOME="$ENGINE_HOME" trd engine rules &> /dev/null \
-   || ! TRD_HOME="$ENGINE_HOME" trd engine positions &> /dev/null; then
+# Seed ONLY when the engine genuinely is not configured. The previous check
+# reseeded whenever a command exited non-zero, which a momentarily locked
+# database also does — and `trd engine init` rewrites the config: it would reset
+# the universe to the default ten and, on a day engine, drop flat_at_minute,
+# leaving something that holds positions overnight. `--json` makes the two cases
+# distinguishable, since a busy database reports DatabaseBusyError.
+needs_seed() {
+    [[ -f "$ENGINE_HOME/trd.duckdb" ]] || return 0
+    local err
+    err=$(TRD_HOME="$ENGINE_HOME" trd engine status --json 2>/dev/null \
+          | grep -o '"error":"[^"]*"' || true)
+    [[ "$err" == '"error":"TrdError"' ]]
+}
+
+if needs_seed; then
     echo -e "${YELLOW}🌱 Seeding the engine database at ${ENGINE_HOME}...${NC}"
     echo -e "${BLUE}   (a separate paper database — your real trd data is elsewhere)${NC}"
     TRD_HOME="$ENGINE_HOME" trd init
-    TRD_HOME="$ENGINE_HOME" trd engine init
+    TRD_HOME="$ENGINE_HOME" trd engine init "${INIT_FLAGS[@]}"
     echo -e "${YELLOW}   Downloading 2 years of daily bars (the rules need 200)...${NC}"
     TRD_HOME="$ENGINE_HOME" trd sync --full
     echo -e "${GREEN}✅ Engine database ready${NC}"

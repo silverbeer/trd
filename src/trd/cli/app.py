@@ -212,14 +212,16 @@ def _emit_json(payload: Any) -> None:
     if isinstance(payload, list) and payload and hasattr(payload[0], "model_dump_json"):
         print("[" + ",".join(item.model_dump_json() for item in payload) + "]")
         return
-    print(_json.dumps(payload, default=str))
+    print(_json.dumps(payload, default=str, separators=(",", ":")))
 
 
 def _fail(exc: TrdError) -> None:
     if _json_mode:
         # On stdout on purpose, so one `| jq` handles success and failure alike.
         # The non-zero exit is what distinguishes them.
-        print(_json.dumps({"error": type(exc).__name__, "message": str(exc)}))
+        print(
+            _json.dumps({"error": type(exc).__name__, "message": str(exc)}, separators=(",", ":"))
+        )
         raise typer.Exit(code=1)
     err_console.print(f"[red]error:[/red] {exc}")
     raise typer.Exit(code=1)
@@ -1969,7 +1971,11 @@ def main() -> None:
         # entrypoint, so argv is authoritative and cannot carry state from a
         # previous in-process invocation.
         if _json_requested():
-            print(_json.dumps({"error": type(exc).__name__, "message": str(exc)}))
+            print(
+                _json.dumps(
+                    {"error": type(exc).__name__, "message": str(exc)}, separators=(",", ":")
+                )
+            )
         else:
             err_console.print(f"[red]error:[/red] {exc}")
         raise SystemExit(1) from None

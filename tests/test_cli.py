@@ -450,6 +450,10 @@ def test_json_errors_are_json_with_a_nonzero_exit(cli_env: FakeProvider) -> None
     payload = json.loads(result.output)
     assert payload["error"]
     assert "engine init" in payload["message"]
+    # Compact, matching model_dump_json: every --json document has one shape
+    # whether it succeeded or failed, so a shell grep works on both.
+    assert '", "' not in result.output
+    assert '"error":"' in result.output
 
 
 def test_human_errors_stay_human(cli_env: FakeProvider) -> None:
