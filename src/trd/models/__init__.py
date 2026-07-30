@@ -28,6 +28,7 @@ from trd.models.engine import (
     PositionRow,
     PositionStatus,
     SignalRow,
+    SizingMode,
     StrategyStat,
 )
 
@@ -57,6 +58,7 @@ __all__ = [
     "Quote",
     "Side",
     "SignalRow",
+    "SizingMode",
     "StrategyStat",
     "Transaction",
     "Watchlist",
