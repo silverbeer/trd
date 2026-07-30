@@ -127,6 +127,23 @@ def watchlist(conn: duckdb.DuckDBPyConnection, provider: FakeProvider) -> Watchl
     return WatchlistService(conn, provider)
 
 
+def months_ago(n: int, day: int = 15, today: date | None = None) -> date:
+    """A date exactly `n` calendar months back, on `day` of that month.
+
+    Not `today - timedelta(days=30 * n)`: 30-day steps are not months. From
+    2026-07-30 the 3-, 2- and 1-month offsets land on 05-01, 05-31 and 06-30 —
+    two of them in May. A DCA plan refuses a second contribution in a month it
+    has already invested in, so tests built on 30-day arithmetic pass or fail
+    depending on today's date, and fail first in UTC CI where the date rolls
+    over hours before it does locally.
+
+    Mid-month by default so no offset can drift into a neighbouring month.
+    """
+    today = today or date.today()
+    index = today.year * 12 + (today.month - 1) - n
+    return date(index // 12, index % 12 + 1, day)
+
+
 def seed_bars(
     conn: duckdb.DuckDBPyConnection,
     symbol: str,

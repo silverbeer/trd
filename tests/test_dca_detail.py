@@ -1,10 +1,10 @@
-from datetime import date, timedelta
+from datetime import date
 from decimal import Decimal
 
 import duckdb
 import pytest
 
-from tests.conftest import FakeProvider, seed_bars
+from tests.conftest import FakeProvider, months_ago, seed_bars
 from trd.models import InstrumentType
 from trd.services import DcaDetailService, PlanService
 
@@ -61,8 +61,7 @@ def test_cadence_missed_month_and_streak(detail_service: DcaDetailService) -> No
     today = date.today()
     # invest 3 months ago and 1 month ago on the 15th; skip 2 months ago
     for months_back in (3, 1):
-        target = today - timedelta(days=30 * months_back)
-        plans.invest("sim", when=target.replace(day=15))
+        plans.invest("sim", when=months_ago(months_back, today=today))
     detail = detail_service.detail("sim")
     cadence = detail.cadence
     assert cadence.months_invested == 2
@@ -76,8 +75,7 @@ def test_xirr_present_and_plausible(detail_service: DcaDetailService) -> None:
     plans = _make_plan(detail_service)
     today = date.today()
     for months_back in (14, 8, 2):
-        target = today - timedelta(days=30 * months_back)
-        plans.invest("sim", when=target.replace(day=15))
+        plans.invest("sim", when=months_ago(months_back, today=today))
     detail = detail_service.detail("sim")
     # flat fake prices → contributions worth exactly what was paid → XIRR ≈ 0
     assert detail.xirr is not None
