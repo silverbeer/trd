@@ -73,6 +73,8 @@ trd engine positions [--all]          # open trades: entry, stop (↑ = trailing
 trd engine signals [-n 25] [-s KEY]   # every signal fired, taken or passed over, with its reason
 trd engine report                     # per-strategy scorecard: win%, avg win/loss, expectancy in R
 trd engine rules                      # what each entry strategy looks for + the 5 exit rules
+trd engine status [--json]            # what this engine is + whether it's healthy: build, DB, rule set,
+                                      # capacity, bar depth, last scan. No network — answers when yfinance doesn't
 trd engine backtest [--years N] [--fill intrabar|close] [--no-blackout] [--symbols A,B]
                                       # replay the rules against stored history — same scorecard as
                                       # 'report', hundreds of trades per run. Needs 'trd sync
