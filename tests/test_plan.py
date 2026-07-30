@@ -4,7 +4,7 @@ from decimal import Decimal
 import duckdb
 import pytest
 
-from tests.conftest import FakeProvider
+from tests.conftest import FakeProvider, months_ago
 from tests.conftest import seed_bars as _seed_bars
 from trd.errors import TrdError
 from trd.models import AccountType, InstrumentType, Side
@@ -91,7 +91,7 @@ def test_status_math_and_benchmark(plans: PlanService) -> None:
     _sim(plans)
     _seed_bars(plans.conn, "SPY", days=400, start_price=400.0, daily_gain=0.25)
     for months_back in (3, 2, 1):
-        plans.invest("sim", when=date.today() - timedelta(days=30 * months_back))
+        plans.invest("sim", when=months_ago(months_back))
     status = plans.status("sim")
     assert status.months_invested == 3
     assert Decimal(299) < status.invested < Decimal(301)
@@ -255,3 +255,22 @@ def test_pause_blocks_invest_resume_unblocks(plans: PlanService) -> None:
     plans.resume("sim")
     [txn] = plans.invest("sim")
     assert txn.quantity == Decimal("0.2")
+
+
+def test_months_ago_is_month_arithmetic_not_thirty_day_steps() -> None:
+    """The helper must give distinct calendar months on every possible today.
+
+    30-day steps do not: from 2026-07-30 the 3- and 2-month offsets both land in
+    May, and from 2026-03-31 the "1 month back" offset lands back inside March.
+    Either one makes a plan reject a contribution, so these tests used to pass or
+    fail depending on the date they ran — and broke first in UTC CI, where the
+    date rolls over hours before it does locally.
+    """
+    start = date(2026, 1, 1)
+    for offset in range(400):  # a year and a bit, every month length and leap edge
+        today = start + timedelta(days=offset)
+        picked = [months_ago(n, today=today) for n in (3, 2, 1)]
+        months = {(d.year, d.month) for d in picked}
+        assert len(months) == 3, f"{today}: {[str(d) for d in picked]}"
+        assert all(d < today.replace(day=1) or d.month != today.month for d in picked)
+        assert picked == sorted(picked)  # oldest first, as the callers assume
