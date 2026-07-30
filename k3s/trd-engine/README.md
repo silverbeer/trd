@@ -168,6 +168,32 @@ variable set falls back to `swing` or `day`, read from whether the rule set has 
 Want the two feeds separated entirely? Create a second channel and give the day
 engine its own secret — the CronJob's `envFrom` name is the only thing to change.
 
+### Which build is running
+
+SB-443 was a day engine that never went flat, because the pod was executing code
+from before the `session_close` rule existed. Every test passed; `main` was
+correct; the only symptom was a position that did not close — indistinguishable
+from "no rule fired". Nothing reported which code was executing.
+
+So the engine states its provenance. Both surfaces carry it:
+
+```bash
+grep '"ev":"scan"' <(kubectl logs -n trd job/trd-day-scan-...) | jq .version
+head -1 ~/.trd-day/status.txt     # trd engine — last scan ...  ·  build 0.1.0+0bc958d
+```
+
+The SHA is baked at image build (`--build-arg TRD_GIT_SHA=...`, set by
+`scripts/deploy-k3s.sh` from `git rev-parse --short HEAD`), and the deploy prints
+the old and new versions so a `--skip-build` no-op is visible rather than assumed.
+A bare `0.1.0` with no `+sha` means the image was built by hand, outside the
+script.
+
+There is also a hard guard: if the stored config switches on a parameter whose
+rule is missing from the build — `flat_at_minute` without `session_close` — the
+scan refuses to run and says so. A day engine that quietly degrades into a swing
+engine holds exactly the overnight risk its configuration forbids, so a stopped
+engine is the better failure.
+
 ### How it fails
 
 The secret is `optional: true`. With none configured the engine still scans and

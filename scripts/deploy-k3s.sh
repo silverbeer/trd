@@ -93,9 +93,17 @@ else
 fi
 echo ""
 
+# What is already deployed, asked before we replace it. A --skip-build deploy that
+# silently reuses a months-old image is how a day engine ends up running without
+# its session-close rule; printing both SHAs makes a no-op deploy visible.
+RUNNING_VERSION=$(kubectl run "trd-version-$RANDOM" -n "$NAMESPACE" --image="$IMAGE_FULL" \
+    --image-pull-policy=Never --rm -i --restart=Never --command -- trd version 2>/dev/null \
+    | tr -d '\r' | head -1 || true)
+BUILD_SHA=$(git rev-parse --short HEAD 2>/dev/null || echo "")
+
 if [[ "$SKIP_BUILD" == false ]]; then
-    echo -e "${YELLOW}📦 Building image...${NC}"
-    docker build -t "$IMAGE_FULL" .
+    echo -e "${YELLOW}📦 Building image${NC} (${BUILD_SHA:-no git sha})..."
+    docker build --build-arg "TRD_GIT_SHA=${BUILD_SHA}" -t "$IMAGE_FULL" .
     echo -e "${GREEN}✅ Built${NC}"
     echo ""
 
@@ -115,7 +123,21 @@ if [[ "$SKIP_BUILD" == false ]]; then
     fi
     echo -e "${GREEN}✅ Imported${NC}"
     echo ""
+else
+    echo -e "${YELLOW}⏭️  Skipping build — the cluster keeps whatever image it has.${NC}"
+    echo ""
 fi
+
+# Was replacing the image actually the effect? A deploy that changes nothing looks
+# identical to one that works, until a rule goes missing in production.
+NEW_VERSION=$(kubectl run "trd-version-$RANDOM" -n "$NAMESPACE" --image="$IMAGE_FULL" \
+    --image-pull-policy=Never --rm -i --restart=Never --command -- trd version 2>/dev/null \
+    | tr -d '\r' | head -1 || true)
+echo -e "${BLUE}Image version:${NC} ${RUNNING_VERSION:-none} → ${NEW_VERSION:-unknown}"
+if [[ -n "$RUNNING_VERSION" && "$RUNNING_VERSION" == "$NEW_VERSION" ]]; then
+    echo -e "${YELLOW}   unchanged — the pods will run the same code as before.${NC}"
+fi
+echo ""
 
 # One manifest, rewritten per deployment:
 #   - hostPath   -> this machine's engine home (the committed value is a default)

@@ -738,3 +738,66 @@ def test_momentum_requires_volume_it_can_actually_see():
     blind = [*bars[:-1], bars[-1].model_copy(update={"volume": None})]
     assert STRATEGIES["momentum"].evaluate(blind) is None
     assert STRATEGIES["breakout"].evaluate(blind) is None  # unchanged, for contrast
+
+
+# ------------------------------------------------------------ build provenance
+
+
+def test_build_version_reports_the_baked_sha():
+    """A built image knows its commit; a local working tree honestly does not."""
+    from trd import __version__
+    from trd.build import build_version
+
+    assert build_version(env={"TRD_GIT_SHA": "abc1234"}) == f"{__version__}+abc1234"
+    assert build_version(env={}) == __version__
+    assert build_version(env={"TRD_GIT_SHA": "  "}) == __version__
+
+
+def test_scan_events_carry_the_build_version():
+    """Groupable in Loki, so a stale rollout reads as a version that stopped
+    changing rather than as behaviour that quietly went missing."""
+    from trd.build import build_version
+    from trd.services.engine import ScanResult, scan_events
+
+    result = ScanResult(run_id=1, at=datetime(2026, 7, 29, 15, 55), paper=True, scanned=3)
+    summary = scan_events(result)[-1]
+    assert summary["ev"] == "scan"
+    assert summary["version"] == build_version()
+
+
+def test_missing_rules_flags_a_config_this_build_cannot_honour(monkeypatch):
+    from trd.engine import exits as exit_module
+
+    params = {**exit_module.DEFAULT_EXIT_PARAMS, "flat_at_minute": 1555.0}
+    assert exit_module.missing_rules(params) == []  # this build has session_close
+
+    # A build without the rule — exactly the state that let a day engine carry
+    # positions overnight while every unit test passed.
+    without = {k: v for k, v in exit_module.REGISTRY.items() if k != "session_close"}
+    monkeypatch.setattr(exit_module, "REGISTRY", without)
+    assert exit_module.missing_rules(params) == [("flat_at_minute", "session_close")]
+    # Off is not configured: a swing engine needs no session_close.
+    assert exit_module.missing_rules({**params, "flat_at_minute": 0.0}) == []
+
+
+def test_scan_refuses_when_the_build_lacks_a_configured_rule(engine, provider, monkeypatch):
+    """Failing loudly beats trading wrong. A day engine missing session_close does
+    not error on its own — it just holds overnight, which is the one thing the
+    setting exists to prevent."""
+    provider.add_symbol("AAA", price="100")
+    engine.init(symbols=["AAA"], exit_params={"flat_at_minute": 1555.0})
+
+    monkeypatch.setattr(
+        "trd.services.engine.missing_rules",
+        lambda params: [("flat_at_minute", "session_close")],
+    )
+    with pytest.raises(TrdError, match="cannot honour the configured rule set"):
+        engine.scan()
+
+
+def test_scan_is_unaffected_when_every_configured_rule_is_present(engine, provider):
+    """The guard must not become a reason a healthy day engine stops trading."""
+    provider.add_symbol("AAA", price="100")
+    engine.init(symbols=["AAA"], exit_params={"flat_at_minute": 1555.0})
+    result = engine.scan()  # must not raise
+    assert result.scanned == 1

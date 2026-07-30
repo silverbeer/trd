@@ -9,6 +9,7 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
+from trd.build import build_version
 from trd.cli.render import (
     backtest_table,
     board_table,
@@ -1758,6 +1759,13 @@ def engine_backtest(
         return
     for renderable in engine_backtest_renderables(result):
         console.print(renderable)
+
+
+@app.command("version")
+def version_cmd() -> None:
+    """Which build this is: package version plus the git SHA baked in at image
+    build. Answers 'is the deployed engine running the code I think it is'."""
+    console.print(build_version())
 
 
 @engine_app.command("rules")
