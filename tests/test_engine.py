@@ -1063,3 +1063,89 @@ def test_runs_table_without_a_gap_stays_quiet():
         for i, m in enumerate((0, 5, 10))
     ][::-1]
     assert "⚠" not in _render(engine_runs_table(runs))
+
+
+# ------------------------------------------------------------------- sizing
+
+
+def _sizing_bars(price: float, atr_ish: float):
+    """Bars whose ATR(14) lands near `atr_ish`, so stop distance is controllable."""
+    out = []
+    for i in range(40):
+        base = price
+        out.append(
+            DailyBar(
+                date=date(2026, 1, 1) + timedelta(days=i),
+                open=Decimal(str(base)),
+                high=Decimal(str(base + atr_ish / 2)),
+                low=Decimal(str(base - atr_ish / 2)),
+                close=Decimal(str(base)),
+                volume=1_000_000,
+            )
+        )
+    return out
+
+
+def test_exposure_mode_commits_the_same_dollars_and_lets_risk_float():
+    """The original behaviour: position size constant, risk varies with the stop."""
+    from trd.services.engine import plan_entry
+
+    params = dict(exit_rules.DEFAULT_EXIT_PARAMS)
+    calm, _ = plan_entry(_sizing_bars(100, 1), Decimal("1000"), params)
+    jumpy, _ = plan_entry(_sizing_bars(100, 10), Decimal("1000"), params)
+    assert calm is not None and jumpy is not None
+
+    assert calm.quantity * Decimal("100") == pytest.approx(Decimal("1000"), abs=1)
+    assert jumpy.quantity * Decimal("100") == pytest.approx(Decimal("1000"), abs=1)
+    calm_risk = (Decimal("100") - calm.stop_price) * calm.quantity
+    jumpy_risk = (Decimal("100") - jumpy.stop_price) * jumpy.quantity
+    assert jumpy_risk > calm_risk * 5  # same money committed, far more at risk
+
+
+def test_risk_mode_risks_the_same_dollars_and_lets_exposure_float():
+    """Every trade loses the same amount at its stop, so R is a real constant."""
+    from trd.models import SizingMode
+    from trd.services.engine import plan_entry
+
+    # Both wide enough that the exposure cap does not bind — that is its own test.
+    params = dict(exit_rules.DEFAULT_EXIT_PARAMS)
+    calm, _ = plan_entry(_sizing_bars(100, 3), Decimal("100"), params, SizingMode.RISK)
+    jumpy, _ = plan_entry(_sizing_bars(100, 15), Decimal("100"), params, SizingMode.RISK)
+    assert calm is not None and jumpy is not None
+
+    calm_risk = (Decimal("100") - calm.stop_price) * calm.quantity
+    jumpy_risk = (Decimal("100") - jumpy.stop_price) * jumpy.quantity
+    assert calm_risk == pytest.approx(Decimal("100"), abs=1)
+    assert jumpy_risk == pytest.approx(Decimal("100"), abs=1)
+    # The calm name needs far more capital to put the same amount at risk.
+    assert calm.quantity > jumpy.quantity * 4
+
+
+def test_risk_mode_caps_the_capital_a_tight_stop_would_demand():
+    """A stop 1% away would want 100x the budget in stock. Take the smaller of
+    the two — under-risking is safe, over-committing is not."""
+    from trd.models import SizingMode
+    from trd.services.engine import MAX_EXPOSURE_MULTIPLE, plan_entry
+
+    params = dict(exit_rules.DEFAULT_EXIT_PARAMS)
+    plan, _ = plan_entry(_sizing_bars(100, 0.1), Decimal("100"), params, SizingMode.RISK)
+    assert plan is not None
+    exposure = plan.quantity * Decimal("100")
+    assert exposure <= Decimal("100") * MAX_EXPOSURE_MULTIPLE
+    risk = (Decimal("100") - plan.stop_price) * plan.quantity
+    assert risk < Decimal("100")  # capped, so it risks less than the budget
+
+
+def test_sizing_mode_defaults_to_exposure_and_round_trips(engine, provider):
+    """Existing engines must keep behaving exactly as they did."""
+    from trd.models import SizingMode
+
+    provider.add_symbol("AAA", price="100")
+    config, _, _ = engine.init(symbols=["AAA"], strategies=["breakout"])
+    assert config.sizing_mode == SizingMode.EXPOSURE
+    assert engine.config().sizing_mode == SizingMode.EXPOSURE
+
+    config, _, _ = engine.init(
+        symbols=["AAA"], strategies=["breakout"], sizing_mode=SizingMode.RISK
+    )
+    assert engine.config().sizing_mode == SizingMode.RISK

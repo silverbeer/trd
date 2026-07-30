@@ -1,0 +1,22 @@
+-- How a trade's size is decided.
+--
+-- 'exposure' (the original behaviour): every trade commits the same dollars, so
+-- position size is constant and the dollars actually at risk float with the
+-- stop distance. Measured on a live five-position book, 1R ranged from $31 to
+-- $332 — more than 10x — because the stop is volatility-scaled while the
+-- position is not.
+--
+-- 'risk': every trade risks the same dollars if it stops out, so
+-- quantity = position_size / (entry - stop). R becomes a genuine constant and
+-- the scorecard's average R finally means a consistent amount of money; the
+-- capital committed floats instead, and a low-volatility name needs a much
+-- larger position to put the same amount at risk.
+--
+-- Defaults to 'exposure' so every existing engine keeps behaving exactly as it
+-- did. This is a live-money decision, not a refactor: switching it changes what
+-- every future R-multiple is worth.
+--
+-- Added bare, then backfilled: DuckDB rejects ALTER TABLE ... ADD COLUMN with a
+-- constraint ("Adding columns with constraints not yet supported").
+ALTER TABLE engine_config ADD COLUMN sizing_mode TEXT;
+UPDATE engine_config SET sizing_mode = 'exposure' WHERE sizing_mode IS NULL;

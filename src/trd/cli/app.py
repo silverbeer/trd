@@ -51,7 +51,7 @@ from trd.cli.render import (
 from trd.config import DEFAULT_ACCOUNT, get_settings
 from trd.db.connection import connect
 from trd.errors import TrdError
-from trd.models import AccountType, Side
+from trd.models import AccountType, Side, SizingMode
 from trd.notify import label_from_env, scan_messages
 from trd.notify.telegram import from_env as notify_from_env
 from trd.providers import YFinanceProvider
@@ -1599,6 +1599,13 @@ def engine_init(
             help="Take no new entry within this many days of a print. 0 disables.",
         ),
     ] = DEFAULT_EARNINGS_BLACKOUT_DAYS,
+    sizing: Annotated[
+        str,
+        typer.Option(
+            "--sizing",
+            help="'exposure' commits --size per trade; 'risk' risks --size per trade.",
+        ),
+    ] = "exposure",
     flat_at: Annotated[
         int,
         typer.Option(
@@ -1609,6 +1616,11 @@ def engine_init(
 ) -> None:
     """Set up the engine: a simulation account, a 10-name universe, and the rule set."""
     service = _engine_service()
+    try:
+        mode = SizingMode(sizing)
+    except ValueError:
+        err_console.print(f"[red]error:[/red] --sizing must be exposure or risk, not {sizing!r}")
+        raise typer.Exit(code=1) from None
     try:
         config, acct, universe = service.init(
             earnings_blackout_days=earnings_blackout,
@@ -1622,6 +1634,7 @@ def engine_init(
             if strategies
             else None,
             exit_params={"flat_at_minute": float(flat_at)} if flat_at else None,
+            sizing_mode=mode,
         )
     except TrdError as exc:
         _fail(exc)
@@ -1631,7 +1644,11 @@ def engine_init(
         f"Engine ready on [bold]{acct.name}[/bold] (simulation).\n"
         f"Universe ({len(universe)}): {', '.join(universe)}\n"
         f"Strategies: {', '.join(config.strategies)}\n"
-        f"Size {fmt_money(config.position_size)}/trade, max {config.max_positions} open.\n"
+        + (
+            f"Sizing: {fmt_money(config.position_size)} "
+            + ("at risk" if config.sizing_mode == SizingMode.RISK else "committed")
+            + f" per trade, max {config.max_positions} open.\n"
+        )
         + (
             f"Day mode: flat at {flat // 100:02d}:{flat % 100:02d}, "
             f"no new entries after {(flat // 100 * 60 + flat % 100 - 30) // 60:02d}:"
@@ -1911,6 +1928,20 @@ def engine_backtest(
             "history without touching the live watchlist.",
         ),
     ] = None,
+    sizing: Annotated[
+        str | None,
+        typer.Option("--sizing", help="Override sizing for this run: exposure | risk."),
+    ] = None,
+    capital: Annotated[
+        str | None,
+        typer.Option("--capital", help="Starting cash. Required to compare sizing modes fairly."),
+    ] = None,
+    size: Annotated[
+        str | None,
+        typer.Option(
+            "--size", help="Override dollars per trade — needed to compare sizing modes fairly."
+        ),
+    ] = None,
     as_json: Annotated[bool, typer.Option("--json", help="Emit the result as JSON.")] = False,
 ) -> None:
     """Replay the engine's rules against stored history. Same rules, same
@@ -1933,6 +1964,9 @@ def engine_backtest(
             fill=fill_mode,
             blackout=blackout,
             symbols=[s for s in symbols.split(",")] if symbols else None,
+            sizing_mode=SizingMode(sizing) if sizing else None,
+            position_size=_parse_decimal(size, "size") if size else None,
+            capital=_parse_decimal(capital, "capital") if capital else None,
         )
     except TrdError as exc:
         _fail(exc)

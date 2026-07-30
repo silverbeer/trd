@@ -70,6 +70,8 @@ trd sync --years 10                   # deep backfill (forecast/backtest need lo
 trd sim init --monthly 100 [--strategy ticker|momentum] [--ticker SPY] [--alloc ...] [--name NAME]
                                       # sim = plan on a paper (simulation) account; sim invest/status same
 trd engine init [--account NAME] [--size 1000] [--max 5] [--symbols A,B,...] [--strategies K,K]
+                      [--sizing exposure|risk]   # 'exposure' commits --size/trade (risk floats);
+                                                 # 'risk' risks --size/trade (position size floats)
                                       # monitor-mode trading engine: paper-trades a 10-name universe
                                       # on a simulation account. Needs 'trd sync --full' (200 bars)
 trd engine scan [--paper/--no-paper] [--json]   # one pass: exits first, then best-ranked entries

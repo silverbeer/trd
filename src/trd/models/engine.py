@@ -12,6 +12,18 @@ class PositionStatus(StrEnum):
     CLOSED = "closed"
 
 
+class SizingMode(StrEnum):
+    """How a trade's size is decided.
+
+    EXPOSURE commits the same dollars per trade, so risk floats with the stop
+    distance. RISK risks the same dollars per trade, so the committed capital
+    floats instead and every R-multiple is worth the same amount of money.
+    """
+
+    EXPOSURE = "exposure"
+    RISK = "risk"
+
+
 class EngineConfig(BaseModel):
     """How the engine is wired: which account it trades, which watchlist it
     scans, how much it commits per trade, and which rules are switched on."""
@@ -25,6 +37,8 @@ class EngineConfig(BaseModel):
     exit_params: dict[str, float]
     # No new entry when a known earnings date falls within this many days. 0 is off.
     earnings_blackout_days: int = 3
+    # What `position_size` means: dollars committed, or dollars risked.
+    sizing_mode: SizingMode = SizingMode.EXPOSURE
 
 
 class EngineSignal(BaseModel):

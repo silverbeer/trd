@@ -38,7 +38,7 @@ from trd.engine import REGISTRY as STRATEGIES
 from trd.engine import evaluate_exits
 from trd.engine.exits import RULES, ExitDecision
 from trd.errors import TrdError
-from trd.models import DailyBar, EnginePosition, PositionStatus, StrategyStat
+from trd.models import DailyBar, EnginePosition, PositionStatus, SizingMode, StrategyStat
 from trd.repos import EarningsRepo, InstrumentRepo, PriceRepo, WatchlistRepo
 from trd.repos.engine import EngineConfigRepo
 from trd.services.engine import plan_entry, strategy_stats
@@ -108,6 +108,7 @@ class BacktestResult(BaseModel):
     strategies: list[str]
     position_size: Decimal
     max_positions: int
+    sizing_mode: SizingMode = SizingMode.EXPOSURE
     stats: list[StrategyStat]
     trades: list[BacktestTrade]
     open_at_end: int
@@ -234,6 +235,8 @@ def simulate(
     exit_params: dict[str, float],
     earnings_by_symbol: dict[str, list[date]] | None = None,
     earnings_blackout_days: int = 0,
+    sizing_mode: SizingMode = SizingMode.EXPOSURE,
+    capital: Decimal | None = None,
     fill: FillMode = FillMode.INTRABAR,
     start: date | None = None,
     end: date | None = None,
@@ -282,7 +285,14 @@ def simulate(
     instrument_ids = {s: n for n, s in enumerate(sorted(series), start=1)}
     earnings = {s.upper(): dates_ for s, dates_ in (earnings_by_symbol or {}).items()}
 
-    start_value = position_size * max_positions
+    # Starting cash. `position_size x max_positions` is only the right default
+    # under EXPOSURE sizing, where position_size IS the capital committed per
+    # slot. Under RISK sizing position_size is the amount *lost at the stop*, so
+    # that formula would start the account at a few hundred dollars while taking
+    # thousand-dollar positions — silent leverage that flatters the returns
+    # beyond recognition. Comparing the two modes therefore requires stating the
+    # capital explicitly.
+    start_value = capital if capital is not None else position_size * max_positions
     cash = start_value
     open_positions: dict[str, EnginePosition] = {}
     closed: list[EnginePosition] = []
@@ -364,7 +374,7 @@ def simulate(
                     break
                 if symbol in open_positions:
                     continue
-                plan, _skip = plan_entry(prefix, position_size, exit_params)
+                plan, _skip = plan_entry(prefix, position_size, exit_params, sizing_mode)
                 if plan is None:
                     continue
                 price = prefix[-1].close
@@ -418,6 +428,7 @@ def simulate(
         strategies=list(strategies),
         position_size=position_size,
         max_positions=max_positions,
+        sizing_mode=sizing_mode,
         stats=strategy_stats(closed, open_counts),
         trades=trades,
         open_at_end=len(open_positions),
@@ -452,6 +463,9 @@ class BacktestService:
         fill: FillMode = FillMode.INTRABAR,
         blackout: bool = True,
         symbols: list[str] | None = None,
+        sizing_mode: SizingMode | None = None,
+        position_size: Decimal | None = None,
+        capital: Decimal | None = None,
     ) -> BacktestResult:
         config = self.configs.get()
         if config is None:
@@ -487,11 +501,13 @@ class BacktestService:
         return simulate(
             bars_by_symbol,
             strategies=config.strategies,
-            position_size=config.position_size,
+            position_size=position_size or config.position_size,
             max_positions=config.max_positions,
             exit_params=config.exit_params,
             earnings_by_symbol=earnings_by_symbol,
             earnings_blackout_days=config.earnings_blackout_days if blackout else 0,
+            sizing_mode=sizing_mode or config.sizing_mode,
+            capital=capital,
             fill=fill,
             start=start,
             end=end,

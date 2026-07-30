@@ -11,6 +11,7 @@ from trd.models import (
     EngineSignal,
     Instrument,
     PositionStatus,
+    SizingMode,
 )
 from trd.repos.instruments import _row_to_instrument
 
@@ -19,7 +20,7 @@ DEFAULT_EARNINGS_BLACKOUT_DAYS = 3
 
 _CONFIG_COLS = (
     "id, account_id, watchlist, position_size, max_positions, strategies, exit_params, "
-    "earnings_blackout_days"
+    "earnings_blackout_days, sizing_mode"
 )
 _SIGNAL_COLS = (
     "id, run_id, instrument_id, strategy, bar_date, fired_at, price, score, reason, acted"
@@ -44,6 +45,9 @@ def _row_to_config(row: tuple) -> EngineConfig:
         # Nullable in the schema: the column is added bare because DuckDB rejects
         # ADD COLUMN with a constraint, so a pre-migration row can still read NULL.
         earnings_blackout_days=row[7] if row[7] is not None else DEFAULT_EARNINGS_BLACKOUT_DAYS,
+        # Nullable for the same reason: a row written before migration 013 reads
+        # NULL and must keep the behaviour it was created with.
+        sizing_mode=SizingMode(row[8]) if row[8] is not None else SizingMode.EXPOSURE,
     )
 
 
@@ -118,14 +122,15 @@ class EngineConfigRepo:
         strategies: list[str],
         exit_params: dict[str, float],
         earnings_blackout_days: int = DEFAULT_EARNINGS_BLACKOUT_DAYS,
+        sizing_mode: SizingMode = SizingMode.EXPOSURE,
     ) -> EngineConfig:
         self.conn.execute("DELETE FROM engine_config WHERE account_id = ?", [account_id])
         row = self.conn.execute(
             f"""
             INSERT INTO engine_config
                 (account_id, watchlist, position_size, max_positions, strategies, exit_params,
-                 earnings_blackout_days)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+                 earnings_blackout_days, sizing_mode)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             RETURNING {_CONFIG_COLS}
             """,
             [
@@ -136,6 +141,7 @@ class EngineConfigRepo:
                 json.dumps(strategies),
                 json.dumps(exit_params),
                 earnings_blackout_days,
+                sizing_mode.value,
             ],
         ).fetchone()
         assert row is not None
