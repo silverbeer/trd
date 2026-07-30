@@ -142,6 +142,47 @@ class PositionRow(BaseModel):
         return self.position.trail_high - self.position.atr_at_entry * Decimal("3")
 
 
+class EngineStatus(BaseModel):
+    """Everything you need to know before trusting a running engine, in one object.
+
+    Assembled deliberately without a network call, so it answers even when the
+    provider is down — and cheaply, so it never holds the database long.
+    """
+
+    build: str
+    db_path: str
+    account: str
+    watchlist: str
+    universe: list[str]
+    strategies: list[str]
+    position_size: Decimal
+    max_positions: int
+    earnings_blackout_days: int
+    flat_at_minute: int
+
+    open_positions: int
+    committed: Decimal
+    unrealized: Decimal
+    marks_are_stale: bool  # marked at last stored close, not a live quote
+
+    bars_total: int
+    bars_first: date | None
+    bars_last: date | None
+    warmup_bars: int
+    short_history: list[tuple[str, int]]  # (symbol, bars) below what a rule needs
+
+    last_scan: datetime | None
+    scans_today: int
+
+    @property
+    def day_mode(self) -> bool:
+        return self.flat_at_minute > 0
+
+    @property
+    def capacity(self) -> int:
+        return max(0, self.max_positions - self.open_positions)
+
+
 class StrategyStat(BaseModel):
     """Closed-trade scorecard for one strategy — the whole point of the dry run."""
 

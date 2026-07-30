@@ -913,3 +913,99 @@ def test_scan_still_fetches_its_own_quotes_when_none_are_given(engine, provider)
     provider.add_symbol("AAA", price="100")
     engine.init(symbols=["AAA"], strategies=["breakout"])
     assert engine.scan(paper=True).scanned == 1
+
+
+# ------------------------------------------------------------------- status
+
+
+def test_status_answers_what_this_engine_is(engine, provider):
+    provider.add_symbol("AAA", price="100")
+    engine.init(symbols=["AAA"], strategies=["breakout"], position_size=Decimal("500"))
+    status = engine.status(db_path="/tmp/x.duckdb")
+
+    assert status.account == DEFAULT_ENGINE_ACCOUNT
+    assert status.universe == ["AAA"]
+    assert status.strategies == ["breakout"]
+    assert status.position_size == Decimal("500")
+    assert status.db_path == "/tmp/x.duckdb"
+    assert status.build  # never blank — provenance is the point
+    assert status.day_mode is False
+
+
+def test_status_distinguishes_a_day_engine(engine, provider):
+    """The one fact that changes what every other number means: does this thing
+    hold overnight?"""
+    provider.add_symbol("AAA", price="100")
+    engine.init(symbols=["AAA"], exit_params={"flat_at_minute": 1555.0})
+    status = engine.status()
+    assert status.day_mode is True
+    assert status.flat_at_minute == 1555
+
+
+def test_status_reports_capacity_and_committed(engine, provider, conn):
+    provider.add_symbol("AAA", price="100")
+    engine.init(symbols=["AAA"], strategies=["breakout"], max_positions=2)
+    account = engine.account()
+    instrument = InstrumentRepo(conn).get_by_symbol("AAA")
+    assert instrument is not None
+    PriceRepo(conn).upsert_daily(instrument.id, make_bars([100.0, 110.0]))
+    engine.positions.open(
+        account_id=account.id,
+        instrument_id=instrument.id,
+        signal_id=None,
+        strategy="breakout",
+        opened_at=datetime(2026, 7, 30, 9, 30),
+        entry_price=Decimal("100"),
+        quantity=Decimal("2"),
+        stop_price=Decimal("95"),
+        target_price=Decimal("110"),
+        atr_at_entry=Decimal("2.5"),
+        last_bar_date=date(2026, 7, 30),
+    )
+    status = engine.status()
+    assert status.open_positions == 1
+    assert status.capacity == 1
+    assert status.committed == Decimal("200")
+    assert status.unrealized == Decimal("20")  # marked at the 110 close
+    assert status.marks_are_stale is False
+
+
+def test_status_names_symbols_too_short_to_trade(engine, provider, conn):
+    """A symbol without enough history cannot fire a signal, and silence is
+    indistinguishable from 'the rules said no'."""
+    provider.add_symbol("AAA", price="100")
+    engine.init(symbols=["AAA"], strategies=["breakout"])  # breakout needs 60 bars
+    instrument = InstrumentRepo(conn).get_by_symbol("AAA")
+    assert instrument is not None
+    PriceRepo(conn).upsert_daily(instrument.id, make_bars([100.0] * 10))
+
+    status = engine.status()
+    assert status.warmup_bars == 60
+    assert status.short_history == [("AAA", 10)]
+    assert status.bars_total == 10
+
+
+def test_status_needs_no_network(engine, provider, monkeypatch):
+    """This is the command you reach for when something is wrong — it has to
+    answer when the provider is the thing that is wrong."""
+    provider.add_symbol("AAA", price="100")
+    engine.init(symbols=["AAA"], strategies=["breakout"])
+
+    def boom(*_a, **_k):
+        raise AssertionError("status must not call the provider")
+
+    monkeypatch.setattr(engine.provider, "get_quotes", boom)
+    monkeypatch.setattr(engine.provider, "get_quote", boom)
+    assert engine.status().open_positions == 0
+
+
+def test_status_counts_scans(engine, provider):
+    provider.add_symbol("AAA", price="100")
+    engine.init(symbols=["AAA"], strategies=["breakout"])
+    assert engine.status().last_scan is None
+    assert engine.status().scans_today == 0
+
+    engine.scan(paper=True)
+    status = engine.status()
+    assert status.last_scan is not None
+    assert status.scans_today == 1
