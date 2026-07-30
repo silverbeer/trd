@@ -863,3 +863,53 @@ def _render(table) -> str:
     console = Console(width=200, no_color=True, record=True)
     console.print(table)
     return console.export_text()
+
+
+# ------------------------------------------------------- lock-window handling
+
+
+def test_quote_symbols_covers_the_universe_and_anything_held(engine, provider, conn):
+    """An open position must be managed even after it leaves the watchlist, so
+    the prefetch has to ask for its quote too."""
+    provider.add_symbol("AAA", price="100")
+    provider.add_symbol("BBB", price="100")
+    engine.init(symbols=["AAA"], strategies=["breakout"])
+    assert engine.quote_symbols() == ["AAA"]
+
+    account = engine.account()
+    other = InstrumentRepo(conn).insert(InstrumentInfo(symbol="BBB", name="BBB"))
+    engine.positions.open(
+        account_id=account.id,
+        instrument_id=other.id,
+        signal_id=None,
+        strategy="breakout",
+        opened_at=datetime(2026, 7, 30, 9, 30),
+        entry_price=Decimal("100"),
+        quantity=Decimal("1"),
+        stop_price=Decimal("95"),
+        target_price=Decimal("110"),
+        atr_at_entry=Decimal("2.5"),
+        last_bar_date=date(2026, 7, 30),
+    )
+    assert engine.quote_symbols() == ["AAA", "BBB"]
+
+
+def test_scan_uses_prefetched_quotes_without_calling_the_provider(engine, provider, monkeypatch):
+    """The whole point: the network round trip happens before the database is
+    opened, so the writer lock is not held across it."""
+    provider.add_symbol("AAA", price="100")
+    engine.init(symbols=["AAA"], strategies=["breakout"])
+
+    def fail(*_args, **_kwargs):
+        raise AssertionError("scan must not fetch quotes when they were handed in")
+
+    monkeypatch.setattr(engine.provider, "get_quotes", fail)
+    result = engine.scan(paper=True, quotes={})
+    assert result.scanned == 1
+
+
+def test_scan_still_fetches_its_own_quotes_when_none_are_given(engine, provider):
+    """Omitting the argument must behave exactly as before."""
+    provider.add_symbol("AAA", price="100")
+    engine.init(symbols=["AAA"], strategies=["breakout"])
+    assert engine.scan(paper=True).scanned == 1
