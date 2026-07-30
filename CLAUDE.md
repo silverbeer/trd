@@ -99,6 +99,14 @@ The engine's DB (`~/.trd-engine`) is deliberately separate from the real one and
 iCloud: a k3s pod can't see a macOS FileProvider path, and iCloud resolves binary
 conflicts by duplicating rather than merging.
 
+## Output contract
+
+Read commands take `--json`: the underlying model, full precision, stable keys, no colour,
+no truncation, one document on stdout. Errors under `--json` are `{"error", "message"}` on
+stdout with a non-zero exit, so one `| jq` handles success and failure alike. Spinners are
+suppressed in JSON mode (they write to stdout and would corrupt the document). Rich tables
+truncate to terminal width — never parse them.
+
 CSV import format (header required): `date,account,symbol,side,quantity,price[,fees,note]` — date is ISO, side is buy/sell.
 
 ## Architecture rules (enforce in review)
