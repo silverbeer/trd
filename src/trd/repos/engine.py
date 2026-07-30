@@ -170,6 +170,17 @@ class EngineRunRepo:
         ).fetchall()
         return [_row_to_run(r) for r in rows]
 
+    def list_since(self, when: datetime, limit: int = 500) -> list[EngineRun]:
+        """Scans since a moment, newest first."""
+        rows = self.conn.execute(
+            f"""
+            SELECT {_RUN_COLS} FROM engine_run WHERE started_at >= ?
+            ORDER BY started_at DESC, id DESC LIMIT ?
+            """,
+            [when, limit],
+        ).fetchall()
+        return [_row_to_run(r) for r in rows]
+
     def count_since(self, when: datetime) -> int:
         """Scans since a moment — 'has it run today' in one number. A silent engine
         and a broken one look identical until you count."""
