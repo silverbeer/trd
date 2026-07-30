@@ -33,6 +33,7 @@ from trd.models import (
     DailyBar,
     EngineConfig,
     EnginePosition,
+    EngineRun,
     EngineStatus,
     Instrument,
     PositionRow,
@@ -824,6 +825,14 @@ class EngineService:
             last_scan=recent[0].started_at if recent else None,
             scans_today=self.runs.count_since(midnight),
         )
+
+    def run_rows(self, limit: int = 25, today: bool = False) -> list[EngineRun]:
+        """Scan history, newest first. The gaps are the point: a CronJob that
+        stopped, or a scan that never fired, is invisible in every other view."""
+        if today:
+            midnight = datetime.combine(date.today(), datetime.min.time())
+            return self.runs.list_since(midnight)
+        return self.runs.list_recent(limit)
 
     def report(self) -> list[StrategyStat]:
         """Per-strategy scorecard over closed trades. The reason the dry run exists."""
