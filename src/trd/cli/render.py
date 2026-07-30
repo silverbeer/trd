@@ -11,6 +11,7 @@ from trd.engine import REGISTRY as STRATEGIES
 from trd.models import (
     BoardRow,
     EarningsEvent,
+    EngineRun,
     EngineStatus,
     ExitCheckRow,
     ExitStatus,
@@ -1445,3 +1446,53 @@ def engine_status_renderables(status: EngineStatus) -> list[RenderableType]:
     activity.add_row("scans today", str(status.scans_today))
     out.append(activity)
     return out
+
+
+def engine_runs_table(runs: list[EngineRun]) -> Table:
+    """Scan history, newest first, with the interval between consecutive scans.
+
+    The gaps are the point. A CronJob that stopped, a pod that failed, a scan
+    that never fired — none of that shows up anywhere else, and "the engine did
+    nothing" is indistinguishable from "the engine never ran" until you can see
+    the cadence. Intervals more than double the usual one are called out.
+    """
+    table = Table(title="Engine scans — newest first", title_justify="left")
+    table.add_column("Started", style="bold")
+    table.add_column("Since prev", justify="right")
+    table.add_column("Scanned", justify="right")
+    table.add_column("Signals", justify="right")
+    table.add_column("Opened", justify="right")
+    table.add_column("Closed", justify="right")
+    table.add_column("Mode", style="dim")
+
+    gaps = [
+        (runs[i].started_at - runs[i + 1].started_at).total_seconds() for i in range(len(runs) - 1)
+    ]
+    typical = sorted(gaps)[len(gaps) // 2] if gaps else 0.0
+
+    flagged = False
+    for i, run in enumerate(runs):
+        if i + 1 < len(runs):
+            seconds = (run.started_at - runs[i + 1].started_at).total_seconds()
+            text = f"{seconds / 60:.0f}m" if seconds >= 60 else f"{seconds:.0f}s"
+            # A gap of more than twice the usual cadence means scans went missing.
+            if typical and seconds > typical * 2:
+                since, flagged = f"[yellow]{text} ⚠[/yellow]", True
+            else:
+                since = text
+        else:
+            since = "—"
+        table.add_row(
+            run.started_at.strftime("%m-%d %H:%M:%S"),
+            since,
+            str(run.scanned),
+            str(run.signals),
+            f"[green]{run.opened}[/green]" if run.opened else "0",
+            f"[red]{run.closed}[/red]" if run.closed else "0",
+            "paper" if run.paper else "signals only",
+        )
+    # Only explain the marker when one is actually on screen.
+    if flagged:
+        table.caption = f"usual cadence {typical / 60:.0f}m — ⚠ marks scans that went missing"
+        table.caption_justify = "left"
+    return table

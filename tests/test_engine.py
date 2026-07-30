@@ -1009,3 +1009,57 @@ def test_status_counts_scans(engine, provider):
     status = engine.status()
     assert status.last_scan is not None
     assert status.scans_today == 1
+
+
+# --------------------------------------------------------------- run history
+
+
+def test_run_rows_returns_scans_newest_first(engine, provider):
+    provider.add_symbol("AAA", price="100")
+    engine.init(symbols=["AAA"], strategies=["breakout"])
+    for minute in (30, 35, 40):
+        engine.scan(paper=True, at=datetime(2026, 7, 30, 9, minute))
+
+    runs = engine.run_rows()
+    assert len(runs) == 3
+    assert [r.started_at.minute for r in runs] == [40, 35, 30]
+
+
+def test_run_rows_today_only(engine, provider):
+    provider.add_symbol("AAA", price="100")
+    engine.init(symbols=["AAA"], strategies=["breakout"])
+    engine.scan(paper=True, at=datetime(2020, 1, 1, 10, 0))  # ancient
+    engine.scan(paper=True, at=datetime.now())
+
+    assert len(engine.run_rows()) == 2
+    assert len(engine.run_rows(today=True)) == 1
+
+
+def test_runs_table_flags_a_gap_in_the_cadence():
+    """A CronJob that stopped is invisible in every other view: 'the engine did
+    nothing' and 'the engine never ran' look identical without the cadence."""
+    from trd.cli.render import engine_runs_table
+    from trd.models import EngineRun
+
+    # Every 5 minutes, except one 40-minute hole where scans went missing.
+    minutes = [0, 5, 10, 50, 55]
+    runs = [
+        EngineRun(id=i, started_at=datetime(2026, 7, 30, 10, m), scanned=20)
+        for i, m in enumerate(minutes)
+    ][::-1]  # newest first, as the repo returns them
+
+    rendered = _render(engine_runs_table(runs))
+    assert "⚠" in rendered
+    assert "40m" in rendered  # the hole is named, not merely flagged
+    assert "usual cadence 5m" in rendered  # the caption appears only when flagged
+
+
+def test_runs_table_without_a_gap_stays_quiet():
+    from trd.cli.render import engine_runs_table
+    from trd.models import EngineRun
+
+    runs = [
+        EngineRun(id=i, started_at=datetime(2026, 7, 30, 10, m), scanned=20)
+        for i, m in enumerate((0, 5, 10))
+    ][::-1]
+    assert "⚠" not in _render(engine_runs_table(runs))
