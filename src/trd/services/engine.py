@@ -40,6 +40,7 @@ from trd.models import (
     Quote,
     Side,
     SignalRow,
+    SizingMode,
     StrategyStat,
 )
 from trd.providers.base import MarketDataProvider
@@ -131,14 +132,31 @@ class EntryPlan(BaseModel):
     atr: Decimal
 
 
+# In fixed-risk mode a very tight stop implies a very large position: risking
+# $100 on a name whose stop sits 1% away wants $10,000 of stock. Cap the capital
+# committed at this multiple of the budget and accept the smaller risk, rather
+# than letting one calm name swallow the account. Taking the smaller of the two
+# is ordinary risk management — under-risking is safe, over-committing is not.
+MAX_EXPOSURE_MULTIPLE = Decimal(20)
+
+
 def plan_entry(
-    bars: list[DailyBar], position_size: Decimal, exit_params: dict[str, float]
+    bars: list[DailyBar],
+    position_size: Decimal,
+    exit_params: dict[str, float],
+    sizing_mode: SizingMode = SizingMode.EXPOSURE,
 ) -> tuple[EntryPlan | None, str | None]:
     """Quantity, initial stop and target for an entry at the last bar's close.
 
     Shared by the live engine and the backtest so their fills cannot drift apart.
     Returns (plan, skip_reason); both None when the numbers refuse without a story
     worth telling (non-positive price, or a stop that would sit below zero).
+
+    `position_size` means different things per mode. Under EXPOSURE it is the
+    dollars committed, so every position is the same size and the dollars at risk
+    float with the stop distance — measured on a live book, 1R ranged from $31 to
+    $332. Under RISK it is the dollars lost if the stop is hit, so R is constant
+    and the capital committed floats instead.
 
     Fractional quantity, because flooring to whole shares silently un-fixes
     fixed-dollar sizing: a $340 name in a $1000 slot gets $680 of exposure and a
@@ -149,11 +167,6 @@ def plan_entry(
     price = bars[-1].close
     if price <= 0:
         return None, None
-    quantity = (position_size / price).quantize(Decimal("0.000001"), rounding=ROUND_DOWN)
-    if quantity <= 0:
-        return None, (
-            f"{price:.2f}/share against a {position_size:.0f} position size rounds to nothing"
-        )
     atr = last(indicator("atr", bars, period=14)["value"])
     if atr is None or atr <= 0:
         return None, "no ATR yet — cannot size the stop"
@@ -161,7 +174,23 @@ def plan_entry(
     stop = price - atr_dec * Decimal(str(exit_params.get("stop_atr_mult", 2.0)))
     if stop <= 0:
         return None, None
-    target = price + (price - stop) * Decimal(str(exit_params.get("target_r", 2.0)))
+    risk_per_share = price - stop
+
+    if sizing_mode == SizingMode.RISK:
+        wanted = position_size / risk_per_share
+        # Never commit more than the cap, even if that means risking less.
+        affordable = position_size * MAX_EXPOSURE_MULTIPLE / price
+        quantity = min(wanted, affordable).quantize(Decimal("0.000001"), rounding=ROUND_DOWN)
+    else:
+        quantity = (position_size / price).quantize(Decimal("0.000001"), rounding=ROUND_DOWN)
+
+    if quantity <= 0:
+        return None, (
+            f"{price:.2f}/share against a {position_size:.0f} "
+            f"{'risk budget' if sizing_mode == SizingMode.RISK else 'position size'} "
+            "rounds to nothing"
+        )
+    target = price + risk_per_share * Decimal(str(exit_params.get("target_r", 2.0)))
     return EntryPlan(quantity=quantity, stop_price=stop, target_price=target, atr=atr_dec), None
 
 
@@ -226,6 +255,7 @@ class EngineService:
         strategies: list[str] | None = None,
         exit_params: dict[str, float] | None = None,
         earnings_blackout_days: int = DEFAULT_EARNINGS_BLACKOUT_DAYS,
+        sizing_mode: SizingMode = SizingMode.EXPOSURE,
     ) -> tuple[EngineConfig, Account, list[str]]:
         """Create (or re-point) the engine: a simulation account, a watchlist
         universe, and the rule set. Returns the symbols now in the universe."""
@@ -275,6 +305,7 @@ class EngineService:
             keys,
             params,
             earnings_blackout_days,
+            sizing_mode,
         )
         universe = [i.symbol for _, i in self.watchlists.items(board.id)]
         return config, account, universe
@@ -701,7 +732,7 @@ class EngineService:
         result: ScanResult,
     ) -> ScanFill | None:
         price = bars[-1].close
-        plan, skip = plan_entry(bars, config.position_size, config.exit_params)
+        plan, skip = plan_entry(bars, config.position_size, config.exit_params, config.sizing_mode)
         if plan is None:
             if skip is not None:
                 result.skipped.append(f"{instrument.symbol}: {skip}")
