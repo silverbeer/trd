@@ -33,9 +33,16 @@ RUN chmod +x /app/engine-entrypoint.sh
 RUN useradd -m -u 1000 trd && chown -R trd:trd /app
 USER trd
 
+# Which commit this image was built from. A pod can otherwise run month-old rules
+# while main looks correct, and the symptom is missing behaviour rather than an
+# error — see the engine's build.py. Passed by scripts/deploy-k3s.sh; empty in an
+# ad-hoc `docker build`, which honestly reports itself as version-only.
+ARG TRD_GIT_SHA=""
+
 ENV TRD_HOME=/data \
     TZ=America/New_York \
     NO_COLOR=1 \
-    PYTHONUNBUFFERED=1
+    PYTHONUNBUFFERED=1 \
+    TRD_GIT_SHA=${TRD_GIT_SHA}
 
 ENTRYPOINT ["/app/engine-entrypoint.sh"]

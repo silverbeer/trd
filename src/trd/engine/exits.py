@@ -265,6 +265,23 @@ RULES: list[ExitRule] = [
 ]
 REGISTRY: dict[str, ExitRule] = {rule.key: rule for rule in RULES}
 
+# Exit params that are inert without their rule. A stored config can outlive the
+# build that understands it — a database configured by a current CLI, read by a
+# pod running older code — and the failure is silent: the param is simply never
+# consulted, so a day engine quietly behaves like a swing engine and carries the
+# overnight risk its configuration exists to forbid. Only meaningful when the
+# param is switched on; a `flat_at_minute` of 0 needs no rule.
+PARAM_RULES: dict[str, str] = {"flat_at_minute": "session_close"}
+
+
+def missing_rules(params: dict[str, float]) -> list[tuple[str, str]]:
+    """(param, rule) pairs the config asks for that this build cannot provide."""
+    return [
+        (param, rule)
+        for param, rule in PARAM_RULES.items()
+        if float(params.get(param, 0)) > 0 and rule not in REGISTRY
+    ]
+
 
 def evaluate(
     position: EnginePosition,

@@ -71,7 +71,10 @@ trd engine scan --ndjson --notify
 # after the scan has released the writer lock.
 STATUS="${TRD_HOME}/status.txt"
 {
-    echo "trd engine — last scan $(date)"
+    # The build, on the line above the numbers: a stale rollout is otherwise
+    # invisible here, and "which code produced this" is the first question worth
+    # asking when a rule appears not to have fired.
+    echo "trd engine — last scan $(date)  ·  build $(trd version 2>/dev/null || echo unknown)"
     echo
     trd engine positions
     echo
