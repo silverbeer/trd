@@ -38,6 +38,7 @@ from trd.cli.render import (
     fmt_signed,
     fmt_signed_pct,
     forecast_table,
+    history_table,
     indicator_panel,
     lots_table,
     movers_table,
@@ -63,6 +64,7 @@ from trd.services import (
     EngineService,
     EquityCurveService,
     ExitTriggerService,
+    HistoryService,
     IndicatorService,
     MoversService,
     PlanService,
@@ -1940,6 +1942,59 @@ def engine_backtest(
         return
     for renderable in engine_backtest_renderables(result):
         console.print(renderable)
+
+
+@app.command("history")
+def history(
+    days: Annotated[int, typer.Option("--days", "-d", help="Look back this many days.")] = 30,
+    all_time: Annotated[bool, typer.Option("--all-time", help="Ignore the window.")] = False,
+    account: Annotated[
+        str | None, typer.Option("--account", "-a", help="Limit to one account.")
+    ] = None,
+    symbol: Annotated[
+        str | None, typer.Option("--symbol", "-s", help="Limit to one ticker.")
+    ] = None,
+    side: Annotated[str | None, typer.Option("--side", help="buy or sell.")] = None,
+    include_all: Annotated[
+        bool, typer.Option("--all", help="Include simulation (paper) accounts.")
+    ] = False,
+    as_json: JsonOpt = False,
+) -> None:
+    """What you bought and sold, newest first, and whether the period made money.
+
+    Every sell carries its realized P&L, matched against the lots it consumed.
+    Real money only unless --all: the engine makes several paper fills a day and
+    would bury the trades worth reviewing.
+    """
+    _use_json(as_json)
+    parsed_side = None
+    if side is not None:
+        try:
+            parsed_side = Side(side.lower())
+        except ValueError:
+            err_console.print(f"[red]error:[/red] --side must be buy or sell, not {side!r}")
+            raise typer.Exit(code=1) from None
+    settings = get_settings()
+    service = HistoryService(connect(settings.db_path))
+    try:
+        result = service.history(
+            days=None if all_time else days,
+            account=account,
+            symbol=symbol,
+            side=parsed_side,
+            include_simulation=include_all,
+        )
+    except TrdError as exc:
+        _fail(exc)
+        return
+    if as_json:
+        _emit_json(result)
+        return
+    if not result.rows:
+        window = "ever" if all_time else f"in the last {days} days"
+        console.print(f"No transactions {window}. Record one with [bold]trd buy[/bold].")
+        return
+    console.print(history_table(result))
 
 
 @app.command("version")
