@@ -11,6 +11,7 @@ from trd.engine import REGISTRY as STRATEGIES
 from trd.models import (
     BoardRow,
     EarningsEvent,
+    EngineStatus,
     ExitCheckRow,
     ExitStatus,
     LotPosition,
@@ -1369,3 +1370,78 @@ def engine_backtest_windows_table(result: EngineBacktestResult) -> Table:
     table.caption = "trade counts in parentheses; dim = under 30 trades, read as noise"
     table.caption_justify = "left"
     return table
+
+
+def engine_status_renderables(status: EngineStatus) -> list[RenderableType]:
+    """What this engine is and whether it is healthy, in one screen.
+
+    Ordered by the questions people actually ask, hardest first: which code and
+    which database (a stale rollout once ran month-old rules for a full session),
+    then the rule set, then whether it can trade, then whether the data supports
+    the rules, then whether it is actually running.
+    """
+    mode = (
+        f"day — flat at {status.flat_at_minute // 100:02d}:{status.flat_at_minute % 100:02d}"
+        if status.day_mode
+        else "swing — carries overnight"
+    )
+    header = f"[bold]{status.account}[/bold]  ·  {mode}\nbuild {status.build}\n{status.db_path}"
+    out: list[RenderableType] = [Panel(header, expand=False, border_style="cyan")]
+
+    rules = Table(title="Rule set", title_justify="left", show_header=False, box=None)
+    rules.add_column(style="dim")
+    rules.add_column()
+    rules.add_row("strategies", ", ".join(status.strategies))
+    rules.add_row("universe", f"{len(status.universe)} — {', '.join(status.universe)}")
+    rules.add_row("sizing", f"{fmt_money(status.position_size)} per trade")
+    rules.add_row(
+        "earnings blackout",
+        f"{status.earnings_blackout_days}d" if status.earnings_blackout_days else "off",
+    )
+    out.append(rules)
+
+    book = Table(title="Book", title_justify="left", show_header=False, box=None)
+    book.add_column(style="dim")
+    book.add_column()
+    room = (
+        "[yellow]full — no new entries until something exits[/yellow]"
+        if status.capacity == 0
+        else f"room for {status.capacity}"
+    )
+    book.add_row("positions", f"{status.open_positions} of {status.max_positions}  ·  {room}")
+    book.add_row("committed", fmt_money(status.committed))
+    mark = " [dim](marked at last close, not live)[/dim]" if status.open_positions else ""
+    book.add_row("unrealized", fmt_signed(status.unrealized) + mark)
+    out.append(book)
+
+    data = Table(title="Data", title_justify="left", show_header=False, box=None)
+    data.add_column(style="dim")
+    data.add_column()
+    span = (
+        f"{status.bars_first} → {status.bars_last}"
+        if status.bars_first and status.bars_last
+        else "none"
+    )
+    data.add_row("bars", f"{status.bars_total:,}  ·  {span}")
+    if status.short_history:
+        listed = ", ".join(f"{s} ({n})" for s, n in status.short_history[:6])
+        more = f" +{len(status.short_history) - 6} more" if len(status.short_history) > 6 else ""
+        data.add_row(
+            "[yellow]short[/yellow]",
+            f"[yellow]{listed}{more}[/yellow] — rules need {status.warmup_bars} "
+            "(run 'trd sync --years 10')",
+        )
+    else:
+        data.add_row("history", f"every symbol clears the {status.warmup_bars}-bar warmup")
+    out.append(data)
+
+    activity = Table(title="Activity", title_justify="left", show_header=False, box=None)
+    activity.add_column(style="dim")
+    activity.add_column()
+    if status.last_scan is None:
+        activity.add_row("last scan", "[yellow]never — run 'trd engine scan'[/yellow]")
+    else:
+        activity.add_row("last scan", status.last_scan.strftime("%Y-%m-%d %H:%M:%S"))
+    activity.add_row("scans today", str(status.scans_today))
+    out.append(activity)
+    return out
