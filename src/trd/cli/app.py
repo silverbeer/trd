@@ -1,9 +1,10 @@
 import json as _json
-from contextlib import suppress
+import sys
+from contextlib import nullcontext, suppress
 from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Any
 
 import typer
 from rich.console import Console
@@ -153,7 +154,72 @@ def _prefetched_quotes(symbols_of) -> dict:
     return service._quotes(symbols)
 
 
+# Whether this invocation speaks JSON. Set by the command, read by the error
+# paths — an agent that asked for JSON must get JSON when things go wrong too,
+# or every failure looks like a corrupt response instead of a handled state.
+_json_mode = False
+
+JsonOpt = Annotated[
+    bool,
+    typer.Option("--json", help="Emit as JSON: full precision, stable keys, no truncation."),
+]
+
+
+@app.callback()
+def _reset_output_mode() -> None:
+    """Typer runs this before every command. Resets the JSON flag so one
+    invocation's mode cannot leak into the next — which happens whenever the app
+    is driven in-process rather than as a fresh subprocess, as the tests do."""
+    global _json_mode
+    _json_mode = False
+
+
+def _json_requested() -> bool:
+    """Whether this invocation asked for JSON, read from argv rather than from the
+    flag a command sets.
+
+    An error can escape before any command body runs — a database lock taken
+    during connect, for instance — and that failure still has to answer in the
+    format the caller asked for. argv is the only source that is already true at
+    that point, and it cannot leak between in-process invocations.
+    """
+    return "--json" in sys.argv[1:]
+
+
+def _use_json(enabled: bool) -> bool:
+    """Record that this invocation speaks JSON, and hand the flag back."""
+    global _json_mode
+    _json_mode = enabled
+    return enabled
+
+
+def _spinner(message: str):
+    """A Rich status spinner writes to stdout, which would corrupt a JSON
+    document mid-stream. Silence in JSON mode; a spinner for humans."""
+    return nullcontext() if _json_mode else console.status(message)
+
+
+def _emit_json(payload: Any) -> None:
+    """Machine output: stdout, one document, no colour and no highlighting.
+
+    Deliberately not `console.print_json`, which pretty-prints with ANSI colour
+    and re-wraps to the terminal width — both of which corrupt a pipe.
+    """
+    if hasattr(payload, "model_dump_json"):
+        print(payload.model_dump_json())  # type: ignore[attr-defined]
+        return
+    if isinstance(payload, list) and payload and hasattr(payload[0], "model_dump_json"):
+        print("[" + ",".join(item.model_dump_json() for item in payload) + "]")
+        return
+    print(_json.dumps(payload, default=str))
+
+
 def _fail(exc: TrdError) -> None:
+    if _json_mode:
+        # On stdout on purpose, so one `| jq` handles success and failure alike.
+        # The non-zero exit is what distinguishes them.
+        print(_json.dumps({"error": type(exc).__name__, "message": str(exc)}))
+        raise typer.Exit(code=1)
     err_console.print(f"[red]error:[/red] {exc}")
     raise typer.Exit(code=1)
 
@@ -215,7 +281,7 @@ def sync(
     settings = get_settings()
     conn = connect(settings.db_path)
     service = SyncService(conn, YFinanceProvider())
-    with console.status("Syncing market data..."):
+    with _spinner("Syncing market data..."):
         result = service.sync(full=full, years=years)
     console.print(
         f"Synced [bold]{result.quotes}[/bold]/{result.instruments} quotes, "
@@ -239,7 +305,7 @@ def dashboard(
     settings = get_settings()
     service = DashboardService(connect(settings.db_path), YFinanceProvider())
     try:
-        with console.status("Building dashboard..."):
+        with _spinner("Building dashboard..."):
             dash = service.summary(include_simulation=include_all)
     except TrdError as exc:
         _fail(exc)
@@ -288,21 +354,26 @@ def portfolio(
     min_value: Annotated[
         float, typer.Option("--min-value", help="Hide positions worth less than this.")
     ] = 0.0,
+    as_json: JsonOpt = False,
 ) -> None:
     """Show holdings: weight, price + 30-day trend, value, day change, P&L.
 
     Sorted by value (biggest first); real money only unless --all.
     """
+    _use_json(as_json)
     if sort not in _SORT_KEYS:
         err_console.print(f"[red]error:[/red] --sort must be one of {', '.join(_SORT_KEYS)}.")
         raise typer.Exit(code=1)
     service = _portfolio_service()
     try:
-        with console.status("Fetching quotes..."):
+        with _spinner("Fetching quotes..."):
             positions = service.positions(account, include_simulation=include_all)
             sparks = service.sparklines(positions)
     except TrdError as exc:
         _fail(exc)
+        return
+    if as_json:
+        _emit_json(positions)
         return
     if not positions:
         console.print("No open positions. Record one with [bold]trd buy[/bold].")
@@ -391,7 +462,7 @@ def movers(
         raise typer.Exit(code=1)
     settings = get_settings()
     service = MoversService(connect(settings.db_path), YFinanceProvider())
-    with console.status("Fetching quotes..."):
+    with _spinner("Fetching quotes..."):
         rows = service.board(sort=sort, include_simulation=include_all)
     if not rows:
         console.print("Nothing owned or watched yet. Buy or [bold]trd watch add[/bold] something.")
@@ -410,17 +481,22 @@ def lots(
     include_all: Annotated[
         bool, typer.Option("--all", help="Include simulation (paper) accounts.")
     ] = False,
+    as_json: JsonOpt = False,
 ) -> None:
     """Per-purchase detail: buy date, price paid per share, total cost, gain since.
 
     Real money only by default — pass --all to include paper accounts.
     """
+    _use_json(as_json)
     service = _portfolio_service()
     try:
-        with console.status("Fetching quotes..."):
+        with _spinner("Fetching quotes..."):
             result = service.lots(account, symbol, include_simulation=include_all)
     except TrdError as exc:
         _fail(exc)
+        return
+    if as_json:
+        _emit_json(result)
         return
     if not result:
         target = symbol.upper() if symbol else "anything"
@@ -440,7 +516,7 @@ def quote(symbol: Annotated[str, typer.Argument(help="Ticker, e.g. AAPL or BTC-U
     """Live quote + instrument details for any symbol (tracked or not)."""
     provider = YFinanceProvider()
     try:
-        with console.status(f"Fetching {symbol.upper()}..."):
+        with _spinner(f"Fetching {symbol.upper()}..."):
             info = provider.get_info(symbol)
             q = provider.get_quote(symbol)
     except TrdError as exc:
@@ -562,14 +638,19 @@ def watch_ls(
     list_name: Annotated[
         str | None, typer.Argument(help="Watchlist to show. Omit for all lists.")
     ] = None,
+    as_json: JsonOpt = False,
 ) -> None:
     """Quote board: price, day change, 52-week range position, volume vs average."""
+    _use_json(as_json)
     service = _watchlist_service()
     try:
-        with console.status("Fetching quotes..."):
+        with _spinner("Fetching quotes..."):
             rows = service.board(list_name)
     except TrdError as exc:
         _fail(exc)
+        return
+    if as_json:
+        _emit_json(rows)
         return
     if not rows:
         console.print("Nothing watched yet. Add with [bold]trd watch add SYMBOL[/bold].")
@@ -671,11 +752,16 @@ def exit_check(
 @app.command()
 def earnings(
     days: Annotated[int, typer.Option("--days", "-d", help="Look-ahead window in days.")] = 14,
+    as_json: JsonOpt = False,
 ) -> None:
     """Upcoming earnings across portfolio and watchlists. Run 'trd sync' to refresh."""
+    _use_json(as_json)
     settings = get_settings()
     service = EarningsService(connect(settings.db_path))
     events = service.upcoming(days)
+    if as_json:
+        _emit_json(events)
+        return
     if not events:
         console.print(f"No earnings in the next {days} days. Run [bold]trd sync[/bold] to refresh.")
         return
@@ -731,7 +817,7 @@ def sunday_prep(
         _fail(TrdError(f"Bad --date {on!r}; use ISO format like 2026-06-14."))
         return
     service = SundayPrepService(YFinanceProvider())
-    with console.status("Building Sunday Prep — futures, sectors, earnings, levels..."):
+    with _spinner("Building Sunday Prep — futures, sectors, earnings, levels..."):
         briefing = service.build(reference)
     if as_json:
         console.print_json(briefing.model_dump_json())
@@ -1074,7 +1160,7 @@ def plan_status(account: PlanAccountOpt = None) -> None:
     service = _plan_service()
     try:
         name = account or service.resolve_default_account()
-        with console.status("Fetching quotes..."):
+        with _spinner("Fetching quotes..."):
             status = service.status(name)
     except TrdError as exc:
         _fail(exc)
@@ -1097,7 +1183,7 @@ def plan_ls(
         console.print("No plans. Run [bold]trd plan set[/bold] or [bold]trd sim init[/bold].")
         return
     if pnl:
-        with console.status("Fetching quotes..."):
+        with _spinner("Fetching quotes..."):
             statuses = [service.status(plan.account.name) for plan in plans]
         console.print(plans_pnl_table(statuses))
         return
@@ -1133,7 +1219,7 @@ def plan_show(account: PlanAccountOpt = None) -> None:
     service = _dca_detail_service()
     try:
         name = account or service.plans.resolve_default_account()
-        with console.status("Fetching quotes..."):
+        with _spinner("Fetching quotes..."):
             detail = service.detail(name)
     except TrdError as exc:
         _fail(exc)
@@ -1156,7 +1242,7 @@ def plan_history(
     service = _dca_detail_service()
     try:
         name = account or service.plans.resolve_default_account()
-        with console.status("Loading..."):
+        with _spinner("Loading..."):
             detail = service.detail(name)
     except TrdError as exc:
         _fail(exc)
@@ -1188,7 +1274,7 @@ def plan_forecast(
     service = _projection_service()
     try:
         name = account or service.plans.resolve_default_account()
-        with console.status("Simulating..."):
+        with _spinner("Simulating..."):
             result = service.forecast(
                 name,
                 years=years,
@@ -1222,7 +1308,7 @@ def plan_backtest(
     service = _projection_service()
     try:
         name = account or service.plans.resolve_default_account()
-        with console.status("Replaying history..."):
+        with _spinner("Replaying history..."):
             result = service.backtest(name, years=years)
     except TrdError as exc:
         _fail(exc)
@@ -1353,7 +1439,7 @@ def sim_status(name: SimNameOpt = "sim") -> None:
     """Performance: invested vs value vs what SPY would have done."""
     service = _plan_service()
     try:
-        with console.status("Fetching quotes..."):
+        with _spinner("Fetching quotes..."):
             status = service.status(name)
     except TrdError as exc:
         _fail(exc)
@@ -1675,13 +1761,18 @@ def engine_signals(
     strategy: Annotated[
         str | None, typer.Option("--strategy", "-s", help="Filter to one strategy key.")
     ] = None,
+    as_json: JsonOpt = False,
 ) -> None:
     """Signal history — everything the rules saw, taken or passed over."""
+    _use_json(as_json)
     service = _engine_service()
     try:
         rows = service.signal_rows(limit=limit, strategy=strategy)
     except TrdError as exc:
         _fail(exc)
+        return
+    if as_json:
+        _emit_json(rows)
         return
     if not rows:
         console.print("No signals yet. Run [bold]trd engine scan[/bold].")
@@ -1694,8 +1785,10 @@ def engine_positions(
     all_: Annotated[
         bool, typer.Option("--all", help="Include closed trades, not just open ones.")
     ] = False,
+    as_json: JsonOpt = False,
 ) -> None:
     """Engine positions with live P&L and where the stops sit."""
+    _use_json(as_json)
     try:
         quotes = _prefetched_quotes(lambda s: s.quote_symbols())
         service = _engine_service()
@@ -1703,6 +1796,9 @@ def engine_positions(
         max_positions = service.config().max_positions
     except TrdError as exc:
         _fail(exc)
+        return
+    if as_json:
+        _emit_json(rows)
         return
     if not rows:
         console.print("No engine positions yet. Run [bold]trd engine scan[/bold].")
@@ -1712,13 +1808,17 @@ def engine_positions(
 
 
 @engine_app.command("report")
-def engine_report() -> None:
+def engine_report(as_json: JsonOpt = False) -> None:
     """Per-strategy scorecard over closed trades: win rate, avg win/loss, expectancy."""
+    _use_json(as_json)
     service = _engine_service()
     try:
         stats = service.report()
     except TrdError as exc:
         _fail(exc)
+        return
+    if as_json:
+        _emit_json(stats)
         return
     if not stats:
         console.print("No trades yet. Run [bold]trd engine scan[/bold] for a while first.")
@@ -1728,11 +1828,12 @@ def engine_report() -> None:
 
 @engine_app.command("status")
 def engine_status(
-    as_json: Annotated[bool, typer.Option("--json", help="Emit the status as JSON.")] = False,
+    as_json: JsonOpt = False,
 ) -> None:
     """What this engine is and whether it is healthy: build, database, rule set,
     capacity, data depth, and whether it is actually running. No network call —
     it answers even when the data provider is the thing that is broken."""
+    _use_json(as_json)
     settings = get_settings()
     service = _engine_service()
     try:
@@ -1741,7 +1842,7 @@ def engine_status(
         _fail(exc)
         return
     if as_json:
-        console.print_json(status.model_dump_json())
+        _emit_json(status)
         return
     for renderable in engine_status_renderables(status):
         console.print(renderable)
@@ -1837,7 +1938,13 @@ def main() -> None:
     try:
         app()
     except TrdError as exc:
-        err_console.print(f"[red]error:[/red] {exc}")
+        # argv only, never the flag a command sets: main() is the process
+        # entrypoint, so argv is authoritative and cannot carry state from a
+        # previous in-process invocation.
+        if _json_requested():
+            print(_json.dumps({"error": type(exc).__name__, "message": str(exc)}))
+        else:
+            err_console.print(f"[red]error:[/red] {exc}")
         raise SystemExit(1) from None
 
 
