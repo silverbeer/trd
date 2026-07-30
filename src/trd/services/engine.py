@@ -416,10 +416,39 @@ class EngineService:
         except ProviderError:
             return {}
 
+    def quote_symbols(self) -> list[str]:
+        """Every symbol the next scan will want a quote for: the universe plus
+        anything currently held, since an open position must be managed even
+        after it leaves the watchlist.
+
+        Split out so the caller can fetch quotes *before* opening the database.
+        The provider call takes seconds and needs no database at all, and DuckDB
+        allows a single writer — so fetching it on an open connection blocks every
+        reader for the length of a network round trip. See `prefetched_quotes`.
+        """
+        universe = self.universe()
+        try:
+            account = self.account()
+        except TrdError:
+            return sorted({i.symbol for i in universe})
+        held = self.positions.list_open(account.id)
+        return sorted({i.symbol for i in universe} | {i.symbol for _, i in held})
+
     # ------------------------------------------------------------------ scan
 
-    def scan(self, paper: bool = True, at: datetime | None = None) -> ScanResult:
-        """One pass: manage exits first (freeing capacity), then take new entries."""
+    def scan(
+        self,
+        paper: bool = True,
+        at: datetime | None = None,
+        quotes: dict[str, Quote] | None = None,
+    ) -> ScanResult:
+        """One pass: manage exits first (freeing capacity), then take new entries.
+
+        `quotes` lets the caller hand in prices fetched before the database was
+        opened, which keeps a multi-second network round trip out of the window
+        where this process holds DuckDB's single writer lock. Omitted, the scan
+        fetches them itself and behaves exactly as before.
+        """
         config = self.config()
         self._verify_rules(config)
         account = self.account()
@@ -429,7 +458,8 @@ class EngineService:
         universe = self.universe()
         open_positions = self.positions.list_open(account.id)
         symbols = sorted({i.symbol for i in universe} | {i.symbol for _, i in open_positions})
-        quotes = self._quotes(symbols)
+        if quotes is None:
+            quotes = self._quotes(symbols)
         run = self.runs.start(now, paper)
 
         result = ScanResult(
@@ -719,14 +749,17 @@ class EngineService:
             for signal, instrument in self.signals.list_recent(limit, strategy)
         ]
 
-    def position_rows(self, open_only: bool = True) -> list[PositionRow]:
+    def position_rows(
+        self, open_only: bool = True, quotes: dict[str, Quote] | None = None
+    ) -> list[PositionRow]:
         account = self.account()
         pairs = (
             self.positions.list_open(account.id)
             if open_only
             else self.positions.list_all(account.id)
         )
-        quotes = self._quotes(sorted({i.symbol for _, i in pairs}))
+        if quotes is None:
+            quotes = self._quotes(sorted({i.symbol for _, i in pairs}))
         rows: list[PositionRow] = []
         for position, instrument in pairs:
             quote = quotes.get(instrument.symbol)
