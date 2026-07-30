@@ -47,6 +47,10 @@ class HistoryResult(BaseModel):
     realized_pnl: Decimal  # from sells that settled in the window
     sells_with_result: int
     fees: Decimal
+    # The newest transaction matching every filter *except* the date window. An
+    # empty window is otherwise indistinguishable from an empty database, which
+    # reads as "the tool is broken" when the answer is "look further back".
+    latest_outside_window: date | None = None
 
     @property
     def net_invested(self) -> Decimal:
@@ -140,6 +144,14 @@ class HistoryService:
             )
         rows.sort(key=lambda r: (r.txn.executed_at, r.txn.id), reverse=True)
 
+        matched_any_date = [
+            txn.executed_at.date()
+            for txn in everything
+            if txn.account_id in wanted
+            and (wanted_instrument is None or txn.instrument_id == wanted_instrument)
+            and (side is None or txn.side == side)
+        ]
+
         bought = sum((r.gross for r in rows if r.txn.side == Side.BUY), Decimal(0))
         sold = sum((r.gross for r in rows if r.txn.side == Side.SELL), Decimal(0))
         realized_total = sum(
@@ -153,6 +165,7 @@ class HistoryService:
             realized_pnl=realized_total,
             sells_with_result=sum(1 for r in rows if r.realized_pnl is not None),
             fees=sum((r.txn.fees for r in rows), Decimal(0)),
+            latest_outside_window=max(matched_any_date) if matched_any_date else None,
         )
 
 

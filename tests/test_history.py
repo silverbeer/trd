@@ -176,3 +176,30 @@ def test_all_time_ignores_the_window(history, conn):
     _record(conn, 1, Side.BUY, "1", "100", datetime.now() - timedelta(days=900))
     assert history.history(days=30).rows == []
     assert len(history.history(days=None).rows) == 1
+
+
+def test_empty_window_still_points_at_the_data(history, conn):
+    """An empty window and an empty database must not look the same: the first
+    means look further back, the second means the tool has nothing at all."""
+    _record(conn, 1, Side.BUY, "1", "100", datetime.now() - timedelta(days=100))
+
+    recent = history.history(days=30)
+    assert recent.rows == []
+    assert recent.latest_outside_window is not None  # there IS history
+
+    wide = history.history(days=None)
+    assert len(wide.rows) == 1
+
+
+def test_a_genuinely_empty_database_says_nothing_exists(history):
+    result = history.history(days=30)
+    assert result.rows == []
+    assert result.latest_outside_window is None
+
+
+def test_latest_outside_window_respects_the_other_filters(history, conn):
+    """Pointing at a transaction the filters would have excluded anyway would
+    send someone widening a window that was never going to show it."""
+    _record(conn, 1, Side.BUY, "1", "100", datetime.now() - timedelta(days=100))
+    assert history.history(days=30, side=Side.BUY).latest_outside_window is not None
+    assert history.history(days=30, side=Side.SELL).latest_outside_window is None
