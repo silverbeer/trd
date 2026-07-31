@@ -1149,3 +1149,107 @@ def test_sizing_mode_defaults_to_exposure_and_round_trips(engine, provider):
         symbols=["AAA"], strategies=["breakout"], sizing_mode=SizingMode.RISK
     )
     assert engine.config().sizing_mode == SizingMode.RISK
+
+
+# ---------------------------------------------------------------- explain
+
+
+def _open_a_trade(engine, conn, symbol="AAA", strategy="breakout", bars_held=0):
+    account = engine.account()
+    instrument = InstrumentRepo(conn).get_by_symbol(symbol)
+    assert instrument is not None
+    signal = engine.signals.insert(
+        run_id=None,
+        instrument_id=instrument.id,
+        strategy=strategy,
+        bar_date=date(2026, 7, 30),
+        fired_at=datetime(2026, 7, 30, 9, 30),
+        price=Decimal("100"),
+        score=0.7,
+        reason="closed 2.0% through the 20-day high on 3.1x average volume",
+    )
+    engine.positions.open(
+        account_id=account.id,
+        instrument_id=instrument.id,
+        signal_id=signal.id,
+        strategy=strategy,
+        opened_at=datetime(2026, 7, 30, 9, 30),
+        entry_price=Decimal("100"),
+        quantity=Decimal("10"),
+        stop_price=Decimal("90"),
+        target_price=Decimal("120"),
+        atr_at_entry=Decimal("5"),
+        last_bar_date=date(2026, 7, 30),
+    )
+    if bars_held:
+        pos = engine.positions.list_open(account.id)[0][0]
+        engine.positions.touch(pos.id, pos.trail_high, bars_held, date(2026, 7, 30))
+
+
+def test_explain_returns_the_reason_recorded_at_entry(engine, provider, conn):
+    """Recorded, never recomputed: reading a trade back must show what the rule
+    saw that day, not what it would say about today's bars."""
+    provider.add_symbol("AAA", price="100")
+    engine.init(symbols=["AAA"], strategies=["breakout"])
+    _open_a_trade(engine, conn)
+
+    why = engine.explain("aaa")  # case-insensitive
+    assert why.symbol == "AAA"
+    assert "20-day high" in why.reason
+    assert "3.1x average volume" in why.reason
+    assert why.score == 0.7
+    assert why.risk_per_share == Decimal("10")
+
+
+def test_explain_defines_the_indicators_the_rule_actually_used(engine, provider, conn):
+    """Terms come from the strategy, not from parsing its prose — the wording
+    will be reworded, what a rule reads will not."""
+    provider.add_symbol("AAA", price="100")
+    engine.init(symbols=["AAA"], strategies=["breakout"])
+    _open_a_trade(engine, conn, strategy="breakout")
+
+    keys = [k for k, _t, _d in engine.explain("AAA").glossary]
+    assert "volratio" in keys  # breakout's whole thesis is volume
+    assert "sma" in keys
+    assert "r-multiple" in keys  # always useful when reading a trade
+    assert all(definition for _k, _t, definition in engine.explain("AAA").glossary)
+
+
+def test_explain_says_which_stop_is_actually_protecting_the_trade(engine, provider, conn):
+    provider.add_symbol("AAA", price="100")
+    engine.init(symbols=["AAA"], strategies=["breakout"])
+    _open_a_trade(engine, conn)
+
+    exits = {e.rule: e for e in engine.explain("AAA").exits}
+    # trail = 100 high - 3x5 ATR = 85, below the 90 stop, so the stop holds.
+    assert exits["stop"].in_force is True
+    assert exits["trail"].in_force is False
+    assert "takes over once price touches" in exits["trail"].detail
+    assert exits["stop"].level == Decimal("90")
+    assert exits["target"].level == Decimal("120")
+
+
+def test_explain_reports_the_indicator_exit_grace_period(engine, provider, conn):
+    """A pullback entry sits below its 20-day by construction, so the indicator
+    exit is held off — and silence should not look like the rule being absent."""
+    provider.add_symbol("AAA", price="100")
+    engine.init(symbols=["AAA"], strategies=["breakout"])
+    _open_a_trade(engine, conn, bars_held=0)
+    fresh = {e.rule: e for e in engine.explain("AAA").exits}["indicator"]
+    assert "not armed yet" in fresh.detail
+
+    engine.positions.touch(
+        engine.positions.list_open(engine.account().id)[0][0].id,
+        Decimal("100"),
+        5,
+        date(2026, 7, 30),
+    )
+    aged = {e.rule: e for e in engine.explain("AAA").exits}["indicator"]
+    assert "armed" in aged.detail and "not armed" not in aged.detail
+
+
+def test_explain_refuses_a_symbol_that_is_not_held(engine, provider):
+    provider.add_symbol("AAA", price="100")
+    engine.init(symbols=["AAA"], strategies=["breakout"])
+    with pytest.raises(TrdError, match="No open engine position"):
+        engine.explain("ZZZZ")

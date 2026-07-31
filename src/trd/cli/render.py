@@ -22,6 +22,7 @@ from trd.models import (
     Side,
     SignalRow,
     StrategyStat,
+    TradeExplanation,
 )
 from trd.repos import PrepSnapshotRow
 from trd.services.backtest import BacktestResult as EngineBacktestResult
@@ -1553,3 +1554,65 @@ def history_table(result: HistoryResult) -> Table:
     table.caption = "  ·  ".join(parts)
     table.caption_justify = "left"
     return table
+
+
+def engine_why_renderables(why: TradeExplanation) -> list[RenderableType]:
+    """Why a trade was taken, what its vocabulary means, and where it gets out.
+
+    Ordered for someone still learning the indicators: what happened, then the
+    words needed to read what happened, then what would end it. The reason text
+    is the one recorded at entry — it says what the rule saw that day, not what
+    the same rule would say about today.
+    """
+    r = f"{why.r_multiple:+.2f}R" if why.r_multiple is not None else "—"
+    header = (
+        f"[bold]{why.symbol}[/bold] bought by [bold]{why.strategy_name}[/bold]  ·  "
+        f"{why.opened_at.strftime('%Y-%m-%d %H:%M')}\n"
+        f"{fmt_qty(why.quantity)} @ {fmt_money(why.entry_price)}"
+        + (f"  ·  now {fmt_money(why.price)}  ·  {r}" if why.price is not None else "")
+        + f"  ·  1R = {fmt_money(why.risk_per_share)}/share  ·  held {why.bars_held} bars"
+    )
+    out: list[RenderableType] = [Panel(header, expand=False, border_style="cyan")]
+
+    out.append(
+        Panel(
+            f"[bold]What fired it[/bold]\n{why.reason}"
+            + (
+                f"\n\n[dim]score {why.score:.2f} — ranks same-bar candidates only[/dim]"
+                if why.score is not None
+                else ""
+            ),
+            border_style="green",
+            title="Why this trade",
+            title_align="left",
+        )
+    )
+    if why.strategy_description:
+        out.append(Text(f"  {why.strategy_description}", style="dim"))
+
+    if why.glossary:
+        terms = Table(
+            title="What those words mean", title_justify="left", show_header=False, box=None
+        )
+        terms.add_column(style="bold cyan", no_wrap=True)
+        terms.add_column()
+        for key, term, definition in why.glossary:
+            # Name the lookup key, not just the prose term: the next step is
+            # `trd learn <key>`, and guessing the key from "R-multiple (R)" is
+            # exactly the friction this view exists to remove.
+            terms.add_row(term, definition.split("\n\n")[0] + f"\n[dim]trd learn {key}[/dim]")
+        terms.caption = "each line ends with the command for the full formula and a worked example"
+        terms.caption_justify = "left"
+        out.append(terms)
+
+    exits = Table(title="How it ends", title_justify="left")
+    exits.add_column("Rule", style="bold")
+    exits.add_column("Level", justify="right")
+    exits.add_column("What it waits for", style="dim")
+    for e in why.exits:
+        name = f"[green]{e.name} ←[/green]" if e.in_force else e.name
+        exits.add_row(name, fmt_money(e.level) if e.level is not None else "—", e.detail)
+    exits.caption = "← marks the stop actually protecting the trade right now"
+    exits.caption_justify = "left"
+    out.append(exits)
+    return out
