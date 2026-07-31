@@ -95,7 +95,9 @@ trd engine status [--json]            # what this engine is + whether it's healt
 trd engine backtest [--years N] [--fill intrabar|close] [--no-blackout] [--symbols A,B]
                                       # replay the rules against stored history — same scorecard as
                                       # 'report', hundreds of trades per run. Needs 'trd sync
-                                      # --years 10'; day-mode (flat_at) configs are refused
+                                      # --years 10'. Day-mode engines backtest on their intraday
+                                      # bars (the walk is keyed on each bar's instant, so
+                                      # session_close fires at the bell); day mode on 1d is refused
 trd engine scan --ndjson --notify     # one JSON event per line (log shipping) + Telegram on fills
 ```
 
