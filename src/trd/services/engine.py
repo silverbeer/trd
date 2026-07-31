@@ -16,7 +16,7 @@ the engine can react intraday.
 """
 
 from collections.abc import Sequence
-from datetime import date, datetime, time
+from datetime import date, datetime
 from decimal import ROUND_DOWN, Decimal
 
 import duckdb
@@ -25,13 +25,14 @@ from pydantic import BaseModel
 from trd.build import build_version
 from trd.engine import DEFAULT_EXIT_PARAMS, EXIT_REGISTRY, evaluate_exits, missing_rules
 from trd.engine import REGISTRY as STRATEGIES
+from trd.engine.bars import DAILY, INTRADAY_MINUTES, BarSource, validate_timeframe
 from trd.engine.base import indicator, last
 from trd.errors import ProviderError, TrdError
 from trd.learn import GLOSSARY
 from trd.models import (
     Account,
     AccountType,
-    DailyBar,
+    Bar,
     EngineConfig,
     EnginePosition,
     EngineRun,
@@ -144,7 +145,7 @@ MAX_EXPOSURE_MULTIPLE = Decimal(20)
 
 
 def plan_entry(
-    bars: list[DailyBar],
+    bars: Sequence[Bar],
     position_size: Decimal,
     exit_params: dict[str, float],
     sizing_mode: SizingMode = SizingMode.EXPOSURE,
@@ -272,6 +273,7 @@ class EngineService:
         exit_params: dict[str, float] | None = None,
         earnings_blackout_days: int = DEFAULT_EARNINGS_BLACKOUT_DAYS,
         sizing_mode: SizingMode = SizingMode.EXPOSURE,
+        timeframe: str = DAILY,
     ) -> tuple[EngineConfig, Account, list[str]]:
         """Create (or re-point) the engine: a simulation account, a watchlist
         universe, and the rule set. Returns the symbols now in the universe."""
@@ -290,12 +292,24 @@ class EngineService:
         if not keys:
             raise TrdError("Enable at least one strategy.")
 
+        validate_timeframe(timeframe)
+
         params = {**DEFAULT_EXIT_PARAMS, **(exit_params or {})}
         bad = sorted(set(params) - set(DEFAULT_EXIT_PARAMS))
         if bad:
             raise TrdError(
                 f"Unknown exit params: {', '.join(bad)}. "
                 f"Available: {', '.join(sorted(DEFAULT_EXIT_PARAMS))}"
+            )
+        # A day engine on daily bars is the bug this timeframe exists to fix: a
+        # stop at 2 x the daily ATR cannot be reached inside one session, so every
+        # trade exits on the clock and its R-multiples describe risk it never took.
+        if timeframe == DAILY and int(params.get("flat_at_minute", 0)) > 0:
+            raise TrdError(
+                "A day engine (--flat-at) needs an intraday timeframe. On daily bars "
+                "its stop and target cannot be reached inside one session, so every "
+                f"trade would exit on the clock. Pass --timeframe "
+                f"{'/'.join(INTRADAY_MINUTES)}."
             )
 
         existing = self.accounts.get_by_name(account_name)
@@ -322,6 +336,7 @@ class EngineService:
             params,
             earnings_blackout_days,
             sizing_mode,
+            timeframe,
         )
         universe = [i.symbol for _, i in self.watchlists.items(board.id)]
         return config, account, universe
@@ -370,8 +385,15 @@ class EngineService:
 
     # ------------------------------------------------------------ bar plumbing
 
-    def _stored_bars(self, instrument_id: int) -> list[DailyBar]:
-        return self.prices.daily_bars(instrument_id)
+    @staticmethod
+    def _sync_hint(source: BarSource) -> str:
+        """The command that would actually fetch the bars this engine needs."""
+        return "trd sync --intraday" if source.is_intraday else "trd sync --full"
+
+    def bars(self, config: EngineConfig | None = None) -> BarSource:
+        """The series this engine reasons over. Every timeframe decision lives in
+        BarSource, so nothing below has to ask which timeframe it is running."""
+        return BarSource(self.prices, (config or self.config()).timeframe)
 
     @staticmethod
     def _entry_cutoff(params: dict[str, float]) -> int | None:
@@ -407,55 +429,6 @@ class EngineService:
         if next_date is None:
             return None
         return next_date if (next_date - today).days <= days else None
-
-    @staticmethod
-    def _quote_is_stale(bars: list[DailyBar], quote: Quote | None, today: date) -> bool:
-        """True when the quote carries nothing the last settled bar didn't already say.
-
-        A symbol that has not printed yet still answers a quote request — yfinance
-        hands back the prior close as `last_price`. Folded in by `_with_live_bar`
-        that becomes a forming bar whose open, high, low and close are all
-        yesterday's close, indistinguishable from a real flat day. An entry taken
-        on it fills at a price that never traded, and because the initial stop is
-        immutable the whole trade keeps that fictional basis for life.
-
-        Only applies while today's bar is still synthetic. Once a real bar for
-        today exists the quote is refining known-good data, not inventing it.
-        """
-        if quote is None:
-            return True
-        if not bars:
-            return True
-        if bars[-1].date == today:
-            return False
-        return quote.price == bars[-1].close
-
-    @staticmethod
-    def _with_live_bar(bars: list[DailyBar], quote: Quote | None, today: date) -> list[DailyBar]:
-        """Fold the live quote into the series as today's forming bar. Daily math,
-        intraday reaction — the same bar the close will become."""
-        if quote is None:
-            return bars
-        price = quote.price
-        if bars and bars[-1].date == today:
-            bar = bars[-1]
-            return [
-                *bars[:-1],
-                DailyBar(
-                    date=bar.date,
-                    open=bar.open,
-                    high=max(bar.high, price),
-                    low=min(bar.low, price),
-                    close=price,
-                    volume=quote.volume or bar.volume,
-                ),
-            ]
-        return [
-            *bars,
-            DailyBar(
-                date=today, open=price, high=price, low=price, close=price, volume=quote.volume
-            ),
-        ]
 
     def _quotes(self, symbols: list[str]) -> dict[str, Quote]:
         if not symbols:
@@ -549,10 +522,11 @@ class EngineService:
         result: ScanResult,
     ) -> set[int]:
         closed_ids: set[int] = set()
+        source = self.bars(config)
         for position, instrument in open_positions:
-            stored = self._stored_bars(instrument.id)
+            stored = source.stored(instrument.id)
             quote = quotes.get(instrument.symbol)
-            bars = self._with_live_bar(stored, quote, today)
+            bars = source.with_live_bar(stored, quote, now)
             if not bars:
                 result.skipped.append(f"{instrument.symbol}: no price history for an open position")
                 continue
@@ -562,12 +536,14 @@ class EngineService:
             live = position.model_copy(
                 update={
                     "trail_high": max(position.trail_high, price),
-                    "bars_held": sum(1 for b in stored if b.date > position.opened_at.date()),
+                    "bars_held": source.bars_since(stored, position.opened_at),
                 }
             )
             decision = evaluate_exits(live, bars, price, config.exit_params, now)
             if decision is None:
-                self.positions.touch(position.id, live.trail_high, live.bars_held, bars[-1].date)
+                self.positions.touch(
+                    position.id, live.trail_high, live.bars_held, source.session(bars[-1])
+                )
                 continue
 
             pnl = live.pnl_at(price)
@@ -592,7 +568,9 @@ class EngineService:
                     executed_at=now,
                     note=f"engine {position.strategy} exit: {decision.rule}",
                 )
-                self.positions.touch(position.id, live.trail_high, live.bars_held, bars[-1].date)
+                self.positions.touch(
+                    position.id, live.trail_high, live.bars_held, source.session(bars[-1])
+                )
                 self.positions.close(position.id, now, price, decision.reason)
                 closed_ids.add(position.id)
             result.closed.append(fill)
@@ -622,26 +600,32 @@ class EngineService:
                 "a fill now would be flattened before it could work"
             )
             return
-        candidates: list[tuple[float, Instrument, list[DailyBar], int | None, ScanSignal]] = []
+        candidates: list[tuple[float, Instrument, list[Bar], int | None, ScanSignal]] = []
+        source = self.bars(config)
         for instrument in universe:
-            stored = self._stored_bars(instrument.id)
+            stored = source.stored(instrument.id)
             if not stored:
                 result.skipped.append(
-                    f"{instrument.symbol}: no price history — run 'trd sync --full'"
+                    f"{instrument.symbol}: no price history — run '{self._sync_hint(source)}'"
                 )
                 continue
             quote = quotes.get(instrument.symbol)
-            if self._quote_is_stale(stored, quote, today):
+            if source.quote_is_stale(stored, quote, now):
+                when = (
+                    f"in the {source.current_bucket(now):%H:%M} bar"
+                    if source.is_intraday
+                    else "today"
+                )
                 result.skipped.append(
-                    f"{instrument.symbol}: no trade print yet today — the quote still reads "
+                    f"{instrument.symbol}: no trade print yet {when} — the quote still reads "
                     f"{stored[-1].close}, the prior close, so a fill here would be fiction"
                 )
                 continue
-            bars = self._with_live_bar(stored, quote, today)
+            bars = source.with_live_bar(stored, quote, now)
             # A signal is identified by the instant its bar opened. For a daily
             # bar that is midnight, which is what keeps a monitor loop from
             # storing the same signal on every pass.
-            bar_ts = datetime.combine(bars[-1].date, time.min)
+            bar_ts = source.stamp(bars[-1])
             # Computed once per symbol, but applied *after* the strategy runs: a
             # signal blocked by earnings is a real signal on good data, unlike a
             # stale-quote one, and the passed-over signals are half the learning.
@@ -714,7 +698,7 @@ class EngineService:
             if short_by:
                 result.skipped.append(
                     f"{instrument.symbol}: only {len(bars)} bars — {', '.join(short_by)} "
-                    "(run 'trd sync --full')"
+                    f"(run '{self._sync_hint(source)}')"
                 )
 
         capacity = config.max_positions - len(held)
@@ -744,7 +728,7 @@ class EngineService:
         config: EngineConfig,
         account: Account,
         instrument: Instrument,
-        bars: list[DailyBar],
+        bars: list[Bar],
         signal_id: int | None,
         scan_signal: ScanSignal,
         now: datetime,
@@ -778,7 +762,7 @@ class EngineService:
             stop_price=plan.stop_price,
             target_price=plan.target_price,
             atr_at_entry=plan.atr,
-            last_bar_date=bars[-1].date,
+            last_bar_date=self.bars(config).session(bars[-1]),
         )
         if signal_id is not None:
             self.signals.mark_acted(signal_id)
@@ -842,8 +826,14 @@ class EngineService:
                 continue
             unrealized += position.pnl_at(close) or Decimal(0)
 
-        total, first, last_bar = self.prices.coverage()
-        counts = self.prices.bar_counts()
+        source = self.bars(config)
+        if source.is_intraday:
+            total, first_ts, last_ts = self.prices.intraday_coverage(source.timeframe)
+            first = first_ts.date() if first_ts else None
+            last_bar = last_ts.date() if last_ts else None
+        else:
+            total, first, last_bar = self.prices.coverage()
+        counts = source.bar_counts()
         enabled = [STRATEGIES[k] for k in config.strategies if k in STRATEGIES]
         warmup = max((s.min_bars for s in enabled), default=0)
         short = sorted(
@@ -863,6 +853,7 @@ class EngineService:
             max_positions=config.max_positions,
             earnings_blackout_days=config.earnings_blackout_days,
             flat_at_minute=int(config.exit_params.get("flat_at_minute", 0)),
+            timeframe=config.timeframe,
             open_positions=len(open_pairs),
             committed=committed,
             unrealized=unrealized,

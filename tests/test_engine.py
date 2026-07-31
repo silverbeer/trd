@@ -1,5 +1,6 @@
 import math
 from datetime import date, datetime, timedelta
+from datetime import time as dtime
 from decimal import Decimal
 
 import duckdb
@@ -15,6 +16,7 @@ from trd.models import (
     EarningsDate,
     EnginePosition,
     InstrumentInfo,
+    IntradayBar,
     PositionStatus,
 )
 from trd.repos import AccountRepo, EarningsRepo, InstrumentRepo, PriceRepo, TransactionRepo
@@ -263,6 +265,56 @@ def seed(conn: duckdb.DuckDBPyConnection, symbol: str, bars: list[DailyBar]) -> 
         InstrumentInfo(symbol=symbol, name=symbol)
     )
     PriceRepo(conn).upsert_daily(instrument.id, bars)
+    return instrument.id
+
+
+SESSION_MINUTES = 390  # 09:30 to 16:00
+
+
+def intraday_slots(n: int, minutes: int = 5, last_session: date = date(2024, 9, 13)):
+    """The last `n` bar instants on a `minutes` grid, ending at `last_session`'s
+    close. Weekends skipped, because a bar grid that includes them would let a
+    rule see a session the market never had."""
+    slots: list[datetime] = []
+    day = last_session
+    per_session = SESSION_MINUTES // minutes
+    while len(slots) < n:
+        if day.weekday() < 5:
+            start = datetime.combine(day, dtime(9, 30))
+            slots = [start + timedelta(minutes=minutes * i) for i in range(per_session)] + slots
+        day -= timedelta(days=1)
+    return slots[-n:]
+
+
+def make_intraday_bars(
+    closes: list[float], minutes: int = 5, volumes: list[int] | None = None
+) -> list[IntradayBar]:
+    """Intraday bars from a close series, on a real session grid."""
+    stamps = intraday_slots(len(closes), minutes)
+    out: list[IntradayBar] = []
+    for i, close in enumerate(closes):
+        value = Decimal(str(round(close, 4)))
+        out.append(
+            IntradayBar(
+                ts=stamps[i],
+                open=value,
+                high=Decimal(str(round(close * 1.005, 4))),
+                low=Decimal(str(round(close * 0.995, 4))),
+                close=value,
+                volume=volumes[i] if volumes else 1_000_000,
+            )
+        )
+    return out
+
+
+def seed_intraday(
+    conn: duckdb.DuckDBPyConnection, symbol: str, bars: list[IntradayBar], timeframe: str = "5m"
+) -> int:
+    repo = InstrumentRepo(conn)
+    instrument = repo.get_by_symbol(symbol) or repo.insert(
+        InstrumentInfo(symbol=symbol, name=symbol)
+    )
+    PriceRepo(conn).upsert_intraday(instrument.id, timeframe, bars)
     return instrument.id
 
 
@@ -672,14 +724,18 @@ def test_the_stop_still_wins_at_the_bell():
 def test_no_new_entries_inside_the_cutoff(engine, provider, conn):
     """Entering at 15:50 only to be flattened at 15:55 pays the spread twice for
     five minutes of exposure."""
-    bars = make_bars(uptrend())
-    seed(conn, "AAA", bars)
-    provider.add_symbol("AAA", price=str(float(bars[-1].close) * 0.998))
+    bars = make_intraday_bars(uptrend())
+    seed_intraday(conn, "AAA", bars)
+    # A quote carries volume, and the forming intraday bar inherits it. Momentum
+    # refuses to fire when volume is unknown, so a volume-less quote would make
+    # these tests pass or fail for a reason that has nothing to do with the bell.
+    provider.add_symbol("AAA", price=str(float(bars[-1].close) * 0.998), volume=1_200_000)
     engine.init(
         symbols=["AAA"],
         strategies=["momentum"],
         position_size=Decimal("10000"),
         exit_params={"flat_at_minute": 1555.0},
+        timeframe="5m",
     )
 
     late = engine.scan(at=datetime(2024, 9, 16, 15, 30))  # cutoff is 15:25
@@ -688,14 +744,18 @@ def test_no_new_entries_inside_the_cutoff(engine, provider, conn):
 
 
 def test_entries_still_run_before_the_cutoff(engine, provider, conn):
-    bars = make_bars(uptrend())
-    seed(conn, "AAA", bars)
-    provider.add_symbol("AAA", price=str(float(bars[-1].close) * 0.998))
+    bars = make_intraday_bars(uptrend())
+    seed_intraday(conn, "AAA", bars)
+    # A quote carries volume, and the forming intraday bar inherits it. Momentum
+    # refuses to fire when volume is unknown, so a volume-less quote would make
+    # these tests pass or fail for a reason that has nothing to do with the bell.
+    provider.add_symbol("AAA", price=str(float(bars[-1].close) * 0.998), volume=1_200_000)
     engine.init(
         symbols=["AAA"],
         strategies=["momentum"],
         position_size=Decimal("10000"),
         exit_params={"flat_at_minute": 1555.0},
+        timeframe="5m",
     )
 
     result = engine.scan(at=datetime(2024, 9, 16, 15, 24))
@@ -704,14 +764,18 @@ def test_entries_still_run_before_the_cutoff(engine, provider, conn):
 
 def test_a_day_engine_closes_its_position_at_the_bell(engine, provider, conn):
     """End to end: open mid-session, flat by the bell, recorded as a sell."""
-    bars = make_bars(uptrend())
-    seed(conn, "AAA", bars)
-    provider.add_symbol("AAA", price=str(float(bars[-1].close) * 0.998))
+    bars = make_intraday_bars(uptrend())
+    seed_intraday(conn, "AAA", bars)
+    # A quote carries volume, and the forming intraday bar inherits it. Momentum
+    # refuses to fire when volume is unknown, so a volume-less quote would make
+    # these tests pass or fail for a reason that has nothing to do with the bell.
+    provider.add_symbol("AAA", price=str(float(bars[-1].close) * 0.998), volume=1_200_000)
     engine.init(
         symbols=["AAA"],
         strategies=["momentum"],
         position_size=Decimal("10000"),
         exit_params={"flat_at_minute": 1555.0},
+        timeframe="5m",
     )
 
     opened = engine.scan(at=datetime(2024, 9, 16, 10, 0))
@@ -785,7 +849,7 @@ def test_scan_refuses_when_the_build_lacks_a_configured_rule(engine, provider, m
     not error on its own — it just holds overnight, which is the one thing the
     setting exists to prevent."""
     provider.add_symbol("AAA", price="100")
-    engine.init(symbols=["AAA"], exit_params={"flat_at_minute": 1555.0})
+    engine.init(symbols=["AAA"], exit_params={"flat_at_minute": 1555.0}, timeframe="5m")
 
     monkeypatch.setattr(
         "trd.services.engine.missing_rules",
@@ -798,7 +862,7 @@ def test_scan_refuses_when_the_build_lacks_a_configured_rule(engine, provider, m
 def test_scan_is_unaffected_when_every_configured_rule_is_present(engine, provider):
     """The guard must not become a reason a healthy day engine stops trading."""
     provider.add_symbol("AAA", price="100")
-    engine.init(symbols=["AAA"], exit_params={"flat_at_minute": 1555.0})
+    engine.init(symbols=["AAA"], exit_params={"flat_at_minute": 1555.0}, timeframe="5m")
     result = engine.scan()  # must not raise
     assert result.scanned == 1
 
@@ -936,7 +1000,7 @@ def test_status_distinguishes_a_day_engine(engine, provider):
     """The one fact that changes what every other number means: does this thing
     hold overnight?"""
     provider.add_symbol("AAA", price="100")
-    engine.init(symbols=["AAA"], exit_params={"flat_at_minute": 1555.0})
+    engine.init(symbols=["AAA"], exit_params={"flat_at_minute": 1555.0}, timeframe="5m")
     status = engine.status()
     assert status.day_mode is True
     assert status.flat_at_minute == 1555

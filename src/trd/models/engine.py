@@ -188,6 +188,7 @@ class EngineStatus(BaseModel):
     max_positions: int
     earnings_blackout_days: int
     flat_at_minute: int
+    timeframe: str = "1d"
 
     open_positions: int
     committed: Decimal
@@ -206,6 +207,11 @@ class EngineStatus(BaseModel):
     @property
     def day_mode(self) -> bool:
         return self.flat_at_minute > 0
+
+    @property
+    def bar_unit(self) -> str:
+        """What one bar is, for anything that counts them at the user."""
+        return "day" if self.timeframe == "1d" else self.timeframe
 
     @property
     def capacity(self) -> int:

@@ -19,6 +19,8 @@ trd init                              # create ~/.trd/trd.duckdb + 'main' accoun
 trd account add fidelity              # one account per brokerage (--type simulation for paper)
 trd account ls
 trd sync [--full]                     # refresh quotes + daily bars + earnings (--full = 2y backfill)
+                                      # also pulls intraday bars for an intraday engine's universe,
+                                      # driven by its config — no flag to forget
 trd portfolio [--account NAME]        # holdings with live P&L
 trd equity [--account NAME] [--days N | --months N] [--all] [--json]
                                       # equity curve: portfolio value over time, period return,
@@ -70,8 +72,12 @@ trd sync --years 10                   # deep backfill (forecast/backtest need lo
 trd sim init --monthly 100 [--strategy ticker|momentum] [--ticker SPY] [--alloc ...] [--name NAME]
                                       # sim = plan on a paper (simulation) account; sim invest/status same
 trd engine init [--account NAME] [--size 1000] [--max 5] [--symbols A,B,...] [--strategies K,K]
-                      [--sizing exposure|risk]   # 'exposure' commits --size/trade (risk floats);
+                      [--sizing exposure|risk] [--timeframe 1d|5m|15m|30m|1h] [--flat-at 1555]
+                                                 # 'exposure' commits --size/trade (risk floats);
                                                  # 'risk' risks --size/trade (position size floats)
+                                                 # --timeframe is the bar width the rules run on;
+                                                 # a day engine (--flat-at) is refused on 1d bars,
+                                                 # where a 2xATR stop can't be reached before the bell
                                       # monitor-mode trading engine: paper-trades a 10-name universe
                                       # on a simulation account. Needs 'trd sync --full' (200 bars)
 trd engine scan [--paper/--no-paper] [--json]   # one pass: exits first, then best-ranked entries

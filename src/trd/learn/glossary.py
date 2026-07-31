@@ -630,8 +630,34 @@ _ENTRIES: list[GlossaryEntry] = [
         ),
         formula="flat_at_minute as HHMM in the engine's local time; 0 disables it (swing mode)",
         example="flat_at_minute = 1555 -> flat at 15:55, no new entries after 15:25.",
-        related=["earnings-blackout", "exit-session-close", "paper-trading"],
+        related=["timeframe", "earnings-blackout", "exit-session-close", "paper-trading"],
         used_in=["trd engine init --flat-at", "trd engine rules"],
+    ),
+    GlossaryEntry(
+        key="timeframe",
+        term="Timeframe (bar width)",
+        category=Category.ENGINE,
+        definition=(
+            "How much time one bar covers, and therefore what every rule can see. A "
+            "swing engine runs on daily bars; a day engine has to run on intraday ones. "
+            "The reason is the stop: it is placed a multiple of ATR below the entry, and "
+            "ATR measures how far a *bar* travels. Two daily ATRs is a move that takes "
+            "days, so inside one session it is unreachable — the stop and target never "
+            "fire and every trade ends up exiting on the clock, while the R-multiples "
+            "still report as though the stop were doing the work. Bar counts follow the "
+            "same logic: a 10-bar time stop is 10 days on a daily engine and 50 minutes "
+            "on a 5-minute one."
+        ),
+        formula=(
+            "1d (swing) or 5m/15m/30m/1h (day); "
+            "stop = entry - stop_atr_mult x ATR(14) measured on that timeframe"
+        ),
+        example=(
+            "5m bars, ATR 0.40 -> stop 0.80 below entry, reachable in an hour. "
+            "Daily bars, ATR 4.00 -> stop 8.00 below entry, unreachable before the bell."
+        ),
+        related=["session-close", "atr", "r-multiple"],
+        used_in=["trd engine init --timeframe", "trd engine status", "trd sync"],
     ),
     GlossaryEntry(
         key="survivorship",

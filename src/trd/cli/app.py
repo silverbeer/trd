@@ -53,6 +53,7 @@ from trd.cli.render import (
 )
 from trd.config import DEFAULT_ACCOUNT, get_settings
 from trd.db.connection import connect
+from trd.engine.bars import DAILY
 from trd.errors import TrdError
 from trd.models import AccountType, Side, SizingMode
 from trd.notify import label_from_env, scan_messages
@@ -295,6 +296,12 @@ def sync(
         f"Synced [bold]{result.quotes}[/bold]/{result.instruments} quotes, "
         f"[bold]{result.bars}[/bold] daily bars, "
         f"[bold]{result.earnings}[/bold] earnings dates."
+        + (
+            f"\nPlus [bold]{result.intraday_bars}[/bold] {result.intraday_timeframe} bars "
+            "for the engine universe."
+            if result.intraday_timeframe
+            else ""
+        )
     )
     if result.failures:
         err_console.print(f"[yellow]warning:[/yellow] failed: {', '.join(result.failures)}")
@@ -1616,6 +1623,13 @@ def engine_init(
             help="Day mode: flatten at this time (HHMM, e.g. 1555). 0 = carry overnight.",
         ),
     ] = 0,
+    timeframe: Annotated[
+        str,
+        typer.Option(
+            "--timeframe",
+            help="Bar width the rules run on: 1d (swing) or 5m/15m/30m/1h (day).",
+        ),
+    ] = DAILY,
 ) -> None:
     """Set up the engine: a simulation account, a 10-name universe, and the rule set."""
     service = _engine_service()
@@ -1638,6 +1652,7 @@ def engine_init(
             else None,
             exit_params={"flat_at_minute": float(flat_at)} if flat_at else None,
             sizing_mode=mode,
+            timeframe=timeframe,
         )
     except TrdError as exc:
         _fail(exc)
@@ -1664,8 +1679,14 @@ def engine_init(
             if config.earnings_blackout_days
             else "Earnings blackout off.\n\n"
         )
-        + "Next: [bold]trd sync --full[/bold] (the rules need 200 bars of history), "
-        "then [bold]trd engine scan[/bold]."
+        + f"Timeframe: {config.timeframe} bars.\n"
+        + (
+            "Next: [bold]trd sync[/bold] (it pulls the intraday bars this engine needs), "
+            "then [bold]trd engine scan[/bold]."
+            if config.is_intraday
+            else "Next: [bold]trd sync --full[/bold] (the rules need 200 bars of history), "
+            "then [bold]trd engine scan[/bold]."
+        )
     )
 
 
