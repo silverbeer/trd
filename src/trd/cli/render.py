@@ -1175,6 +1175,67 @@ def engine_signals_table(rows: list[SignalRow]) -> Table:
     return table
 
 
+def r_gauge(
+    entry: Decimal,
+    price: Decimal | None,
+    stop: Decimal,
+    target: Decimal,
+    width: int = 11,
+) -> str:
+    """Where a trade sits between the stop it dies at and the target it takes.
+
+    R is the engine's unit of account and is otherwise invisible as a shape:
+    reading a position means holding four numbers in your head and doing the
+    arithmetic. The gauge answers "where am I in this trade" at a glance.
+
+    The scale is the trade's own risk, so the entry mark does not sit in the
+    middle — on a 2R trade it sits a third of the way along, and seeing that is
+    the point. Colour tracks distance above the stop rather than the sign of
+    P&L: a trade barely above its stop needs attention whether or not it happens
+    to be green.
+
+    Box-drawing only. `trend_change` avoids block glyphs deliberately because
+    they render inconsistently across fonts, and the Rich tables already depend
+    on box-drawing, so this adds no new risk.
+    """
+    span = target - stop
+    if price is None or span <= 0:
+        return "[dim]" + "─" * width + "[/dim]"
+
+    def slot(value: Decimal) -> int:
+        fraction = float((value - stop) / span)
+        return max(0, min(width - 1, round(fraction * (width - 1))))
+
+    # One R above the stop is the entry, so this is "how many R of cushion".
+    risk = entry - stop
+    cushion = float((price - stop) / risk) if risk > 0 else 0.0
+    if cushion <= 0.25:
+        colour = "bright_red"
+    elif cushion <= 0.5:
+        colour = "red"
+    elif cushion < 1.0:
+        colour = "yellow"
+    elif cushion < 2.0:
+        colour = "green"
+    else:
+        colour = "bright_green"
+
+    track = ["─"] * width
+    track[slot(entry)] = "┼"
+    cells = [f"[dim]{c}[/dim]" for c in track]
+
+    # Outside the range is a real state — gapped through the stop, or past the
+    # target between scans. Clamp the marker but say so, rather than drawing it
+    # somewhere it is not.
+    if price < stop:
+        cells[0] = f"[{colour}]◀[/{colour}]"
+    elif price > target:
+        cells[width - 1] = f"[{colour}]▶[/{colour}]"
+    else:
+        cells[slot(price)] = f"[{colour}]●[/{colour}]"
+    return "[dim]├[/dim]" + "".join(cells) + "[dim]┤[/dim]"
+
+
 def _effective_stop(row: PositionRow) -> str:
     """The stop actually in force. An arrow marks the bars where the chandelier
     stop has overtaken the initial one — the trade can no longer give it all back."""
@@ -1189,6 +1250,7 @@ def engine_positions_table(
     title: str,
     show_exit: bool = False,
     max_positions: int | None = None,
+    terminal_width: int | None = None,
 ) -> Table:
     """Open trades with live P&L and where the stop currently sits.
 
@@ -1210,6 +1272,12 @@ def engine_positions_table(
     table.add_column("Bars", justify="right")
     table.add_column("P&L", justify="right")
     table.add_column("R", justify="right")
+    # The gauge is the first thing to go when space runs short: it is a second
+    # reading of numbers already in the row, and a truncated table loses data
+    # silently, which is worse than losing decoration.
+    show_gauge = terminal_width is None or terminal_width >= 150
+    if show_gauge:
+        table.add_column("stop → target", justify="center")
     if show_exit:
         table.add_column("Exit", style="dim")
     for row in rows:
@@ -1228,6 +1296,17 @@ def engine_positions_table(
             fmt_signed(position.pnl_at(mark)),
             f"{r:+.2f}R" if r is not None else "—",
         ]
+        if show_gauge:
+            cells.append(
+                r_gauge(
+                    position.entry_price,
+                    mark,
+                    # The stop actually in force, so the gauge shows the risk
+                    # being run now rather than the one signed up for at entry.
+                    max(position.stop_price, row.trail_stop),
+                    position.target_price,
+                )
+            )
         if show_exit:
             cells.append(
                 position.exit_reason or ""
@@ -1616,4 +1695,16 @@ def engine_why_renderables(why: TradeExplanation) -> list[RenderableType]:
     exits.caption = "← marks the stop actually protecting the trade right now"
     exits.caption_justify = "left"
     out.append(exits)
+
+    live = next((e.level for e in why.exits if e.in_force and e.level is not None), None)
+    target = next((e.level for e in why.exits if e.rule == "target"), None)
+    if live is not None and target is not None:
+        gauge = r_gauge(why.entry_price, why.price, live, target, width=31)
+        out.append(
+            Text.from_markup(
+                f"  {fmt_money(live)}  {gauge}  {fmt_money(target)}\n"
+                "  [dim]│ the stop in force, where price sits now, and the target — "
+                "┼ marks your entry[/dim]"
+            )
+        )
     return out
