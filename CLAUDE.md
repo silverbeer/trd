@@ -75,7 +75,8 @@ trd engine init [--account NAME] [--size 1000] [--max 5] [--symbols A,B,...] [--
                                       # monitor-mode trading engine: paper-trades a 10-name universe
                                       # on a simulation account. Needs 'trd sync --full' (200 bars)
 trd engine scan [--paper/--no-paper] [--json]   # one pass: exits first, then best-ranked entries
-trd engine monitor [--interval 60] [--passes N] # scan on a loop; Ctrl-C safe, every pass persisted
+trd engine monitor [--interval 60] [--passes N] # live view on a terminal: book stays still, clock/
+                                      # capacity/activity move. Piped or --ndjson falls back to scrolling
 trd engine positions [--all]          # open trades: entry, stop (↑ = trailing in force), target, R
 trd engine signals [-n 25] [-s KEY]   # every signal fired, taken or passed over, with its reason
 trd engine report                     # per-strategy scorecard: win%, avg win/loss, expectancy in R
