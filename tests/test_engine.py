@@ -1248,6 +1248,25 @@ def test_explain_reports_the_indicator_exit_grace_period(engine, provider, conn)
     assert "armed" in aged.detail and "not armed" not in aged.detail
 
 
+def test_why_pluralises_a_single_bar(engine, provider, conn):
+    """Small, but this is a view built to be read by someone learning — 'held
+    1 bars' undermines the care everywhere else on the screen."""
+    from trd.cli.render import engine_why_renderables
+
+    provider.add_symbol("AAA", price="100")
+    engine.init(symbols=["AAA"], strategies=["breakout"])
+    _open_a_trade(engine, conn, bars_held=1)
+    assert "held 1 bar " in _render(engine_why_renderables(engine.explain("AAA"))[0])
+
+    engine.positions.touch(
+        engine.positions.list_open(engine.account().id)[0][0].id,
+        Decimal("100"),
+        2,
+        date(2026, 7, 30),
+    )
+    assert "held 2 bars" in _render(engine_why_renderables(engine.explain("AAA"))[0])
+
+
 def test_explain_refuses_a_symbol_that_is_not_held(engine, provider):
     provider.add_symbol("AAA", price="100")
     engine.init(symbols=["AAA"], strategies=["breakout"])
