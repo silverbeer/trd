@@ -2083,7 +2083,7 @@ def engine_backtest(
     if as_json:
         console.print_json(result.model_dump_json())
         return
-    for renderable in engine_backtest_renderables(result):
+    for renderable in engine_backtest_renderables(result, width=max(40, console.size.width - 20)):
         console.print(renderable)
 
 

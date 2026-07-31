@@ -601,19 +601,71 @@ def _downsample(values: list[float], width: int) -> list[float]:
     return out
 
 
-def equity_chart(curve: EquityCurve, width: int = 64, height: int = 12) -> Text:
-    """A font-proof ASCII line chart of portfolio value over time."""
-    values = [float(p.value) for p in curve.points]
+def line_chart(
+    values: list[float],
+    start_label: str,
+    end_label: str,
+    width: int = 64,
+    height: int = 12,
+    baseline: float | None = None,
+) -> Text:
+    """A connected line chart of a value series.
+
+    Box-drawing only, matching `trend_change`'s refusal to use block glyphs —
+    they render inconsistently across fonts, and the Rich tables already depend
+    on box-drawing so this adds no new risk.
+
+    Two things the earlier scatter left invisible and this marks explicitly:
+    where the series started, so above and below water is a glance rather than
+    an arithmetic problem, and the deepest trough, which is the number that
+    decides whether a curve was survivable rather than merely profitable.
+    """
+    if not values:
+        return Text("")
     sampled = _downsample(values, width)
     lo, hi = min(sampled), max(sampled)
+    if baseline is not None:
+        lo, hi = min(lo, baseline), max(hi, baseline)
     span = (hi - lo) or 1.0
-    grid = [[" "] * len(sampled) for _ in range(height)]
-    for col, v in enumerate(sampled):
-        level = round((v - lo) / span * (height - 1))
-        grid[height - 1 - level][col] = "*"
-    rising = values[-1] >= values[0]
-    color = "green" if rising else "red"
 
+    def level(v: float) -> int:
+        return round((v - lo) / span * (height - 1))
+
+    grid = [[" "] * len(sampled) for _ in range(height)]
+    if baseline is not None:
+        row = height - 1 - level(baseline)
+        grid[row] = ["┄"] * len(sampled)
+
+    previous: int | None = None
+    for col, v in enumerate(sampled):
+        current = level(v)
+        # Join to the previous point so the eye follows a line rather than
+        # assembling one out of dots.
+        if previous is not None:
+            for between in range(min(previous, current) + 1, max(previous, current)):
+                grid[height - 1 - between][col] = "│"
+        grid[height - 1 - current][col] = "─"
+        previous = current
+
+    # Computed on the FULL series, then mapped to a column: measuring the
+    # downsampled copy would smooth the true trough away and print a different
+    # drawdown from the one the summary reports, for the same curve.
+    peak, worst, trough_at = values[0], 0.0, None
+    for idx, v in enumerate(values):
+        peak = max(peak, v)
+        drop = (v - peak) / peak * 100 if peak else 0.0
+        if drop < worst:
+            worst, trough_at = drop, idx
+    trough_col = (
+        round(trough_at / max(len(values) - 1, 1) * (len(sampled) - 1))
+        if trough_at is not None
+        else None
+    )
+    if trough_col is not None:
+        grid[height - 1 - level(sampled[trough_col])][trough_col] = "▼"
+
+    rising = values[-1] >= values[0]
+    colour = "green" if rising else "red"
     lines: list[str] = []
     for r, row in enumerate(grid):
         if r == 0:
@@ -622,13 +674,31 @@ def equity_chart(curve: EquityCurve, width: int = 64, height: int = 12) -> Text:
             axis = f"{lo:>12,.0f} "
         else:
             axis = " " * 13
-        lines.append(f"[dim]{axis}[/dim][{color}]{''.join(row)}[/{color}]")
-    # x-axis dates
-    left = str(curve.start_date)
-    right = str(curve.end_date)
-    pad = max(len(sampled) - len(left) - len(right), 1)
-    lines.append(f"{' ' * 13}[dim]{left}{' ' * pad}{right}[/dim]")
+        painted = "".join(row).replace("┄", f"[/{colour}][dim]┄[/dim][{colour}]")
+        painted = painted.replace("▼", f"[/{colour}][bold red]▼[/bold red][{colour}]")
+        lines.append(f"[dim]{axis}[/dim][{colour}]{painted}[/{colour}]")
+    pad = max(len(sampled) - len(start_label) - len(end_label), 1)
+    lines.append(f"{' ' * 13}[dim]{start_label}{' ' * pad}{end_label}[/dim]")
+    if trough_col is not None and worst < -0.05:
+        lines.append(
+            f"{' ' * 13}[dim]▼ deepest drawdown {worst:.1f}%"
+            + ("  ┄ starting value" if baseline is not None else "")
+            + "[/dim]"
+        )
     return Text.from_markup("\n".join(lines))
+
+
+def equity_chart(curve: EquityCurve, width: int = 64, height: int = 12) -> Text:
+    """Portfolio value over time, against where it started."""
+    values = [float(p.value) for p in curve.points]
+    return line_chart(
+        values,
+        str(curve.start_date),
+        str(curve.end_date),
+        width=width,
+        height=height,
+        baseline=values[0] if values else None,
+    )
 
 
 def equity_summary_table(curve: EquityCurve) -> Table:
@@ -1398,7 +1468,9 @@ def engine_exits_table(params: dict[str, float] | None = None) -> Table:
     return table
 
 
-def engine_backtest_renderables(result: EngineBacktestResult) -> list[RenderableType]:
+def engine_backtest_renderables(
+    result: EngineBacktestResult, width: int | None = None
+) -> list[RenderableType]:
     """A backtest run: the headline, the same scorecard the live report uses
     (that sameness is the point — one scale for both), and the caveat, which is
     not decoration: the number is an upper bound."""
@@ -1419,6 +1491,20 @@ def engine_backtest_renderables(result: EngineBacktestResult) -> list[Renderable
         + f"  ·  max drawdown {result.max_drawdown_pct:.1f}%"
     )
     out.append(Panel(header, expand=False, border_style="cyan"))
+    if result.equity:
+        # The shape matters as much as the endpoint: two runs can finish at the
+        # same number, one climbing steadily and the other lurching through
+        # drawdowns nobody would have held through.
+        out.append(
+            line_chart(
+                [float(p.value) for p in result.equity],
+                str(result.start),
+                str(result.end),
+                width=width or 64,
+                baseline=float(result.start_value),
+            )
+        )
+        out.append(Text(""))
     if result.stats:
         out.append(engine_report_table(result.stats))
     else:
