@@ -9,9 +9,10 @@ from trd.cli.render import r_gauge
 ENTRY, STOP, TARGET = Decimal("100"), Decimal("90"), Decimal("120")
 
 
-def _plain(markup: str) -> str:
+def _plain(renderable: object) -> str:
+    """Render markup or any Rich renderable to plain text, styles stripped."""
     console = Console(width=200, no_color=True, record=True)
-    console.print(markup, end="")
+    console.print(renderable, end="")  # type: ignore[arg-type]
     return console.export_text(styles=False).rstrip("\n")
 
 
@@ -111,3 +112,84 @@ def test_the_gauge_is_dropped_before_the_table_truncates():
     assert "stop → target" in headers(200)
     assert "stop → target" not in headers(95)
     assert "R" in headers(95)  # the data survives
+
+
+# ------------------------------------------------------------- monitor view
+
+
+def _row(symbol: str = "AAA", price: str = "110"):
+    from datetime import datetime
+
+    from trd.models import EnginePosition, Instrument, InstrumentType, PositionRow
+
+    return PositionRow(
+        position=EnginePosition(
+            id=1,
+            account_id=1,
+            instrument_id=1,
+            strategy="pullback",
+            opened_at=datetime(2026, 7, 30, 9, 30),
+            entry_price=ENTRY,
+            quantity=Decimal("2"),
+            stop_price=STOP,
+            target_price=TARGET,
+            atr_at_entry=Decimal("5"),
+            trail_high=ENTRY,
+        ),
+        instrument=Instrument(id=1, symbol=symbol, name=symbol, type=InstrumentType.STOCK),
+        price=Decimal(price),
+    )
+
+
+def _monitor(rows, next_in=47, activity=None, day_mode=False):
+    from datetime import datetime
+
+    from trd.cli.render import engine_monitor_view
+
+    return _plain(
+        engine_monitor_view(
+            rows,
+            5,
+            12,
+            datetime(2026, 7, 31, 15, 42, 7),
+            next_in,
+            activity if activity is not None else [],
+            "0.1.0+abc",
+            "engine-sim",
+            day_mode,
+            170,
+        )
+    )
+
+
+def test_monitor_shows_the_state_that_changes_between_scans():
+    view = _monitor([_row()])
+    assert "scan #12" in view
+    assert "next in 47s" in view
+    assert "1 of 5 open" in view
+    assert "room for 4" in view
+    assert "0.1.0+abc" in view  # provenance, per SB-444
+
+
+def test_monitor_says_when_the_book_is_full():
+    assert "full" in _monitor([_row(s) for s in ("A", "B", "C", "D", "E")])
+
+
+def test_monitor_names_a_quiet_scan_rather_than_leaving_a_blank():
+    """Quiet is the normal state. An empty panel reads as something broken."""
+    assert "most scans are quiet" in _monitor([_row()])
+
+
+def test_monitor_shows_activity_newest_first():
+    view = _monitor([_row()], activity=["15:55:01|SELL GOOGL stop", "09:30:27|BUY MU pullback"])
+    assert view.index("SELL GOOGL") < view.index("BUY MU")
+    assert "most scans are quiet" not in view
+
+
+def test_monitor_distinguishes_a_day_engine():
+    assert " day " in _monitor([_row()], day_mode=True)
+    assert " swing " in _monitor([_row()], day_mode=False)
+
+
+def test_monitor_handles_a_flat_book():
+    assert "flat — no open positions" in _monitor([])
