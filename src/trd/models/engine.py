@@ -197,6 +197,42 @@ class EngineStatus(BaseModel):
         return max(0, self.max_positions - self.open_positions)
 
 
+class ExitOutlook(BaseModel):
+    """One exit rule as it currently stands against a live position."""
+
+    rule: str
+    name: str
+    level: Decimal | None = None  # the price that would trigger it, where there is one
+    detail: str  # what it is waiting for, in plain English
+    in_force: bool = False  # the stop actually protecting the trade right now
+
+
+class TradeExplanation(BaseModel):
+    """Why a trade was taken, what the words mean, and where it gets out.
+
+    The engine's design rule is that a rule you cannot explain does not ship.
+    This extends that to the trades themselves: every entry already records the
+    numbers that fired it, and this joins them to the vocabulary needed to read
+    them.
+    """
+
+    symbol: str
+    strategy: str
+    strategy_name: str
+    strategy_description: str
+    opened_at: datetime
+    reason: str  # the recorded signal reason, with its numbers
+    score: float | None = None
+    entry_price: Decimal
+    quantity: Decimal
+    price: Decimal | None = None
+    r_multiple: Decimal | None = None
+    bars_held: int
+    risk_per_share: Decimal
+    glossary: list[tuple[str, str, str]] = []  # (key, term, definition)
+    exits: list[ExitOutlook] = []
+
+
 class StrategyStat(BaseModel):
     """Closed-trade scorecard for one strategy — the whole point of the dry run."""
 

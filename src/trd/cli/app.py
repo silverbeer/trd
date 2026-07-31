@@ -31,6 +31,7 @@ from trd.cli.render import (
     engine_signals_table,
     engine_status_renderables,
     engine_strategies_table,
+    engine_why_renderables,
     equity_curve_renderables,
     equity_daily_table,
     exit_table,
@@ -1872,6 +1873,30 @@ def engine_runs(
         console.print("No scans recorded yet. Run [bold]trd engine scan[/bold].")
         return
     console.print(engine_runs_table(runs))
+
+
+@engine_app.command("why")
+def engine_why(
+    symbol: Annotated[str, typer.Argument(help="A symbol you currently hold.")],
+    as_json: JsonOpt = False,
+) -> None:
+    """Why this trade was taken, what the indicators mean, and how it ends.
+
+    The reason is the one recorded when the signal fired, so it shows what the
+    rule actually saw that day rather than what it would say about today.
+    """
+    _use_json(as_json)
+    service = _engine_service()
+    try:
+        why = service.explain(symbol)
+    except TrdError as exc:
+        _fail(exc)
+        return
+    if as_json:
+        _emit_json(why)
+        return
+    for renderable in engine_why_renderables(why):
+        console.print(renderable)
 
 
 @engine_app.command("status")
