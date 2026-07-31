@@ -1,0 +1,40 @@
+Copyright (c) 2026 silverbeer. All rights reserved.
+
+PROPRIETARY SOFTWARE — NO LICENSE GRANTED
+
+This source code is made available for reference and evaluation only.
+Publishing it does not place it in the public domain and does not grant any
+licence to it.
+
+You MAY: read this source code, and reference it for personal study.
+
+You MAY NOT, without the prior written permission of the copyright holder:
+use, copy, modify, adapt, merge, publish, distribute, sublicense, sell, or
+create derivative works from this software, in whole or in part, whether for
+commercial or non-commercial purposes.
+
+No trademark, patent, or other right is granted by implication or estoppel.
+
+NO WARRANTY
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+COPYRIGHT HOLDER BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER
+IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+NOT FINANCIAL ADVICE
+
+This software analyses market data, simulates trading strategies, and records
+transactions. Nothing it produces is financial, investment, tax, or legal
+advice, and no output should be relied upon as a recommendation to buy or sell
+any security.
+
+Backtested and simulated results are not evidence of future performance. They
+are computed against retroactively adjusted historical prices, over a universe
+selected with hindsight, and without slippage, spread, fees, or the effect of
+the orders themselves on the market. Every such figure is an upper bound.
+
+Trading involves substantial risk of loss. The copyright holder accepts no
+responsibility for any financial loss arising from use of this software.

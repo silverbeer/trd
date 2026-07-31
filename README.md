@@ -175,3 +175,11 @@ uv run ty check
 ```
 
 Changes go through pull requests; CI (ruff + ty + pytest) must pass before merge.
+
+## License
+
+Proprietary — all rights reserved. See [LICENSE](LICENSE).
+
+Published for reference, not for reuse: reading is welcome, using is not
+licensed. Nothing here is financial advice, and simulated results are an upper
+bound rather than a forecast — the reasons are in the licence.
