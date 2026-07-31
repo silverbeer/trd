@@ -56,9 +56,21 @@ def bucket_start(moment: datetime, minutes: int) -> datetime:
 class BarSource:
     """The series an engine reasons over, at its configured timeframe."""
 
-    def __init__(self, prices: PriceRepo, timeframe: str) -> None:
-        self.prices = prices
+    def __init__(self, prices: PriceRepo | None, timeframe: str) -> None:
+        self._prices = prices
         self.timeframe = validate_timeframe(timeframe)
+
+    @classmethod
+    def stamper(cls, timeframe: str) -> "BarSource":
+        """A source for the bar math alone, with no database behind it — what the
+        backtest needs, since it is handed its series and never loads one."""
+        return cls(None, timeframe)
+
+    @property
+    def prices(self) -> PriceRepo:
+        if self._prices is None:
+            raise TrdError("This BarSource has no database — it can only stamp bars.")
+        return self._prices
 
     @property
     def is_intraday(self) -> bool:

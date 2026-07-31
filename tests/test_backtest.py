@@ -7,7 +7,9 @@ day-mode refusal — and above all lookahead, the failure mode that looks like
 success.
 """
 
+from collections.abc import Mapping, Sequence
 from datetime import date, timedelta
+from datetime import time as dtime
 from decimal import Decimal
 from typing import Any
 
@@ -16,7 +18,7 @@ import pytest
 
 from trd.engine import DEFAULT_EXIT_PARAMS
 from trd.errors import TrdError
-from trd.models import DailyBar, StrategyStat
+from trd.models import Bar, DailyBar, StrategyStat
 from trd.repos import InstrumentRepo, PriceRepo
 from trd.services import BacktestService, EngineService
 from trd.services.backtest import BacktestResult, FillMode, simulate
@@ -50,7 +52,7 @@ def breakout_series() -> list[DailyBar]:
 
 
 def run(
-    bars_by_symbol: dict[str, list[DailyBar]],
+    bars_by_symbol: Mapping[str, Sequence[Bar]],
     *,
     strategies: list[str] | None = None,
     position_size: Decimal = Decimal("1000"),
@@ -278,7 +280,9 @@ def test_earnings_blackout_blocks_the_entry():
 # ------------------------------------------------------------------ refusals
 
 
-def test_day_mode_is_refused():
+def test_day_mode_is_refused_on_daily_bars():
+    """Still refused where it is meaningless: daily bars carry no clock, so a
+    session-close engine would backtest as a swing engine or take nothing."""
     params = dict(DEFAULT_EXIT_PARAMS, flat_at_minute=1555.0)
     with pytest.raises(TrdError, match="intraday clock"):
         run({"AAA": breakout_series()}, exit_params=params)
@@ -426,3 +430,102 @@ def test_service_symbols_override_requires_known_symbols(
     EngineService(conn, provider).init(symbols=["AAPL"], strategies=["breakout"])
     with pytest.raises(TrdError, match="Unknown symbol"):
         BacktestService(conn).run(symbols=["ZZZT"])
+
+
+# ------------------------------------------------------------------ day mode
+
+
+def _intraday_series(n: int = 800):
+    """A rising 5-minute series long enough to clear the 200-bar warmup and still
+    span several sessions, so the bell is crossed more than once."""
+    from tests.test_engine import make_intraday_bars, uptrend
+
+    return make_intraday_bars(uptrend(n=n))
+
+
+def _day_params(**overrides):
+    return dict(DEFAULT_EXIT_PARAMS, flat_at_minute=1555.0, **overrides)
+
+
+def test_a_day_mode_backtest_runs_on_intraday_bars():
+    """The refusal in services/backtest.py existed because daily bars have no
+    clock. On a 5-minute series `now` is the bar's own instant, so the rules run
+    exactly as they do live."""
+    result = run(
+        {"AAA": _intraday_series()},
+        strategies=["momentum"],
+        exit_params=_day_params(),
+        timeframe="5m",
+    )
+    assert result.trades, "a day-mode backtest that takes no trades proves nothing"
+
+
+def test_day_mode_flattens_at_the_bell():
+    """The point of day mode: nothing is carried overnight."""
+    result = run(
+        {"AAA": _intraday_series()},
+        strategies=["momentum"],
+        exit_params=_day_params(),
+        timeframe="5m",
+    )
+    assert "session_close" in {t.rule for t in result.trades}
+    for trade in result.trades:
+        assert trade.entry_date == trade.exit_date  # in and out inside one session
+
+
+def test_day_mode_takes_no_entry_inside_the_cutoff():
+    """Same rule the live scanner runs: a fill at 15:50 is flattened at 15:55,
+    paying the spread twice for five minutes of exposure."""
+    result = run(
+        {"AAA": _intraday_series()},
+        strategies=["momentum"],
+        exit_params=_day_params(),
+        timeframe="5m",
+    )
+    assert result.trades
+    # Flat at 15:55 with a 30-minute cutoff — nothing opens at or after 15:25.
+    assert all(trade.entry_at.time() < dtime(15, 25) for trade in result.trades)
+
+
+def test_day_mode_trades_carry_their_instant():
+    """Two trades in one name on one session are only distinguishable by clock."""
+    result = run(
+        {"AAA": _intraday_series()},
+        strategies=["momentum"],
+        exit_params=_day_params(),
+        timeframe="5m",
+    )
+    trade = result.trades[0]
+    assert trade.entry_at.time() != dtime(0, 0)
+    assert trade.exit_at > trade.entry_at
+    assert trade.entry_date == trade.entry_at.date()  # the old field still reads
+
+
+def test_equity_curve_has_one_point_per_session():
+    """An intraday run holds thousands of bars; the curve is still a daily line."""
+    series = _intraday_series()
+    result = run(
+        {"AAA": series},
+        strategies=["momentum"],
+        exit_params=_day_params(),
+        timeframe="5m",
+    )
+    sessions = {bar.ts.date() for bar in series}
+    assert len(result.equity) <= len(sessions)
+    assert len({point.date for point in result.equity}) == len(result.equity)
+
+
+def test_trade_json_keeps_both_the_date_and_the_instant():
+    """entry_date/exit_date are part of the --json contract. As plain properties
+    they would vanish from the document without a single test failing."""
+    import json
+
+    result = run(
+        {"AAA": _intraday_series()},
+        strategies=["momentum"],
+        exit_params=_day_params(),
+        timeframe="5m",
+    )
+    trade = json.loads(result.model_dump_json())["trades"][0]
+    assert trade["entry_date"] == trade["entry_at"][:10]
+    assert trade["exit_date"] == trade["exit_at"][:10]
