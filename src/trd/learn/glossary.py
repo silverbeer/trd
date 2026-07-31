@@ -47,7 +47,7 @@ _ENTRIES: list[GlossaryEntry] = [
             "Unrealized until you sell."
         ),
         formula="P&L = market value - cost basis\nP&L% = P&L / cost basis x 100",
-        example="Paid $2,000 for QQQ, now worth $2,600 -> P&L = +$600 (+30%).",
+        example="Paid $2,000 for an ETF, now worth $2,600 -> P&L = +$600 (+30%).",
         related=["cost-basis", "unrealized", "xirr"],
         used_in=["trd portfolio", "trd lots", "trd dca show"],
     ),
@@ -60,7 +60,7 @@ _ENTRIES: list[GlossaryEntry] = [
             "change. Realized gains lock in when you sell, and only realized gains are taxed."
         ),
         example=(
-            "Your ACME position is down $4,000 unrealized: a real loss only if you sell at this price."
+            "A position down $4,000 unrealized is a real loss only if you sell at this price."
         ),
         related=["pl", "cost-basis"],
         used_in=["trd portfolio"],
@@ -104,7 +104,7 @@ _ENTRIES: list[GlossaryEntry] = [
         category=Category.BASICS,
         definition="Cost basis divided by shares held — the per-share break-even before fees.",
         formula="avg cost = cost basis / quantity held",
-        example="$1,420 basis / 40 QQQ = $35.50 per share.",
+        example="$1,420 basis / 40 shares = $35.50 per share.",
         related=["cost-basis", "fifo"],
         used_in=["trd portfolio", "trd lots", "trd dca show"],
     ),
@@ -139,7 +139,7 @@ _ENTRIES: list[GlossaryEntry] = [
             "Automatically using each dividend to buy more shares (often fractions). Each "
             "reinvestment is a new lot — the tiny quarterly lots in your Fidelity history."
         ),
-        example="A holding pays a $15 dividend -> broker buys 0.217 more shares that day -> new lot.",
+        example="A holding pays a $15 dividend -> the broker buys 0.217 more shares -> a new lot.",
         related=["dividend", "fifo"],
         used_in=["trd lots"],
     ),
@@ -362,19 +362,19 @@ _ENTRIES: list[GlossaryEntry] = [
             "income at that day's price — which is why cost basis = market value at vest."
         ),
         example=(
-            "Your ACME RSUs: each vest date is a lot, basis = vest-day price "
+            "Each vest date is its own lot, with basis = the vest-day price "
             "(already taxed as income)."
         ),
         related=["espp", "cost-basis"],
-        used_in=["trd lots (stock plan)"],
+        used_in=["trd lots"],
     ),
     GlossaryEntry(
         key="espp",
         term="ESPP (employee stock purchase plan)",
         category=Category.ACCOUNTS_TAX,
         definition=(
-            "Buying employer stock through payroll, usually at a discount. A long-held ESPP position "
-            "became the positions of several spun-off companies."
+            "Buying employer stock through payroll, usually at a discount. Long-held ESPP "
+            "shares often survive spinoffs, which split one position into several."
         ),
         related=["rsu", "fifo"],
         used_in=["trd lots"],
@@ -442,7 +442,7 @@ _ENTRIES: list[GlossaryEntry] = [
             "opposite. trd flags a top holding at or above 25%."
         ),
         formula="largest weight = biggest holding value / total portfolio value x 100",
-        example="ACME is 54.5% of the portfolio -> a concentrated single-stock bet.",
+        example="One holding at 54.5% of the portfolio -> a concentrated single-stock bet.",
         related=["allocation", "drift", "rebalancing"],
         used_in=["trd dashboard --full"],
     ),
