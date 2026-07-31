@@ -17,7 +17,9 @@ COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
 WORKDIR /app
 
 # Dependencies first so a source-only change doesn't re-resolve the world.
-COPY pyproject.toml uv.lock README.md ./
+# LICENSE is not optional here: pyproject declares `license = { file = "LICENSE" }`,
+# so hatchling fails metadata generation without it and the image cannot build.
+COPY pyproject.toml uv.lock README.md LICENSE ./
 RUN uv export --no-dev --frozen --no-hashes > requirements.txt && \
     pip install --no-cache-dir -r requirements.txt
 
