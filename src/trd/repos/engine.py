@@ -236,6 +236,13 @@ class EngineSignalRepo:
         assert row is not None
         return _row_to_signal(row)
 
+    def by_id(self, signal_id: int) -> EngineSignal | None:
+        """The signal a position was opened from — the recorded 'why'."""
+        row = self.conn.execute(
+            f"SELECT {_SIGNAL_COLS} FROM engine_signal WHERE id = ?", [signal_id]
+        ).fetchone()
+        return _row_to_signal(row) if row else None
+
     def mark_acted(self, signal_id: int) -> None:
         self.conn.execute("UPDATE engine_signal SET acted = TRUE WHERE id = ?", [signal_id])
 

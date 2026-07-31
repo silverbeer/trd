@@ -25,11 +25,13 @@ from trd.models.engine import (
     EngineRun,
     EngineSignal,
     EngineStatus,
+    ExitOutlook,
     PositionRow,
     PositionStatus,
     SignalRow,
     SizingMode,
     StrategyStat,
+    TradeExplanation,
 )
 
 __all__ = [
@@ -45,6 +47,7 @@ __all__ = [
     "EngineSignal",
     "EngineStatus",
     "ExitCheckRow",
+    "ExitOutlook",
     "ExitStatus",
     "ExitTrigger",
     "IndicatorConfig",
@@ -60,6 +63,7 @@ __all__ = [
     "SignalRow",
     "SizingMode",
     "StrategyStat",
+    "TradeExplanation",
     "Transaction",
     "Watchlist",
 ]

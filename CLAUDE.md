@@ -80,6 +80,8 @@ trd engine positions [--all]          # open trades: entry, stop (↑ = trailing
 trd engine signals [-n 25] [-s KEY]   # every signal fired, taken or passed over, with its reason
 trd engine report                     # per-strategy scorecard: win%, avg win/loss, expectancy in R
 trd engine rules                      # what each entry strategy looks for + the 5 exit rules
+trd engine why SYMBOL                 # why THIS trade was taken: the numbers the rule saw at entry,
+                                      # what each indicator means, and which exit is in force
 trd engine runs [-n N] [--today]      # scan history + interval between passes; ⚠ marks missing scans
 trd engine status [--json]            # what this engine is + whether it's healthy: build, DB, rule set,
                                       # capacity, bar depth, last scan. No network — answers when yfinance doesn't
