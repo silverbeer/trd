@@ -14,6 +14,7 @@ from trd.models import (
     EarningsDate,
     InstrumentInfo,
     InstrumentType,
+    IntradayBar,
     Quote,
 )
 from trd.repos import AccountRepo
@@ -27,6 +28,7 @@ class FakeProvider:
         self.infos: dict[str, InstrumentInfo] = {}
         self.quotes: dict[str, Quote] = {}
         self.bars: dict[str, list[DailyBar]] = {}
+        self.intraday: dict[tuple[str, str], list[IntradayBar]] = {}
         self.earnings: dict[str, list[EarningsDate]] = {}
 
     def add_symbol(
@@ -67,6 +69,15 @@ class FakeProvider:
         )
         self.bars[symbol] = bars
 
+    def add_intraday(self, symbol: str, interval: str, bars: list[IntradayBar]) -> None:
+        """Register a symbol (info only) plus an intraday series at one interval."""
+        symbol = symbol.upper()
+        self.infos.setdefault(
+            symbol,
+            InstrumentInfo(symbol=symbol, name=symbol, type=InstrumentType.STOCK, currency="USD"),
+        )
+        self.intraday[(symbol, interval)] = bars
+
     def set_earnings(self, symbol: str, dates: list[EarningsDate]) -> None:
         self.earnings[symbol.upper()] = dates
 
@@ -89,6 +100,14 @@ class FakeProvider:
         if symbol.upper() not in self.infos:
             raise ProviderError(f"Symbol {symbol} not found")
         return [b for b in self.bars.get(symbol.upper(), []) if start <= b.date < end]
+
+    def get_intraday_bars(
+        self, symbol: str, interval: str, start: date, end: date
+    ) -> list[IntradayBar]:
+        if symbol.upper() not in self.infos:
+            raise ProviderError(f"Symbol {symbol} not found")
+        series = self.intraday.get((symbol.upper(), interval), [])
+        return [b for b in series if start <= b.ts.date() < end]
 
     def get_earnings_dates(self, symbol: str) -> list[EarningsDate]:
         return self.earnings.get(symbol.upper(), [])

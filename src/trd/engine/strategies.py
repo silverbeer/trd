@@ -10,8 +10,10 @@ bar, so the engine knows which two to take when six names qualify and it has roo
 for two. Read the `reason`, not the number.
 """
 
+from collections.abc import Sequence
+
 from trd.engine.base import Strategy, StrategySignal, clamp01, indicator, last, prior, register
-from trd.models import DailyBar
+from trd.models import Bar
 
 
 @register
@@ -26,7 +28,7 @@ class Momentum(Strategy):
     )
     min_bars = 200
 
-    def evaluate(self, bars: list[DailyBar]) -> StrategySignal | None:
+    def evaluate(self, bars: Sequence[Bar]) -> StrategySignal | None:
         price = float(bars[-1].close)
         sma50 = last(indicator("sma", bars, period=50)["value"])
         sma200 = last(indicator("sma", bars, period=200)["value"])
@@ -73,7 +75,7 @@ class Breakout(Strategy):
     )
     min_bars = 60
 
-    def evaluate(self, bars: list[DailyBar]) -> StrategySignal | None:
+    def evaluate(self, bars: Sequence[Bar]) -> StrategySignal | None:
         if len(bars) < 22:
             return None
         price = float(bars[-1].close)
@@ -115,7 +117,7 @@ class Pullback(Strategy):
     )
     min_bars = 200
 
-    def evaluate(self, bars: list[DailyBar]) -> StrategySignal | None:
+    def evaluate(self, bars: Sequence[Bar]) -> StrategySignal | None:
         price = float(bars[-1].close)
         sma200 = last(indicator("sma", bars, period=200)["value"])
         rsi_series = indicator("rsi", bars, period=14)["value"]
@@ -159,7 +161,7 @@ class MacdCross(Strategy):
     )
     min_bars = 200
 
-    def evaluate(self, bars: list[DailyBar]) -> StrategySignal | None:
+    def evaluate(self, bars: Sequence[Bar]) -> StrategySignal | None:
         price = float(bars[-1].close)
         sma200 = last(indicator("sma", bars, period=200)["value"])
         hist_series = indicator("macd", bars, fast=12, slow=26, signal=9)["hist"]

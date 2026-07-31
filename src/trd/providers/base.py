@@ -2,7 +2,7 @@ from collections.abc import Sequence
 from datetime import date
 from typing import Protocol
 
-from trd.models import DailyBar, EarningsDate, InstrumentInfo, Quote
+from trd.models import DailyBar, EarningsDate, InstrumentInfo, IntradayBar, Quote
 
 
 class MarketDataProvider(Protocol):
@@ -26,6 +26,18 @@ class MarketDataProvider(Protocol):
 
     def get_daily_bars(self, symbol: str, start: date, end: date) -> list[DailyBar]:
         """Daily OHLCV history, inclusive of start, exclusive of end."""
+        ...
+
+    def get_intraday_bars(
+        self, symbol: str, interval: str, start: date, end: date
+    ) -> list[IntradayBar]:
+        """Intraday OHLCV, inclusive of start, exclusive of end.
+
+        Providers cap how far back intraday history goes — yfinance serves roughly
+        60 days of 5-minute bars — so a caller asking for more gets what exists,
+        not an error. Returns empty for a symbol with no intraday series rather
+        than raising, the same way earnings does for an ETF.
+        """
         ...
 
     def get_earnings_dates(self, symbol: str) -> list[EarningsDate]:

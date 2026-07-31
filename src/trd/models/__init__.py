@@ -1,6 +1,7 @@
 from trd.models.core import (
     Account,
     AccountType,
+    Bar,
     BoardRow,
     DailyBar,
     EarningsDate,
@@ -12,6 +13,7 @@ from trd.models.core import (
     Instrument,
     InstrumentInfo,
     InstrumentType,
+    IntradayBar,
     LotPosition,
     Position,
     Quote,
@@ -37,6 +39,7 @@ from trd.models.engine import (
 __all__ = [
     "Account",
     "AccountType",
+    "Bar",
     "BoardRow",
     "DailyBar",
     "EarningsDate",
@@ -54,6 +57,7 @@ __all__ = [
     "Instrument",
     "InstrumentInfo",
     "InstrumentType",
+    "IntradayBar",
     "LotPosition",
     "Position",
     "PositionRow",

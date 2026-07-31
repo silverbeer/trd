@@ -1,8 +1,9 @@
+from collections.abc import Sequence
 from typing import Any
 
 from trd.indicators import math as m
 from trd.indicators.base import Category, Indicator, closes, latest, register
-from trd.models import DailyBar
+from trd.models import Bar
 
 
 @register
@@ -17,10 +18,10 @@ class SMA(Indicator):
         "below a falling SMA = downtrend. The 50- and 200-day are the classics."
     )
 
-    def compute(self, bars: list[DailyBar], **params: Any) -> dict[str, list[float | None]]:
+    def compute(self, bars: Sequence[Bar], **params: Any) -> dict[str, list[float | None]]:
         return {"value": m.sma(closes(bars), params["period"])}
 
-    def interpret(self, series: dict[str, list[float | None]], bars: list[DailyBar]) -> str:
+    def interpret(self, series: dict[str, list[float | None]], bars: Sequence[Bar]) -> str:
         value = latest(series["value"])
         if value is None:
             return "not enough history yet"
@@ -46,10 +47,10 @@ class EMA(Indicator):
         "Short EMAs (8/21) are popular for swing-trade timing."
     )
 
-    def compute(self, bars: list[DailyBar], **params: Any) -> dict[str, list[float | None]]:
+    def compute(self, bars: Sequence[Bar], **params: Any) -> dict[str, list[float | None]]:
         return {"value": m.ema(closes(bars), params["period"])}
 
-    def interpret(self, series: dict[str, list[float | None]], bars: list[DailyBar]) -> str:
+    def interpret(self, series: dict[str, list[float | None]], bars: Sequence[Bar]) -> str:
         value = latest(series["value"])
         if value is None:
             return "not enough history yet"
@@ -73,10 +74,10 @@ class RSI(Indicator):
         "below 30 = oversold (selloff stretched). Divergence from price is the pro signal."
     )
 
-    def compute(self, bars: list[DailyBar], **params: Any) -> dict[str, list[float | None]]:
+    def compute(self, bars: Sequence[Bar], **params: Any) -> dict[str, list[float | None]]:
         return {"value": m.rsi(closes(bars), params["period"])}
 
-    def interpret(self, series: dict[str, list[float | None]], bars: list[DailyBar]) -> str:
+    def interpret(self, series: dict[str, list[float | None]], bars: Sequence[Bar]) -> str:
         value = latest(series["value"])
         if value is None:
             return "not enough history yet"
@@ -102,11 +103,11 @@ class MACD(Indicator):
         "growing = momentum building; crossing below the signal line = momentum fading."
     )
 
-    def compute(self, bars: list[DailyBar], **params: Any) -> dict[str, list[float | None]]:
+    def compute(self, bars: Sequence[Bar], **params: Any) -> dict[str, list[float | None]]:
         line, sig, hist = m.macd(closes(bars), params["fast"], params["slow"], params["signal"])
         return {"macd": line, "signal": sig, "hist": hist}
 
-    def interpret(self, series: dict[str, list[float | None]], bars: list[DailyBar]) -> str:
+    def interpret(self, series: dict[str, list[float | None]], bars: Sequence[Bar]) -> str:
         hist = series["hist"]
         value = latest(hist)
         if value is None:
@@ -134,11 +135,11 @@ class Bollinger(Indicator):
         "strong but stretched; tight bands (squeeze) often precede a big move."
     )
 
-    def compute(self, bars: list[DailyBar], **params: Any) -> dict[str, list[float | None]]:
+    def compute(self, bars: Sequence[Bar], **params: Any) -> dict[str, list[float | None]]:
         upper, mid, lower = m.bollinger(closes(bars), params["period"], params["mult"])
         return {"upper": upper, "middle": mid, "lower": lower}
 
-    def interpret(self, series: dict[str, list[float | None]], bars: list[DailyBar]) -> str:
+    def interpret(self, series: dict[str, list[float | None]], bars: Sequence[Bar]) -> str:
         upper, lower = latest(series["upper"]), latest(series["lower"])
         if upper is None or lower is None:
             return "not enough history yet"
@@ -169,12 +170,12 @@ class ATR(Indicator):
         "risk per share is roughly 1-2x ATR. High ATR% = volatile name, size down."
     )
 
-    def compute(self, bars: list[DailyBar], **params: Any) -> dict[str, list[float | None]]:
+    def compute(self, bars: Sequence[Bar], **params: Any) -> dict[str, list[float | None]]:
         highs = [float(b.high) for b in bars]
         lows = [float(b.low) for b in bars]
         return {"value": m.atr(highs, lows, closes(bars), params["period"])}
 
-    def interpret(self, series: dict[str, list[float | None]], bars: list[DailyBar]) -> str:
+    def interpret(self, series: dict[str, list[float | None]], bars: Sequence[Bar]) -> str:
         value = latest(series["value"])
         if value is None:
             return "not enough history yet"
@@ -200,7 +201,7 @@ class Range52w(Indicator):
     )
     min_bars = 30
 
-    def compute(self, bars: list[DailyBar], **params: Any) -> dict[str, list[float | None]]:
+    def compute(self, bars: Sequence[Bar], **params: Any) -> dict[str, list[float | None]]:
         window = bars[-252:]
         high = max(float(b.high) for b in window)
         low = min(float(b.low) for b in window)
@@ -209,7 +210,7 @@ class Range52w(Indicator):
         pad: list[float | None] = [None] * (len(bars) - 1)
         return {"high": [*pad, high], "low": [*pad, low], "pct": [*pad, pct]}
 
-    def interpret(self, series: dict[str, list[float | None]], bars: list[DailyBar]) -> str:
+    def interpret(self, series: dict[str, list[float | None]], bars: Sequence[Bar]) -> str:
         pct = latest(series["pct"])
         if pct is None:
             return "not enough history yet"
@@ -232,7 +233,7 @@ class VolumeRatio(Indicator):
         "trustworthy; moves on thin volume often reverse. Volume confirms price."
     )
 
-    def compute(self, bars: list[DailyBar], **params: Any) -> dict[str, list[float | None]]:
+    def compute(self, bars: Sequence[Bar], **params: Any) -> dict[str, list[float | None]]:
         period = params["period"]
         vols = [float(b.volume) if b.volume else None for b in bars]
         out: list[float | None] = [None] * len(bars)
@@ -243,7 +244,7 @@ class VolumeRatio(Indicator):
                 out[i] = v / (sum(window) / len(window))
         return {"ratio": out}
 
-    def interpret(self, series: dict[str, list[float | None]], bars: list[DailyBar]) -> str:
+    def interpret(self, series: dict[str, list[float | None]], bars: Sequence[Bar]) -> str:
         value = latest(series["ratio"])
         if value is None:
             return "no volume data"

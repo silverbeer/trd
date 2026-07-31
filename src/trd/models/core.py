@@ -1,6 +1,7 @@
 from datetime import date, datetime
 from decimal import Decimal
 from enum import StrEnum
+from typing import Protocol
 
 from pydantic import BaseModel
 
@@ -233,6 +234,28 @@ class BoardRow(BaseModel):
     owned: bool = False  # do you hold a net position in this symbol?
 
 
+class Bar(Protocol):
+    """The shape indicators and rules actually read: OHLCV, no calendar.
+
+    Daily and intraday series differ only in how a bar is stamped — `DailyBar`
+    carries a date, `IntradayBar` a timestamp — and no indicator or strategy ever
+    looks at the stamp. Typing the math on the shape is what lets a 5-minute
+    engine run the same indicator registry the daily panel runs, instead of a
+    parallel copy of it that can drift.
+    """
+
+    @property
+    def open(self) -> Decimal: ...
+    @property
+    def high(self) -> Decimal: ...
+    @property
+    def low(self) -> Decimal: ...
+    @property
+    def close(self) -> Decimal: ...
+    @property
+    def volume(self) -> int | None: ...
+
+
 class DailyBar(BaseModel):
     date: date
     open: Decimal
@@ -241,6 +264,23 @@ class DailyBar(BaseModel):
     close: Decimal
     volume: int | None = None
     adj_close: Decimal | None = None  # split/dividend-adjusted; analytics prefer it
+
+
+class IntradayBar(BaseModel):
+    """One bar of an intraday series. `ts` is the bar's opening instant in
+    exchange-local time, matching how the provider stamps it.
+
+    No `adj_close`: intraday history is short enough (~60 days from yfinance)
+    that splits and dividends inside the window are the exception, and the engine
+    trades raw prices, not adjusted ones.
+    """
+
+    ts: datetime
+    open: Decimal
+    high: Decimal
+    low: Decimal
+    close: Decimal
+    volume: int | None = None
 
 
 class Position(BaseModel):
