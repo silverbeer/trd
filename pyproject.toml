@@ -1,6 +1,7 @@
 [project]
 name = "trd"
 version = "0.1.0"
+license = { file = "LICENSE" }
 description = "Local-first investment tracker: portfolio, watchlists, indicators, simulation"
 readme = "README.md"
 requires-python = ">=3.13"
