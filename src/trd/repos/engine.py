@@ -20,11 +20,9 @@ DEFAULT_EARNINGS_BLACKOUT_DAYS = 3
 
 _CONFIG_COLS = (
     "id, account_id, watchlist, position_size, max_positions, strategies, exit_params, "
-    "earnings_blackout_days, sizing_mode"
+    "earnings_blackout_days, sizing_mode, timeframe"
 )
-_SIGNAL_COLS = (
-    "id, run_id, instrument_id, strategy, bar_date, fired_at, price, score, reason, acted"
-)
+_SIGNAL_COLS = "id, run_id, instrument_id, strategy, bar_ts, fired_at, price, score, reason, acted"
 _POSITION_COLS = (
     "id, account_id, instrument_id, signal_id, strategy, opened_at, entry_price, quantity, "
     "stop_price, target_price, atr_at_entry, trail_high, bars_held, last_bar_date, status, "
@@ -48,6 +46,9 @@ def _row_to_config(row: tuple) -> EngineConfig:
         # Nullable for the same reason: a row written before migration 013 reads
         # NULL and must keep the behaviour it was created with.
         sizing_mode=SizingMode(row[8]) if row[8] is not None else SizingMode.EXPOSURE,
+        # Nullable for the same reason again: an engine created before migration
+        # 015 has always run on daily bars, and must keep doing so.
+        timeframe=row[9] if row[9] is not None else "1d",
     )
 
 
@@ -57,7 +58,7 @@ def _row_to_signal(row: tuple) -> EngineSignal:
         run_id=row[1],
         instrument_id=row[2],
         strategy=row[3],
-        bar_date=row[4],
+        bar_ts=row[4],
         fired_at=row[5],
         price=row[6],
         score=row[7],
@@ -123,14 +124,15 @@ class EngineConfigRepo:
         exit_params: dict[str, float],
         earnings_blackout_days: int = DEFAULT_EARNINGS_BLACKOUT_DAYS,
         sizing_mode: SizingMode = SizingMode.EXPOSURE,
+        timeframe: str = "1d",
     ) -> EngineConfig:
         self.conn.execute("DELETE FROM engine_config WHERE account_id = ?", [account_id])
         row = self.conn.execute(
             f"""
             INSERT INTO engine_config
                 (account_id, watchlist, position_size, max_positions, strategies, exit_params,
-                 earnings_blackout_days, sizing_mode)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                 earnings_blackout_days, sizing_mode, timeframe)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             RETURNING {_CONFIG_COLS}
             """,
             [
@@ -142,6 +144,7 @@ class EngineConfigRepo:
                 json.dumps(exit_params),
                 earnings_blackout_days,
                 sizing_mode.value,
+                timeframe,
             ],
         ).fetchone()
         assert row is not None
@@ -200,16 +203,16 @@ class EngineSignalRepo:
     def __init__(self, conn: duckdb.DuckDBPyConnection) -> None:
         self.conn = conn
 
-    def get(self, instrument_id: int, strategy: str, bar_date: date) -> EngineSignal | None:
+    def get(self, instrument_id: int, strategy: str, bar_ts: datetime) -> EngineSignal | None:
         """The signal this rule already fired on this bar, if any. A 60-second loop
         re-derives the same signal all day; it is stored once and reconsidered as a
         candidate until it is acted on."""
         row = self.conn.execute(
             f"""
             SELECT {_SIGNAL_COLS} FROM engine_signal
-            WHERE instrument_id = ? AND strategy = ? AND bar_date = ?
+            WHERE instrument_id = ? AND strategy = ? AND bar_ts = ?
             """,
-            [instrument_id, strategy, bar_date],
+            [instrument_id, strategy, bar_ts],
         ).fetchone()
         return _row_to_signal(row) if row else None
 
@@ -218,7 +221,7 @@ class EngineSignalRepo:
         run_id: int | None,
         instrument_id: int,
         strategy: str,
-        bar_date: date,
+        bar_ts: datetime,
         fired_at: datetime,
         price: Decimal,
         score: float,
@@ -227,11 +230,11 @@ class EngineSignalRepo:
         row = self.conn.execute(
             f"""
             INSERT INTO engine_signal
-                (run_id, instrument_id, strategy, bar_date, fired_at, price, score, reason)
+                (run_id, instrument_id, strategy, bar_ts, fired_at, price, score, reason)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             RETURNING {_SIGNAL_COLS}
             """,
-            [run_id, instrument_id, strategy, bar_date, fired_at, price, score, reason],
+            [run_id, instrument_id, strategy, bar_ts, fired_at, price, score, reason],
         ).fetchone()
         assert row is not None
         return _row_to_signal(row)
