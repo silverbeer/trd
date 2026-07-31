@@ -1827,7 +1827,15 @@ def engine_positions(
         console.print("No engine positions yet. Run [bold]trd engine scan[/bold].")
         return
     title = "Engine positions — all" if all_ else "Engine positions — open"
-    console.print(engine_positions_table(rows, title, show_exit=all_, max_positions=max_positions))
+    console.print(
+        engine_positions_table(
+            rows,
+            title,
+            show_exit=all_,
+            max_positions=max_positions,
+            terminal_width=console.size.width,
+        )
+    )
 
 
 @engine_app.command("report")
