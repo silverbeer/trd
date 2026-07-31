@@ -20,9 +20,13 @@ import duckdb
 from pydantic import BaseModel
 
 from trd.errors import TrdError
+from trd.models import SizingMode
+from trd.repos.engine import DEFAULT_EARNINGS_BLACKOUT_DAYS
 
-BACKUP_VERSION = 2
-SUPPORTED_VERSIONS = (1, 2)  # v1 predates exit triggers and the engine
+BACKUP_VERSION = 3
+# v1 predates exit triggers and the engine; v2 keyed engine signals by bar date and
+# dropped the engine config fields added after it, so v3 reads either.
+SUPPORTED_VERSIONS = (1, 2, 3)
 
 
 class BackupStats(BaseModel):
@@ -43,6 +47,22 @@ def _iso(value: date | datetime | None) -> str | None:
 
 def _dec(value: str | None) -> Decimal | None:
     return Decimal(value) if value is not None else None
+
+
+def _as_stamp(value: str) -> datetime:
+    """A bar instant from either backup shape.
+
+    v2 wrote a bare date, because a signal's bar was always a whole day. Midnight
+    is that same instant, and is exactly what migration 015 converted the stored
+    daily rows to — so an old backup restores onto the new key unchanged.
+    """
+    parsed = datetime.fromisoformat(value)
+    return parsed
+
+
+def _signal_stamp(signal: dict) -> datetime:
+    value = signal.get("bar_ts") or signal["bar_date"]
+    return _as_stamp(value)
 
 
 def export_data(conn: duckdb.DuckDBPyConnection) -> dict:
@@ -154,11 +174,15 @@ def export_data(conn: duckdb.DuckDBPyConnection) -> dict:
     engine_config = None
     for r in rows(
         """
-        SELECT a.name, c.watchlist, c.position_size, c.max_positions, c.strategies, c.exit_params
+        SELECT a.name, c.watchlist, c.position_size, c.max_positions, c.strategies, c.exit_params,
+               c.earnings_blackout_days, c.sizing_mode, c.timeframe
         FROM engine_config c JOIN account a ON a.id=c.account_id
         ORDER BY c.id DESC LIMIT 1
         """
     ):
+        # Every field, not just the original six. A restore that silently drops
+        # sizing_mode or timeframe hands back an engine that looks like the one
+        # backed up and trades like a different one.
         engine_config = {
             "account": r[0],
             "watchlist": r[1],
@@ -166,15 +190,18 @@ def export_data(conn: duckdb.DuckDBPyConnection) -> dict:
             "max_positions": r[3],
             "strategies": json.loads(r[4]) if isinstance(r[4], str) else r[4],
             "exit_params": json.loads(r[5]) if isinstance(r[5], str) else r[5],
+            "earnings_blackout_days": r[6],
+            "sizing_mode": r[7],
+            "timeframe": r[8],
         }
 
-    # Signals are keyed by (symbol, strategy, bar_date) — the same natural key the
+    # Signals are keyed by (symbol, strategy, bar_ts) — the same natural key the
     # scanner dedupes on — so positions can re-link to them without carrying IDs.
     engine_signals = [
         {
             "symbol": r[0],
             "strategy": r[1],
-            "bar_date": _iso(r[2]),
+            "bar_ts": _iso(r[2]),
             "fired_at": _iso(r[3]),
             "price": str(r[4]),
             "score": r[5],
@@ -183,7 +210,7 @@ def export_data(conn: duckdb.DuckDBPyConnection) -> dict:
         }
         for r in rows(
             """
-            SELECT i.symbol, s.strategy, s.bar_date, s.fired_at, s.price, s.score, s.reason, s.acted
+            SELECT i.symbol, s.strategy, s.bar_ts, s.fired_at, s.price, s.score, s.reason, s.acted
             FROM engine_signal s JOIN instrument i ON i.id=s.instrument_id
             ORDER BY s.fired_at, s.id
             """
@@ -207,14 +234,14 @@ def export_data(conn: duckdb.DuckDBPyConnection) -> dict:
             "closed_at": _iso(r[13]),
             "exit_price": str(r[14]) if r[14] is not None else None,
             "exit_reason": r[15],
-            "signal_bar_date": _iso(r[16]),
+            "signal_bar_ts": _iso(r[16]),
         }
         for r in rows(
             """
             SELECT a.name, i.symbol, p.strategy, p.opened_at, p.entry_price, p.quantity,
                    p.stop_price, p.target_price, p.atr_at_entry, p.trail_high, p.bars_held,
                    p.last_bar_date, p.status, p.closed_at, p.exit_price, p.exit_reason,
-                   s.bar_date
+                   s.bar_ts
             FROM engine_position p
             JOIN account a ON a.id=p.account_id
             JOIN instrument i ON i.id=p.instrument_id
@@ -383,8 +410,9 @@ def restore_data(conn: duckdb.DuckDBPyConnection, data: dict) -> BackupStats:
     if config is not None:
         conn.execute(
             """INSERT INTO engine_config
-                 (account_id, watchlist, position_size, max_positions, strategies, exit_params)
-               VALUES (?, ?, ?, ?, ?, ?)""",
+                 (account_id, watchlist, position_size, max_positions, strategies, exit_params,
+                  earnings_blackout_days, sizing_mode, timeframe)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             [
                 account_id[config["account"]],
                 config["watchlist"],
@@ -392,20 +420,26 @@ def restore_data(conn: duckdb.DuckDBPyConnection, data: dict) -> BackupStats:
                 config["max_positions"],
                 json.dumps(config["strategies"]),
                 json.dumps(config["exit_params"]),
+                # A v2 backup carries none of these. Their defaults are the
+                # behaviour an engine written before each field already had.
+                config.get("earnings_blackout_days", DEFAULT_EARNINGS_BLACKOUT_DAYS),
+                config.get("sizing_mode") or SizingMode.EXPOSURE.value,
+                config.get("timeframe") or "1d",
             ],
         )
 
     signals = engine.get("signals", [])
     signal_id: dict[tuple[str, str, str], int] = {}
     for signal in signals:
+        stamp = _signal_stamp(signal)
         row = conn.execute(
             """INSERT INTO engine_signal
-                 (instrument_id, strategy, bar_date, fired_at, price, score, reason, acted)
+                 (instrument_id, strategy, bar_ts, fired_at, price, score, reason, acted)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?) RETURNING id""",
             [
                 instrument_id[signal["symbol"]],
                 signal["strategy"],
-                date.fromisoformat(signal["bar_date"]),
+                stamp,
                 datetime.fromisoformat(signal["fired_at"]),
                 Decimal(signal["price"]),
                 signal["score"],
@@ -414,11 +448,16 @@ def restore_data(conn: duckdb.DuckDBPyConnection, data: dict) -> BackupStats:
             ],
         ).fetchone()
         assert row is not None
-        signal_id[(signal["symbol"], signal["strategy"], signal["bar_date"])] = row[0]
+        signal_id[(signal["symbol"], signal["strategy"], stamp.isoformat())] = row[0]
 
     positions = engine.get("positions", [])
     for position in positions:
-        key = (position["symbol"], position["strategy"], position["signal_bar_date"] or "")
+        stamp = position.get("signal_bar_ts") or position.get("signal_bar_date")
+        key = (
+            position["symbol"],
+            position["strategy"],
+            _as_stamp(stamp).isoformat() if stamp else "",
+        )
         conn.execute(
             """INSERT INTO engine_position
                  (account_id, instrument_id, signal_id, strategy, opened_at, entry_price,

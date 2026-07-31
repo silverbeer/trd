@@ -16,7 +16,7 @@ the engine can react intraday.
 """
 
 from collections.abc import Sequence
-from datetime import date, datetime
+from datetime import date, datetime, time
 from decimal import ROUND_DOWN, Decimal
 
 import duckdb
@@ -638,7 +638,10 @@ class EngineService:
                 )
                 continue
             bars = self._with_live_bar(stored, quote, today)
-            bar_date = bars[-1].date
+            # A signal is identified by the instant its bar opened. For a daily
+            # bar that is midnight, which is what keeps a monitor loop from
+            # storing the same signal on every pass.
+            bar_ts = datetime.combine(bars[-1].date, time.min)
             # Computed once per symbol, but applied *after* the strategy runs: a
             # signal blocked by earnings is a real signal on good data, unlike a
             # stale-quote one, and the passed-over signals are half the learning.
@@ -657,13 +660,13 @@ class EngineService:
                     continue
 
                 price = bars[-1].close
-                stored_signal = self.signals.get(instrument.id, key, bar_date)
+                stored_signal = self.signals.get(instrument.id, key, bar_ts)
                 if stored_signal is None:
                     stored_signal = self.signals.insert(
                         run_id=run_id,
                         instrument_id=instrument.id,
                         strategy=key,
-                        bar_date=bar_date,
+                        bar_ts=bar_ts,
                         fired_at=now,
                         price=price,
                         score=signal.score,
