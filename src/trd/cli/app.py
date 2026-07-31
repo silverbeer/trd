@@ -8,6 +8,7 @@ from typing import Annotated, Any
 
 import typer
 from rich.console import Console
+from rich.live import Live
 from rich.table import Table
 
 from trd.build import build_version
@@ -24,6 +25,7 @@ from trd.cli.render import (
     earnings_table,
     engine_backtest_renderables,
     engine_exits_table,
+    engine_monitor_view,
     engine_positions_table,
     engine_report_table,
     engine_runs_table,
@@ -1746,34 +1748,108 @@ def engine_monitor(
     notify: Annotated[
         bool, typer.Option("--notify", help="Push fills to the configured chat (Telegram).")
     ] = False,
+    live: Annotated[bool, typer.Option("--live/--no-live", help="Live view on a terminal.")] = True,
 ) -> None:
-    """Scan on a loop. Ctrl-C to stop — every pass is already persisted."""
+    """Scan on a loop. Ctrl-C to stop — every pass is already persisted.
+
+    On a terminal this is a live view: the book stays still and the clock,
+    capacity and activity feed move, so a fill is something you notice rather
+    than something you scroll back to find. Piped, or with --ndjson, it falls
+    back to plain scrolling output — a live display in a pipe is garbage.
+    """
     import time
 
+    live_view = live and console.is_terminal and not ndjson
     count = 0
-    if not ndjson:
+    activity: list[str] = []
+    if not ndjson and not live_view:
         console.print(f"[dim]Monitoring every {interval}s. Ctrl-C to stop.[/dim]")
+
+    def one_pass() -> tuple[ScanResult, list, int, dict, str]:
+        # Connect per pass, not once for the whole loop: a monitor that held the
+        # connection would keep DuckDB's single writer lock for its entire run,
+        # blocking every other trd command for as long as it watches.
+        quotes = _prefetched_quotes(lambda s: s.quote_symbols())
+        service = _engine_service()
+        try:
+            result = service.scan(paper=paper, quotes=quotes)
+            rows = service.position_rows(quotes=quotes)
+            config = service.config()
+            return result, rows, config.max_positions, config.exit_params, service.account().name
+        finally:
+            service.conn.close()
+
+    def note(result: ScanResult) -> None:
+        """Newest first, and only things that actually happened."""
+        stamp = result.at.strftime("%H:%M:%S")
+        for fill in result.closed:
+            r = f" ({fill.r_multiple:+.2f}R)" if fill.r_multiple is not None else ""
+            activity.insert(0, f"{stamp}|[red]SELL[/red] {fill.symbol} {fill.rule or ''}{r}")
+        for fill in result.opened:
+            activity.insert(0, f"{stamp}|[green]BUY[/green] {fill.symbol} {fill.strategy}")
+        for signal in result.signals:
+            if not signal.acted:
+                activity.insert(
+                    0, f"{stamp}|[dim]signal {signal.symbol} {signal.strategy} — not taken[/dim]"
+                )
+
+    live_ctx = (
+        Live(console=console, refresh_per_second=4, transient=False) if live_view else nullcontext()
+    )
     try:
-        while passes is None or count < passes:
-            # Connect per pass, not once for the whole loop: a monitor that held
-            # the connection would keep DuckDB's single writer lock for its entire
-            # run, blocking every other trd command for as long as it watches.
-            try:
-                quotes = _prefetched_quotes(lambda s: s.quote_symbols())
-                service = _engine_service()
-                result = service.scan(paper=paper, quotes=quotes)
-                params = service.config().exit_params
-                service.conn.close()
-            except TrdError as exc:
-                _fail(exc)
-                return
-            _emit_scan(result, as_json=False, ndjson=ndjson)
-            if notify:
-                _notify_scan(result, label_from_env(params))
-            count += 1
-            if passes is not None and count >= passes:
-                break
-            time.sleep(interval)
+        with live_ctx as display:
+            while passes is None or count < passes:
+                try:
+                    result, rows, max_positions, params, account = one_pass()
+                except TrdError as exc:
+                    _fail(exc)
+                    return
+                count += 1
+                note(result)
+                if not live_view:
+                    _emit_scan(result, as_json=False, ndjson=ndjson)
+                if notify:
+                    _notify_scan(result, label_from_env(params))
+                if passes is not None and count >= passes:
+                    if live_view and display is not None:
+                        display.update(
+                            engine_monitor_view(
+                                rows,
+                                max_positions,
+                                count,
+                                result.at,
+                                0,
+                                activity,
+                                build_version(),
+                                account,
+                                int(params.get("flat_at_minute", 0)) > 0,
+                                console.size.width,
+                            )
+                        )
+                    break
+                if not live_view:
+                    time.sleep(interval)
+                    continue
+                # Tick the clock down rather than freezing between scans: a view
+                # that has not moved for a minute is indistinguishable from one
+                # that has died.
+                for remaining in range(interval, 0, -1):
+                    assert display is not None
+                    display.update(
+                        engine_monitor_view(
+                            rows,
+                            max_positions,
+                            count,
+                            result.at,
+                            remaining,
+                            activity,
+                            build_version(),
+                            account,
+                            int(params.get("flat_at_minute", 0)) > 0,
+                            console.size.width,
+                        )
+                    )
+                    time.sleep(1)
     except KeyboardInterrupt:
         console.print(f"\n[dim]Stopped after {count} scan(s).[/dim]")
 
