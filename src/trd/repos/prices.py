@@ -3,7 +3,7 @@ from decimal import Decimal
 
 import duckdb
 
-from trd.models import DailyBar
+from trd.models import DailyBar, IntradayBar
 
 
 class PriceRepo:
@@ -44,6 +44,90 @@ class PriceRepo:
             DailyBar(date=r[0], open=r[1], high=r[2], low=r[3], close=r[4], volume=r[5])
             for r in rows
         ]
+
+    def upsert_intraday(self, instrument_id: int, interval: str, bars: list[IntradayBar]) -> int:
+        for bar in bars:
+            self.conn.execute(
+                """
+                INSERT OR REPLACE INTO price_intraday
+                    (instrument_id, interval, ts, open, high, low, close, volume)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                [
+                    instrument_id,
+                    interval,
+                    bar.ts,
+                    bar.open,
+                    bar.high,
+                    bar.low,
+                    bar.close,
+                    bar.volume,
+                ],
+            )
+        return len(bars)
+
+    def intraday_bars(
+        self, instrument_id: int, interval: str, limit: int | None = None
+    ) -> list[IntradayBar]:
+        """The stored intraday series, oldest first.
+
+        `limit` takes the most *recent* N bars, not the first N — the rules only
+        ever look backwards from now, and a 5-minute series runs to thousands of
+        rows where the daily one runs to hundreds.
+        """
+        if limit is None:
+            rows = self.conn.execute(
+                """
+                SELECT ts, open, high, low, close, volume FROM price_intraday
+                WHERE instrument_id = ? AND interval = ? ORDER BY ts
+                """,
+                [instrument_id, interval],
+            ).fetchall()
+        else:
+            rows = list(
+                reversed(
+                    self.conn.execute(
+                        """
+                        SELECT ts, open, high, low, close, volume FROM price_intraday
+                        WHERE instrument_id = ? AND interval = ? ORDER BY ts DESC LIMIT ?
+                        """,
+                        [instrument_id, interval, limit],
+                    ).fetchall()
+                )
+            )
+        return [
+            IntradayBar(ts=r[0], open=r[1], high=r[2], low=r[3], close=r[4], volume=r[5])
+            for r in rows
+        ]
+
+    def latest_intraday_ts(self, instrument_id: int, interval: str) -> datetime | None:
+        """Newest stored bar instant — where an incremental fetch should resume."""
+        row = self.conn.execute(
+            "SELECT max(ts) FROM price_intraday WHERE instrument_id = ? AND interval = ?",
+            [instrument_id, interval],
+        ).fetchone()
+        return row[0] if row and row[0] is not None else None
+
+    def intraday_coverage(self, interval: str) -> tuple[int, datetime | None, datetime | None]:
+        """(total bars, earliest, latest) at one interval, across every instrument."""
+        row = self.conn.execute(
+            """
+            SELECT count(*), min(ts), max(ts) FROM price_intraday WHERE interval = ?
+            """,
+            [interval],
+        ).fetchone()
+        return (row[0], row[1], row[2]) if row else (0, None, None)
+
+    def intraday_bar_counts(self, interval: str) -> dict[int, int]:
+        """Bars held per instrument id, for spotting a symbol too short to trade."""
+        rows = self.conn.execute(
+            """
+            SELECT instrument_id, count(*) FROM price_intraday
+            WHERE interval = ? GROUP BY instrument_id
+            """,
+            [interval],
+        ).fetchall()
+        return {r[0]: r[1] for r in rows}
 
     def coverage(self) -> tuple[int, date | None, date | None]:
         """(total bars, earliest date, latest date) across every instrument.
