@@ -22,26 +22,30 @@ What a daily bar cannot express, this module decides explicitly:
   touches both stop and target the stop wins — pessimistic, same order the live
   rules run in. Path-dependent rules (indicator, time) run once per bar at the
   close, on settled data. `--fill close` collapses everything to close-only.
-- Day-mode configs (`flat_at_minute` set) are refused outright: daily bars have
-  no clock, so a session-close engine would either silently backtest as a swing
-  engine or produce zero trades. An explicit error beats a silent lie.
+- Day-mode configs need an intraday timeframe. The walk is keyed on each bar's
+  *instant*, so on a 5-minute series `now` carries a real clock and session_close
+  fires at the bell exactly as it does live. On daily bars there is no clock, so
+  a day-mode config is still refused: it would either silently backtest as a
+  swing engine or produce zero trades, and an explicit error beats a silent lie.
 """
 
+from collections.abc import Mapping, Sequence
 from datetime import date, datetime, time, timedelta
 from decimal import Decimal
 from enum import StrEnum
 
 import duckdb
-from pydantic import BaseModel
+from pydantic import BaseModel, computed_field
 
 from trd.engine import REGISTRY as STRATEGIES
 from trd.engine import evaluate_exits
+from trd.engine.bars import DAILY, BarSource
 from trd.engine.exits import RULES, ExitDecision
 from trd.errors import TrdError
-from trd.models import DailyBar, EnginePosition, PositionStatus, SizingMode, StrategyStat
+from trd.models import Bar, EnginePosition, PositionStatus, SizingMode, StrategyStat
 from trd.repos import EarningsRepo, InstrumentRepo, PriceRepo, WatchlistRepo
 from trd.repos.engine import EngineConfigRepo
-from trd.services.engine import plan_entry, strategy_stats
+from trd.services.engine import ENTRY_CUTOFF_MINUTES, plan_entry, strategy_stats
 
 CAVEAT = (
     "Backtests flatter: today's universe is the names that survived, fills pay no "
@@ -55,8 +59,9 @@ CAVEAT = (
 # says a level traded, but not what the indicators looked like when it did.
 _LEVEL_RULES = ("stop", "trail", "target")
 
-# Bars are daily; the exact clock only matters to session_close, which a backtest
-# refuses to run. Noon for evaluation, the bell for fills.
+# A daily bar has no clock of its own. Noon for evaluation, the bell for fills —
+# far enough apart that a same-bar entry and exit still order correctly. Intraday
+# bars carry their own instant and use it instead.
 _EVAL_TIME = time(12, 0)
 _FILL_TIME = time(16, 0)
 
@@ -71,16 +76,31 @@ class BacktestTrade(BaseModel):
 
     symbol: str
     strategy: str
-    entry_date: date
+    # Instants, not dates: a day-mode run can take two trades in the same name on
+    # the same session, and a date alone cannot tell them apart or say which exit
+    # came first.
+    entry_at: datetime
     entry_price: Decimal
     quantity: Decimal
     entry_reason: str
-    exit_date: date
+    exit_at: datetime
     exit_price: Decimal
     rule: str
     exit_reason: str
     pnl: Decimal
     r_multiple: Decimal | None = None
+
+    # computed_field, not a plain property: these are part of the --json contract
+    # and a property would quietly vanish from the document.
+    @computed_field
+    @property
+    def entry_date(self) -> date:
+        return self.entry_at.date()
+
+    @computed_field
+    @property
+    def exit_date(self) -> date:
+        return self.exit_at.date()
 
 
 class EquityPoint(BaseModel):
@@ -130,7 +150,7 @@ class BacktestResult(BaseModel):
 
 def _level_decision(
     position: EnginePosition,
-    bars: list[DailyBar],
+    bars: list[Bar],
     price: Decimal,
     params: dict[str, float],
     now: datetime,
@@ -160,7 +180,7 @@ def _level_price(
 
 def _check_exit(
     position: EnginePosition,
-    bars: list[DailyBar],
+    bars: list[Bar],
     i: int,
     params: dict[str, float],
     now: datetime,
@@ -227,7 +247,7 @@ def _in_blackout(earnings: list[date] | None, today: date, days: int) -> bool:
 
 
 def simulate(
-    bars_by_symbol: dict[str, list[DailyBar]],
+    bars_by_symbol: Mapping[str, Sequence[Bar]],
     *,
     strategies: list[str],
     position_size: Decimal,
@@ -240,6 +260,7 @@ def simulate(
     fill: FillMode = FillMode.INTRABAR,
     start: date | None = None,
     end: date | None = None,
+    timeframe: str = DAILY,
 ) -> BacktestResult:
     """Walk history forward and run the live rules at every step.
 
@@ -250,18 +271,26 @@ def simulate(
     `start` gates when trading may begin — earlier bars still feed the
     indicators as warmup.
     """
-    if float(exit_params.get("flat_at_minute", 0)) > 0:
+    source = BarSource.stamper(timeframe)
+    flat_at = int(exit_params.get("flat_at_minute", 0))
+    if flat_at > 0 and not source.is_intraday:
         raise TrdError(
             "Day-mode engines (flat_at_minute set) cannot be backtested on daily "
             "bars: the session-close exit needs an intraday clock the bars don't "
-            "have. Backtest a swing configuration instead."
+            "have. Re-run the engine on an intraday timeframe, or backtest a swing "
+            "configuration instead."
         )
+    # Mirrors the live entry cutoff: a fill minutes before the bell is flattened
+    # by session_close before it can work, and pays the spread twice doing it.
+    entry_cutoff = (
+        (flat_at // 100) * 60 + (flat_at % 100) - ENTRY_CUTOFF_MINUTES if flat_at else None
+    )
     unknown = [k for k in strategies if k not in STRATEGIES]
     if unknown:
         raise TrdError(f"Unknown strategies: {', '.join(unknown)}")
 
     series = {
-        symbol.upper(): [b for b in bars if end is None or b.date <= end]
+        symbol.upper(): [b for b in bars if end is None or source.session(b) <= end]
         for symbol, bars in bars_by_symbol.items()
     }
     series = {s: bars for s, bars in series.items() if bars}
@@ -277,11 +306,15 @@ def simulate(
                 f"{warmup} before they can fire (run 'trd sync --years 10')"
             )
 
-    dates = sorted({bar.date for bars in series.values() for bar in bars})
+    # Keyed on each bar's instant, not its date: on an intraday series a session
+    # holds dozens of bars, and a date key would collapse them into one step.
+    stamps = sorted({source.stamp(bar) for bars in series.values() for bar in bars})
+    first_session = stamps[0].date()
+    last_session = stamps[-1].date()
     # Everything before `start` is warmup: the indicators see it, the report and
     # the equity curve begin where trading may.
-    trading_start = max(start, dates[0]) if start is not None else dates[0]
-    index = {s: {bar.date: i for i, bar in enumerate(bars)} for s, bars in series.items()}
+    trading_start = max(start, first_session) if start is not None else first_session
+    index = {s: {source.stamp(bar): i for i, bar in enumerate(bars)} for s, bars in series.items()}
     instrument_ids = {s: n for n, s in enumerate(sorted(series), start=1)}
     earnings = {s.upper(): dates_ for s, dates_ in (earnings_by_symbol or {}).items()}
 
@@ -303,14 +336,18 @@ def simulate(
     blackout_blocked = 0
     next_id = 1
 
-    for today in dates:
-        now = datetime.combine(today, _EVAL_TIME)
+    equity_by_session: dict[date, Decimal] = {}
+    for stamp in stamps:
+        today = stamp.date()
+        # An intraday bar carries its own clock, which is what lets session_close
+        # fire at the bell here exactly as it does live.
+        now = stamp if source.is_intraday else datetime.combine(today, _EVAL_TIME)
 
         # Exits first, freeing capacity — the same order scan() uses. A position
         # whose symbol has no bar today simply rides.
         for symbol in sorted(open_positions):
             position = open_positions[symbol]
-            i = index[symbol].get(today)
+            i = index[symbol].get(stamp)
             if i is None:
                 continue
             bars = series[symbol]
@@ -323,7 +360,9 @@ def simulate(
                 continue
             exit_price, decision = hit
             position.status = PositionStatus.CLOSED
-            position.closed_at = datetime.combine(today, _FILL_TIME)
+            position.closed_at = (
+                stamp if source.is_intraday else datetime.combine(today, _FILL_TIME)
+            )
             position.exit_price = exit_price
             position.exit_reason = decision.reason
             cash += exit_price * position.quantity
@@ -333,11 +372,11 @@ def simulate(
                 BacktestTrade(
                     symbol=symbol,
                     strategy=position.strategy,
-                    entry_date=position.opened_at.date(),
+                    entry_at=position.opened_at,
                     entry_price=position.entry_price,
                     quantity=position.quantity,
                     entry_reason=entry_reasons.get(position.id, ""),
-                    exit_date=today,
+                    exit_at=position.closed_at,
                     exit_price=exit_price,
                     rule=decision.rule,
                     exit_reason=decision.reason,
@@ -349,10 +388,11 @@ def simulate(
         # Entries: every enabled strategy over every eligible symbol, ranked the
         # way _run_entries ranks, filled while capacity lasts.
         capacity = max_positions - len(open_positions)
-        if capacity > 0 and today >= trading_start:
-            candidates: list[tuple[float, str, str, list[DailyBar], str]] = []
+        too_late = entry_cutoff is not None and (stamp.hour * 60 + stamp.minute) >= entry_cutoff
+        if capacity > 0 and today >= trading_start and not too_late:
+            candidates: list[tuple[float, str, str, list[Bar], str]] = []
             for symbol in sorted(series):
-                i = index[symbol].get(today)
+                i = index[symbol].get(stamp)
                 if i is None or symbol in open_positions:
                     continue
                 prefix = series[symbol][: i + 1]
@@ -383,7 +423,7 @@ def simulate(
                     account_id=0,
                     instrument_id=instrument_ids[symbol],
                     strategy=key,
-                    opened_at=datetime.combine(today, _FILL_TIME),
+                    opened_at=stamp if source.is_intraday else datetime.combine(today, _FILL_TIME),
                     entry_price=price,
                     quantity=plan.quantity,
                     stop_price=plan.stop_price,
@@ -399,14 +439,19 @@ def simulate(
                 capacity -= 1
 
         for symbol, positions_index in index.items():
-            i = positions_index.get(today)
+            i = positions_index.get(stamp)
             if i is not None:
                 last_close[symbol] = series[symbol][i].close
         if today >= trading_start:
             value = cash + sum(
                 (open_positions[s].quantity * last_close[s] for s in open_positions), Decimal(0)
             )
-            equity.append(EquityPoint(date=today, value=value))
+            # One point per session, not per bar: an intraday run holds thousands
+            # of bars, and the curve is read as a daily equity line either way.
+            # The last write for a session wins, which is its closing value.
+            equity_by_session[today] = value
+
+    equity = [EquityPoint(date=d, value=v) for d, v in sorted(equity_by_session.items())]
 
     open_counts: dict[str, int] = {}
     for position in open_positions.values():
@@ -421,7 +466,7 @@ def simulate(
 
     return BacktestResult(
         start=trading_start,
-        end=dates[-1],
+        end=last_session,
         fill=fill,
         earnings_blackout_days=earnings_blackout_days,
         symbols=sorted(series),
@@ -437,7 +482,7 @@ def simulate(
         start_value=start_value,
         end_value=equity[-1].value if equity else start_value,
         max_drawdown_pct=max_drawdown,
-        windows=_window_stats(closed, trading_start, dates[-1]),
+        windows=_window_stats(closed, trading_start, last_session),
         skipped=skipped,
     )
 
@@ -486,15 +531,22 @@ class BacktestService:
                 raise TrdError("Years must be positive.")
             start = date.today() - timedelta(days=round(365.25 * years))
 
-        bars_by_symbol: dict[str, list[DailyBar]] = {}
+        source = BarSource(self.prices, config.timeframe)
+        # The command that would actually deepen *this* engine's history. Telling
+        # a 5-minute engine to run 'sync --years 10' sends it after bars the
+        # provider does not keep.
+        deepen = "trd sync" if source.is_intraday else "trd sync --years 10"
+        bars_by_symbol: dict[str, Sequence[Bar]] = {}
         earnings_by_symbol: dict[str, list[date]] = {}
         for symbol in universe:
             instrument = self.instruments.get_by_symbol(symbol)
             if instrument is None:
                 raise TrdError(f"Unknown symbol {symbol} — 'trd quote {symbol}' adds it.")
-            bars = self.prices.daily_bars(instrument.id)
+            bars = source.stored(instrument.id)
             if not bars:
-                raise TrdError(f"{symbol} has no price history. Run 'trd sync --years 10' first.")
+                raise TrdError(
+                    f"{symbol} has no {config.timeframe} price history. Run '{deepen}' first."
+                )
             bars_by_symbol[symbol] = bars
             earnings_by_symbol[symbol] = self.earnings.dates_for_instrument(instrument.id)
 
@@ -511,4 +563,5 @@ class BacktestService:
             fill=fill,
             start=start,
             end=end,
+            timeframe=config.timeframe,
         )
