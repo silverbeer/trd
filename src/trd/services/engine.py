@@ -27,6 +27,7 @@ from trd.engine import DEFAULT_EXIT_PARAMS, EXIT_REGISTRY, evaluate_exits, missi
 from trd.engine import REGISTRY as STRATEGIES
 from trd.engine.base import indicator, last
 from trd.errors import ProviderError, TrdError
+from trd.learn import GLOSSARY
 from trd.models import (
     Account,
     AccountType,
@@ -35,6 +36,7 @@ from trd.models import (
     EnginePosition,
     EngineRun,
     EngineStatus,
+    ExitOutlook,
     Instrument,
     PositionRow,
     Quote,
@@ -42,6 +44,7 @@ from trd.models import (
     SignalRow,
     SizingMode,
     StrategyStat,
+    TradeExplanation,
 )
 from trd.providers.base import MarketDataProvider
 from trd.repos import (
@@ -226,6 +229,19 @@ def strategy_stats(
             )
         )
     return stats
+
+
+# Which indicators each entry rule actually consults. Resolved from the strategy
+# rather than parsed out of its prose: the reason text is written for humans and
+# will be reworded, but what a rule reads is a property of the rule.
+STRATEGY_TERMS: dict[str, list[str]] = {
+    "momentum": ["sma", "rsi", "volratio"],
+    "breakout": ["volratio", "sma"],
+    "pullback": ["rsi", "sma"],
+    "macd_cross": ["macd", "sma"],
+}
+# Always worth having in front of you when reading a trade, whatever fired it.
+UNIVERSAL_TERMS = ["r-multiple", "initial-stop", "trailing-stop", "profit-target"]
 
 
 class EngineService:
@@ -864,6 +880,129 @@ class EngineService:
             midnight = datetime.combine(date.today(), datetime.min.time())
             return self.runs.list_since(midnight)
         return self.runs.list_recent(limit)
+
+    def explain(self, symbol: str) -> TradeExplanation:
+        """Why this trade was taken, what its vocabulary means, and where it exits.
+
+        The signal reason is recorded at entry and never recomputed — reading it
+        back later must show what the rule actually saw at the time, not what the
+        same rule would say about today's bars.
+        """
+        config = self.config()
+        account = self.account()
+        wanted = symbol.upper()
+        pair = next(
+            ((p, i) for p, i in self.positions.list_open(account.id) if i.symbol.upper() == wanted),
+            None,
+        )
+        if pair is None:
+            raise TrdError(
+                f"No open engine position in {wanted}. 'trd engine positions' lists what is held."
+            )
+        position, instrument = pair
+
+        signal = self.signals.by_id(position.signal_id) if position.signal_id else None
+        strategy = STRATEGIES.get(position.strategy)
+        price = self.prices.latest_close(instrument.id)
+
+        keys = STRATEGY_TERMS.get(position.strategy, []) + UNIVERSAL_TERMS
+        glossary = []
+        for key in keys:
+            entry = GLOSSARY.get(key)
+            if entry is not None:
+                glossary.append((entry.key, entry.term, entry.definition))
+
+        return TradeExplanation(
+            symbol=instrument.symbol,
+            strategy=position.strategy,
+            strategy_name=strategy.name if strategy else position.strategy,
+            strategy_description=strategy.description if strategy else "",
+            opened_at=position.opened_at,
+            reason=signal.reason
+            if signal
+            else "(the signal behind this trade is no longer stored)",
+            score=signal.score if signal else None,
+            entry_price=position.entry_price,
+            quantity=position.quantity,
+            price=price,
+            r_multiple=position.r_multiple_at(price),
+            bars_held=position.bars_held,
+            risk_per_share=position.risk_per_share,
+            glossary=glossary,
+            exits=self._exit_outlook(position, config.exit_params, price),
+        )
+
+    @staticmethod
+    def _exit_outlook(
+        position: EnginePosition, params: dict[str, float], price: Decimal | None
+    ) -> list[ExitOutlook]:
+        """Where each exit rule currently stands for one trade."""
+        trail_mult = Decimal(str(params.get("trail_atr_mult", 3.0)))
+        trail = position.trail_high - position.atr_at_entry * trail_mult
+        trail_live = trail > position.stop_price
+        grace = int(params.get("indicator_grace_bars", 3))
+        max_bars = int(params.get("max_bars", 10))
+        engages_at = position.entry_price + position.atr_at_entry
+
+        out = [
+            ExitOutlook(
+                rule="stop",
+                name="Stop Loss",
+                level=position.stop_price,
+                in_force=not trail_live,
+                detail=(
+                    f"fixed at entry minus 2 x ATR and never moved — "
+                    f"one R is {position.risk_per_share:.2f}/share"
+                ),
+            ),
+            ExitOutlook(
+                rule="trail",
+                name="Trailing Stop",
+                level=trail,
+                in_force=trail_live,
+                detail=(
+                    f"rides {trail_mult:g} x ATR under the {position.trail_high:.2f} "
+                    "high and never falls back"
+                    if trail_live
+                    else f"below the initial stop, so it takes over once price touches "
+                    f"{engages_at:.2f}"
+                ),
+            ),
+            ExitOutlook(
+                rule="target",
+                name="Profit Target",
+                level=position.target_price,
+                detail=f"entry plus {params.get('target_r', 2.0):.0f} x the initial risk",
+            ),
+            ExitOutlook(
+                rule="indicator",
+                name="Indicator Exit",
+                detail=(
+                    f"armed — sells if price loses the 20-day, MACD turns negative, "
+                    f"or RSI tops {params.get('rsi_exit', 80.0):.0f} and rolls over"
+                    if position.bars_held >= grace
+                    else f"not armed yet: held {position.bars_held} of the {grace} bars "
+                    "a new entry gets to breathe"
+                ),
+            ),
+            ExitOutlook(
+                rule="time",
+                name="Time Exit",
+                detail=(
+                    f"gives up after {max_bars} bars; {max(0, max_bars - position.bars_held)} left"
+                ),
+            ),
+        ]
+        if int(params.get("flat_at_minute", 0)) > 0:
+            flat = int(params["flat_at_minute"])
+            out.append(
+                ExitOutlook(
+                    rule="session_close",
+                    name="Session Close",
+                    detail=f"day mode: flat at {flat // 100:02d}:{flat % 100:02d} regardless",
+                )
+            )
+        return out
 
     def report(self) -> list[StrategyStat]:
         """Per-strategy scorecard over closed trades. The reason the dry run exists."""
