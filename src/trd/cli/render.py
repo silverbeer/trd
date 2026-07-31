@@ -1554,6 +1554,7 @@ def engine_status_renderables(status: EngineStatus) -> list[RenderableType]:
         if status.day_mode
         else "swing — carries overnight"
     )
+    mode += f"  ·  {status.timeframe} bars"
     header = f"[bold]{status.account}[/bold]  ·  {mode}\nbuild {status.build}\n{status.db_path}"
     out: list[RenderableType] = [Panel(header, expand=False, border_style="cyan")]
 
@@ -1598,7 +1599,11 @@ def engine_status_renderables(status: EngineStatus) -> list[RenderableType]:
         data.add_row(
             "[yellow]short[/yellow]",
             f"[yellow]{listed}{more}[/yellow] — rules need {status.warmup_bars} "
-            "(run 'trd sync --years 10')",
+            + (
+                f"(run 'trd sync --intraday {status.timeframe}')"
+                if status.timeframe != "1d"
+                else "(run 'trd sync --years 10')"
+            ),
         )
     else:
         data.add_row("history", f"every symbol clears the {status.warmup_bars}-bar warmup")
