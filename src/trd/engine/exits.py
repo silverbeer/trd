@@ -13,6 +13,7 @@ the original risk.
 """
 
 from abc import ABC, abstractmethod
+from collections.abc import Sequence
 from datetime import datetime
 from decimal import Decimal
 from typing import ClassVar
@@ -20,7 +21,7 @@ from typing import ClassVar
 from pydantic import BaseModel
 
 from trd.engine.base import indicator, last, prior
-from trd.models import DailyBar, EnginePosition
+from trd.models import Bar, EnginePosition
 
 DEFAULT_EXIT_PARAMS: dict[str, float] = {
     "stop_atr_mult": 2.0,  # initial stop = entry - N x ATR(14)
@@ -49,7 +50,7 @@ class ExitRule(ABC):
     def check(
         self,
         position: EnginePosition,
-        bars: list[DailyBar],
+        bars: Sequence[Bar],
         price: Decimal,
         params: dict[str, float],
         now: datetime,
@@ -68,7 +69,7 @@ class StopLoss(ExitRule):
     def check(
         self,
         position: EnginePosition,
-        bars: list[DailyBar],
+        bars: Sequence[Bar],
         price: Decimal,
         params: dict[str, float],
         now: datetime,
@@ -96,7 +97,7 @@ class TrailingStop(ExitRule):
     def check(
         self,
         position: EnginePosition,
-        bars: list[DailyBar],
+        bars: Sequence[Bar],
         price: Decimal,
         params: dict[str, float],
         now: datetime,
@@ -128,7 +129,7 @@ class ProfitTarget(ExitRule):
     def check(
         self,
         position: EnginePosition,
-        bars: list[DailyBar],
+        bars: Sequence[Bar],
         price: Decimal,
         params: dict[str, float],
         now: datetime,
@@ -155,7 +156,7 @@ class IndicatorExit(ExitRule):
     def check(
         self,
         position: EnginePosition,
-        bars: list[DailyBar],
+        bars: Sequence[Bar],
         price: Decimal,
         params: dict[str, float],
         now: datetime,
@@ -203,7 +204,7 @@ class TimeExit(ExitRule):
     def check(
         self,
         position: EnginePosition,
-        bars: list[DailyBar],
+        bars: Sequence[Bar],
         price: Decimal,
         params: dict[str, float],
         now: datetime,
@@ -231,7 +232,7 @@ class SessionClose(ExitRule):
     def check(
         self,
         position: EnginePosition,
-        bars: list[DailyBar],
+        bars: Sequence[Bar],
         price: Decimal,
         params: dict[str, float],
         now: datetime,
@@ -285,7 +286,7 @@ def missing_rules(params: dict[str, float]) -> list[tuple[str, str]]:
 
 def evaluate(
     position: EnginePosition,
-    bars: list[DailyBar],
+    bars: Sequence[Bar],
     price: Decimal,
     params: dict[str, float],
     now: datetime,

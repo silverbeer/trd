@@ -1,8 +1,9 @@
 from abc import ABC, abstractmethod
+from collections.abc import Sequence
 from enum import StrEnum
 from typing import Any, ClassVar
 
-from trd.models import DailyBar
+from trd.models import Bar
 
 
 class Category(StrEnum):
@@ -25,11 +26,11 @@ class Indicator(ABC):
     min_bars: ClassVar[int] = 1
 
     @abstractmethod
-    def compute(self, bars: list[DailyBar], **params: Any) -> dict[str, list[float | None]]:
+    def compute(self, bars: Sequence[Bar], **params: Any) -> dict[str, list[float | None]]:
         """Full series per component, aligned with bars (None during warm-up)."""
 
     @abstractmethod
-    def interpret(self, series: dict[str, list[float | None]], bars: list[DailyBar]) -> str:
+    def interpret(self, series: dict[str, list[float | None]], bars: Sequence[Bar]) -> str:
         """One-line plain-English read of the latest values."""
 
     def required_bars(self, **params: Any) -> int:
@@ -44,7 +45,7 @@ def register(cls: type[Indicator]) -> type[Indicator]:
     return cls
 
 
-def closes(bars: list[DailyBar]) -> list[float]:
+def closes(bars: Sequence[Bar]) -> list[float]:
     return [float(b.close) for b in bars]
 
 

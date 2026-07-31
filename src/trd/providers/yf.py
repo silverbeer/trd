@@ -1,6 +1,6 @@
 import math
 from collections.abc import Sequence
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal
 from typing import Any, cast
 
@@ -8,7 +8,12 @@ import pandas as pd
 import yfinance as yf
 
 from trd.errors import ProviderError
-from trd.models import DailyBar, EarningsDate, InstrumentInfo, InstrumentType, Quote
+from trd.models import DailyBar, EarningsDate, InstrumentInfo, InstrumentType, IntradayBar, Quote
+
+# What yfinance will actually serve, and how far back it serves it. Asking for a
+# wider window returns whatever exists; asking for an interval outside this map is
+# a caller bug, so it raises rather than silently fetching a different timeframe.
+INTRADAY_LOOKBACK_DAYS: dict[str, int] = {"1m": 7, "5m": 59, "15m": 59, "30m": 59, "1h": 729}
 
 _QUOTE_TYPE_MAP = {
     "EQUITY": InstrumentType.STOCK,
@@ -125,6 +130,54 @@ class YFinanceProvider:
                     if volume is not None and not math.isnan(float(volume))
                     else None,
                     adj_close=_dec(row.get("Adj Close")),
+                )
+            )
+        return bars
+
+    def get_intraday_bars(
+        self, symbol: str, interval: str, start: date, end: date
+    ) -> list[IntradayBar]:
+        symbol = symbol.upper()
+        if interval not in INTRADAY_LOOKBACK_DAYS:
+            raise ProviderError(
+                f"Unsupported intraday interval {interval!r} — "
+                f"expected one of {', '.join(sorted(INTRADAY_LOOKBACK_DAYS))}"
+            )
+        # Clamping here, not at the call site: the limit is the provider's, and a
+        # start older than it makes yfinance return an empty frame for the whole
+        # request rather than the portion it does have.
+        earliest = end - timedelta(days=INTRADAY_LOOKBACK_DAYS[interval])
+        start = max(start, earliest)
+        if start >= end:
+            return []
+        try:
+            df = yf.Ticker(symbol).history(
+                start=start.isoformat(), end=end.isoformat(), interval=interval, auto_adjust=False
+            )
+        except Exception as exc:
+            raise ProviderError(f"Intraday fetch failed for {symbol}: {exc}") from exc
+        if df is None or df.empty:
+            return []
+        bars: list[IntradayBar] = []
+        for ts, row in df.iterrows():
+            close = _dec(row.get("Close"))
+            if close is None:
+                continue
+            stamp = cast(pd.Timestamp, ts)
+            bars.append(
+                IntradayBar(
+                    # Naive exchange-local time: the bar's identity is its place in
+                    # the session, and a tz-aware value would land in DuckDB as UTC
+                    # and shift every stored bar by the offset of the day it was
+                    # fetched on.
+                    ts=stamp.tz_localize(None).to_pydatetime()
+                    if stamp.tzinfo is not None
+                    else stamp.to_pydatetime(),
+                    open=_dec(row.get("Open")) or close,
+                    high=_dec(row.get("High")) or close,
+                    low=_dec(row.get("Low")) or close,
+                    close=close,
+                    volume=_int(row.get("Volume")),
                 )
             )
         return bars

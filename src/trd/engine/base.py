@@ -1,10 +1,11 @@
 from abc import ABC, abstractmethod
+from collections.abc import Sequence
 from typing import Any, ClassVar
 
 from pydantic import BaseModel
 
 from trd.indicators import REGISTRY as INDICATORS
-from trd.models import DailyBar
+from trd.models import Bar
 
 
 class StrategySignal(BaseModel):
@@ -30,7 +31,7 @@ class Strategy(ABC):
     min_bars: ClassVar[int] = 200
 
     @abstractmethod
-    def evaluate(self, bars: list[DailyBar]) -> StrategySignal | None:
+    def evaluate(self, bars: Sequence[Bar]) -> StrategySignal | None:
         """Return a signal if the rule fires on the last bar, else None."""
 
 
@@ -42,7 +43,7 @@ def register(cls: type[Strategy]) -> type[Strategy]:
     return cls
 
 
-def indicator(key: str, bars: list[DailyBar], **params: Any) -> dict[str, list[float | None]]:
+def indicator(key: str, bars: Sequence[Bar], **params: Any) -> dict[str, list[float | None]]:
     """Run a registered indicator over bars. Strategies never reimplement math
     that the indicator registry already owns."""
     return INDICATORS[key].compute(bars, **params)
