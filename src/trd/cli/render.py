@@ -1570,7 +1570,8 @@ def engine_why_renderables(why: TradeExplanation) -> list[RenderableType]:
         f"{why.opened_at.strftime('%Y-%m-%d %H:%M')}\n"
         f"{fmt_qty(why.quantity)} @ {fmt_money(why.entry_price)}"
         + (f"  ·  now {fmt_money(why.price)}  ·  {r}" if why.price is not None else "")
-        + f"  ·  1R = {fmt_money(why.risk_per_share)}/share  ·  held {why.bars_held} bars"
+        + f"  ·  1R = {fmt_money(why.risk_per_share)}/share"
+        + f"  ·  held {why.bars_held} {'bar' if why.bars_held == 1 else 'bars'}"
     )
     out: list[RenderableType] = [Panel(header, expand=False, border_style="cyan")]
 
