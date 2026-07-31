@@ -1,4 +1,4 @@
-from datetime import date
+from datetime import date, datetime
 from decimal import Decimal
 
 from rich.console import Group, RenderableType
@@ -1708,3 +1708,56 @@ def engine_why_renderables(why: TradeExplanation) -> list[RenderableType]:
             )
         )
     return out
+
+
+def engine_monitor_view(
+    rows: list[PositionRow],
+    max_positions: int,
+    scans: int,
+    last_scan: datetime,
+    next_in: int,
+    activity: list[str],
+    build: str,
+    label: str,
+    day_mode: bool,
+    terminal_width: int | None = None,
+) -> RenderableType:
+    """The screen you leave open while the market is on.
+
+    A monitor that reprints a whole scan every pass makes you re-read
+    everything to find the one thing that changed. This keeps the book still and
+    lets the clock, the capacity and the activity feed move — so a fill is
+    something you notice rather than something you scroll back to find.
+    """
+    open_rows = [r for r in rows if r.position.status != PositionStatus.CLOSED]
+    capacity = max_positions - len(open_rows)
+    room = "[yellow]full[/yellow]" if capacity <= 0 else f"[green]room for {capacity}[/green]"
+    header = (
+        f"[bold]{label}[/bold]  ·  {'day' if day_mode else 'swing'}  ·  [dim]{build}[/dim]\n"
+        f"{last_scan.strftime('%H:%M:%S')}  ·  scan #{scans}  ·  next in {next_in}s  ·  "
+        f"{len(open_rows)} of {max_positions} open  ·  {room}"
+    )
+    parts: list[RenderableType] = [Panel(header, expand=False, border_style="cyan")]
+
+    if open_rows:
+        parts.append(
+            engine_positions_table(
+                open_rows, "Open", max_positions=max_positions, terminal_width=terminal_width
+            )
+        )
+    else:
+        parts.append(Text("  flat — no open positions", style="dim"))
+
+    feed = Table(title="Activity", title_justify="left", show_header=False, box=None)
+    feed.add_column(style="dim", no_wrap=True)
+    feed.add_column()
+    if activity:
+        for line in activity[:8]:
+            stamp, _, rest = line.partition("|")
+            feed.add_row(stamp, rest)
+    else:
+        # Quiet is the normal state — say so, rather than leaving a blank that
+        # reads as something being broken.
+        feed.add_row("", "[dim]nothing yet — most scans are quiet[/dim]")
+    parts.append(feed)
+    return Group(*parts)
