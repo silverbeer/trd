@@ -1162,7 +1162,7 @@ def _open_a_trade(engine, conn, symbol="AAA", strategy="breakout", bars_held=0):
         run_id=None,
         instrument_id=instrument.id,
         strategy=strategy,
-        bar_date=date(2026, 7, 30),
+        bar_ts=datetime(2026, 7, 30),
         fired_at=datetime(2026, 7, 30, 9, 30),
         price=Decimal("100"),
         score=0.7,

@@ -39,6 +39,13 @@ class EngineConfig(BaseModel):
     earnings_blackout_days: int = 3
     # What `position_size` means: dollars committed, or dollars risked.
     sizing_mode: SizingMode = SizingMode.EXPOSURE
+    # The bar width the rules run on. '1d' reads price_daily; an intraday value
+    # reads price_intraday, which is what makes a stop reachable inside a session.
+    timeframe: str = "1d"
+
+    @property
+    def is_intraday(self) -> bool:
+        return self.timeframe != "1d"
 
 
 class EngineSignal(BaseModel):
@@ -49,12 +56,20 @@ class EngineSignal(BaseModel):
     run_id: int | None = None
     instrument_id: int
     strategy: str
-    bar_date: date
+    # The instant the signal's bar opened — midnight for a daily bar, the bucket
+    # for an intraday one. Identity, not display: it is what stops a monitor loop
+    # from recording the same signal on every pass.
+    bar_ts: datetime
     fired_at: datetime
     price: Decimal
     score: float
     reason: str
     acted: bool = False
+
+    @property
+    def bar_date(self) -> date:
+        """The session the signal belongs to, for anything that groups by day."""
+        return self.bar_ts.date()
 
 
 class EnginePosition(BaseModel):
