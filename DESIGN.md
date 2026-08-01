@@ -378,7 +378,11 @@ Sim account type, `trd sim` commands, pluggable monthly strategy (start: fixed t
 ### Phase 5 — Day-trading prep *(superseded by the trading engine)*
 Originally: intraday data (yfinance 1m/5m bars), VWAP/gap/relative-volume, premarket scanner, trade journal with R-multiple tracking.
 
-What shipped instead: the engine above, plus Sunday Prep (`trd prep`) for the week-ahead briefing. R-multiple tracking, rule-driven entries and exits, and the plan-vs-execution journal all exist — on daily bars with a live quote folded in as the forming bar, rather than on intraday bars. Genuine intraday data remains unbuilt and is not currently needed: the day engine reacts to quotes within a 5-minute scan loop. Still gated on FINRA's PDT change for real money; the simulation account works regardless.
+What shipped instead: the engine above, plus Sunday Prep (`trd prep`) for the week-ahead briefing. R-multiple tracking, rule-driven entries and exits, and the plan-vs-execution journal all exist.
+
+Intraday data landed later, once the day engine's daily-bar version proved inert: a stop at 2 x the *daily* ATR cannot be reached inside one session, so every trade exited on the clock and the R-multiples described a risk profile the engine never ran. Measured on a live universe, a 2 x ATR stop sat 6–22% away on daily bars and 0.5–1.3% away on 5-minute bars. `price_intraday`, `MarketDataProvider.get_intraday_bars`, and `engine_config.timeframe` now let the rules run on 5m/15m/30m/1h bars, and the backtest walks bar instants so `session_close` has a real clock. A day-mode config on daily bars is refused outright.
+
+**FINRA's PDT rule is no longer a gate.** The SEC approved amendments to Rule 4210 on 2026-04-14; effective **2026-06-04** both the $25,000 minimum equity requirement and the "pattern day trader" designation were eliminated, replaced by a $2,000 standard Reg T minimum plus risk-based intraday margin. Firms have an 18-month phase-in ending 2027-10-20, so broker behaviour still varies. What gates a live day engine now is evidence, not regulation: the day strategies backtest at -0.05R / +0.02R / -0.05R / -0.04R over 619 trades.
 
 ### Phase 6 — AI agents *(not started)*
 Trend-scan agent over watchlist, buy-candidate screener with rationale, scheduled morning brief. Built on Claude Agent SDK + the CLI as tool surface.
@@ -387,7 +391,9 @@ The groundwork is the CLI itself: every read command emits `--json` — the unde
 
 ## Non-Goals (for now)
 
-- No brokerage API integration (no auto-execution). The engine paper-trades and records; a human executes.
+- No auto-execution **yet** — and this is now a choice, not a limitation. The non-goal was written when the only route to a broker was a reverse-engineered API. Robinhood shipped an official agentic-trading MCP server in June 2026 (`https://agent.robinhood.com/mcp/trading`) that reads positions, balances and orders and places real equity and options trades into a dedicated, separately funded account. The route exists; what is missing is evidence that the rules deserve real money. The engine paper-trades and records; a human executes.
+
+  When that changes, the shape is settled: **trd keeps deciding, the broker only executes.** The MCP product is built for a language model to make the calls, and using it that way would trade a measured, backtested, explainable edge for an unmeasurable one — the same reason `a rule you can't explain doesn't ship`. Execution belongs behind its own protocol alongside `MarketDataProvider`, fills get *read* rather than assumed (today `_open_position` writes a txn at the bar's close and trusts it; real orders partial-fill, get rejected, and slip), and the "engine only ever trades a simulation account" invariant needs an equally strong replacement rather than deletion. First milestone is reconciliation only: read real positions, compare against what the engine believes, place nothing. That gap is the number no backtest shows.
 - No web UI.
 - No real-time streaming data — scheduled syncs plus a live quote folded into the forming bar have been enough, including for the day engine.
 - No tax-lot optimization (track FIFO lots, defer fancy accounting).
@@ -401,6 +407,6 @@ Resolved:
 
 Open:
 
-- Intraday data retention, if minute bars are ever stored. Daily bars are comfortable — 37k rows across 15 symbols and a decade — but minute data would need pruning.
+- Intraday data retention, now that intraday bars *are* stored. Daily is comfortable — ~99k rows across 25 symbols and a decade. Intraday is bounded for free at present because the provider only serves ~60 days of 5-minute history, so the table self-limits; a longer-horizon source would need a pruning policy. `price_intraday` is deliberately a separate table from `price_daily` so a decade of daily reads never pays for it.
 - Whether the engine should trim strategies automatically. The backtest grades them (breakout +0.29R over 286 trades; pullback +0.03R over 451), and the drift panel shows when an edge expires, but acting on that stays a human decision. Deliberately: the tool builds confidence in a choice, it does not make the choice.
 - How to keep two machines' engine databases coherent. `trd backup` / `trd restore` handles the real database, but the engine databases are excluded from iCloud on purpose and currently live on one machine.
