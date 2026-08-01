@@ -285,11 +285,29 @@ def sync(
         int | None,
         typer.Option("--years", help="Backfill N years of daily bars (implies --full)."),
     ] = None,
+    earnings_only: Annotated[
+        bool,
+        typer.Option(
+            "--earnings-only",
+            help="Refresh only earnings dates (no quotes, no bars) — cheap enough "
+            "to run every scan, because some dates publish mid-session.",
+        ),
+    ] = False,
 ) -> None:
     """Refresh quotes and daily price history for all tracked instruments."""
     settings = get_settings()
     conn = connect(settings.db_path)
     service = SyncService(conn, YFinanceProvider())
+    if earnings_only:
+        with _spinner("Refreshing earnings dates..."):
+            earnings = service.sync_earnings()
+        console.print(
+            f"Checked [bold]{earnings.checked}[/bold] symbols, "
+            f"[bold]{earnings.events}[/bold] earnings dates."
+        )
+        if earnings.failures:
+            err_console.print(f"[yellow]warning:[/yellow] failed: {', '.join(earnings.failures)}")
+        return
     with _spinner("Syncing market data..."):
         result = service.sync(full=full, years=years)
     console.print(

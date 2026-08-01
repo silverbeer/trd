@@ -55,6 +55,17 @@ if [ "$(cat "$STAMP" 2>/dev/null || true)" != "$today" ]; then
     fi
 fi
 
+# --- refresh earnings every pass ---------------------------------------------
+# Bars settle once a day; earnings dates do not. yfinance publishes some of them
+# mid-session, and the blackout can only protect a name whose date is already in
+# the database. Observed live on 2026-07-28: the 09:24 sync found no date for BA,
+# the engine entered it at 10:25, and the date appeared around noon — the trade
+# was taken on the print. This costs a handful of requests because it only checks
+# symbols with no known date or one inside the horizon.
+if ! trd sync --earnings-only; then
+    echo "earnings refresh failed — continuing with stored dates"
+fi
+
 # NDJSON because the consumer is promtail, not a human — one event per line, each
 # independently queryable in Loki. --notify pushes fills to Telegram; with no
 # token configured it degrades to a warning, so an unconfigured cluster still scans.

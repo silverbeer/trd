@@ -44,3 +44,13 @@ class MarketDataProvider(Protocol):
         """Known earnings dates, past and upcoming. Empty for instruments without
         earnings (crypto, most ETFs) — never raises for that case."""
         ...
+
+    def get_earnings_dates_batch(self, symbols: Sequence[str]) -> dict[str, list[EarningsDate]]:
+        """Batch earnings. Symbols that fail are omitted — never raises for one
+        bad symbol, the same contract `get_quotes` keeps.
+
+        Separate from the singular call for the same reason quotes are: one
+        request per symbol is the whole cost, and a blackout that has to re-check
+        many names mid-session cannot pay for them serially.
+        """
+        ...

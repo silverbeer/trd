@@ -30,6 +30,7 @@ class FakeProvider:
         self.bars: dict[str, list[DailyBar]] = {}
         self.intraday: dict[tuple[str, str], list[IntradayBar]] = {}
         self.earnings: dict[str, list[EarningsDate]] = {}
+        self.broken_earnings: set[str] = set()
 
     def add_symbol(
         self,
@@ -110,7 +111,18 @@ class FakeProvider:
         return [b for b in series if start <= b.ts.date() < end]
 
     def get_earnings_dates(self, symbol: str) -> list[EarningsDate]:
+        if symbol.upper() in self.broken_earnings:
+            raise ProviderError(f"Earnings fetch failed for {symbol}")
         return self.earnings.get(symbol.upper(), [])
+
+    def get_earnings_dates_batch(self, symbols: Sequence[str]) -> dict[str, list[EarningsDate]]:
+        out: dict[str, list[EarningsDate]] = {}
+        for symbol in symbols:
+            try:
+                out[symbol.upper()] = self.get_earnings_dates(symbol)
+            except ProviderError:
+                continue
+        return out
 
 
 @pytest.fixture

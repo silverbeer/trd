@@ -62,6 +62,15 @@ if [ "$(cat "$STAMP" 2>/dev/null || true)" != "$today" ]; then
     fi
 fi
 
+# --- earnings, every pass -----------------------------------------------------
+# Bars settle once a day; earnings dates do not. yfinance publishes some of them
+# mid-session, and the blackout can only protect a name whose date is already
+# stored. Kept in step with deploy/engine-entrypoint.sh — two runners that drift
+# apart is how one of them quietly stops protecting anything.
+if ! trd sync --earnings-only >> "$LOG" 2>&1; then
+    echo "earnings refresh failed (continuing with stored dates)" >> "$LOG"
+fi
+
 # --- the scan -----------------------------------------------------------------
 # A non-zero exit here is nearly always "Database is busy" (another trd process
 # holds the single writer lock). Skip this pass rather than failing the job —

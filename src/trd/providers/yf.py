@@ -184,6 +184,24 @@ class YFinanceProvider:
             )
         return bars
 
+    def get_earnings_dates_batch(self, symbols: Sequence[str]) -> dict[str, list[EarningsDate]]:
+        """Concurrent, for the same reason `get_quotes` is: one request per symbol
+        is the whole cost. Failures stay per-symbol so one bad ticker cannot stop
+        the blackout from being refreshed for the rest."""
+        wanted = list(dict.fromkeys(s.upper() for s in symbols))
+        if not wanted:
+            return {}
+
+        out: dict[str, list[EarningsDate]] = {}
+        with ThreadPoolExecutor(max_workers=min(len(wanted), _quote_workers())) as pool:
+            futures = {pool.submit(self.get_earnings_dates, sym): sym for sym in wanted}
+            for future in as_completed(futures):
+                try:
+                    out[futures[future]] = future.result()
+                except ProviderError:
+                    continue
+        return out
+
     def get_intraday_bars(
         self, symbol: str, interval: str, start: date, end: date
     ) -> list[IntradayBar]:
