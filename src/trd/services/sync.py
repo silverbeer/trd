@@ -12,6 +12,21 @@ from trd.repos import EarningsRepo, EngineConfigRepo, InstrumentRepo, PriceRepo,
 RECENT_DAYS = 7
 FULL_BACKFILL_DAYS = 730
 
+# How close an earnings date has to be before it is worth re-checking every pass.
+# A date months out does not move in ways that matter; one inside this window is
+# both the one that can still be rescheduled and the one the blackout depends on.
+EARNINGS_REFRESH_HORIZON_DAYS = 10
+
+
+class EarningsSyncResult(BaseModel):
+    """What an earnings-only refresh touched. Separate from SyncResult because it
+    deliberately pulls no quotes and no bars — the whole point is that it is cheap
+    enough to run on every scan."""
+
+    checked: int
+    events: int
+    failures: list[str]
+
 
 class SyncResult(BaseModel):
     instruments: int
@@ -84,6 +99,65 @@ class SyncService:
             intraday_bars=intraday_count,
             intraday_timeframe=intraday_timeframe,
         )
+
+    def stale_earnings_symbols(self, today: date | None = None) -> list[str]:
+        """Instruments whose earnings date is worth re-checking right now.
+
+        Two cases, and only two — re-pulling everything every five minutes would
+        spend most of its requests confirming dates months away that nobody is
+        about to trade against:
+
+        1. **No future date on record.** This is the case that caused the loss:
+           the provider had not published it yet at the morning sync, so the
+           blackout had nothing to protect against and the engine took the trade
+           on the print. A symbol with no known date is exactly the dangerous one.
+        2. **A date inside the horizon.** Companies reschedule, and a date that
+           moves matters most when it is close.
+
+        Only stocks. ETFs and crypto have no earnings and would fail every pass.
+        """
+        today = today or date.today()
+        horizon = today + timedelta(days=EARNINGS_REFRESH_HORIZON_DAYS)
+        out: list[str] = []
+        for instrument in self.instruments.list_all():
+            if instrument.type != InstrumentType.STOCK:
+                continue
+            next_date = self.earnings.next_for_instrument(instrument.id, today)
+            if next_date is None or next_date <= horizon:
+                out.append(instrument.symbol)
+        return out
+
+    def sync_earnings(
+        self, symbols: list[str] | None = None, today: date | None = None
+    ) -> EarningsSyncResult:
+        """Refresh earnings dates only — no quotes, no bars.
+
+        `trd sync` runs once a day in the engine entrypoint, which is right for
+        daily bars and wrong for earnings: yfinance publishes some dates
+        mid-session. Observed live on 2026-07-28 — the 09:24 sync found no date
+        for BA, the engine entered it at 10:25 on a macd_cross signal, and the
+        date appeared around noon. The trade was taken on the print, unprotected.
+
+        Defaults to the symbols that are actually at risk (see
+        `stale_earnings_symbols`) so this is cheap enough to run every scan.
+        """
+        targets = symbols if symbols is not None else self.stale_earnings_symbols(today)
+        if not targets:
+            return EarningsSyncResult(checked=0, events=0, failures=[])
+
+        by_symbol = self.provider.get_earnings_dates_batch(targets)
+        events = 0
+        failures: list[str] = []
+        for symbol in targets:
+            instrument = self.instruments.get_by_symbol(symbol)
+            if instrument is None:
+                continue
+            dates = by_symbol.get(symbol.upper())
+            if dates is None:
+                failures.append(symbol)
+                continue
+            events += self.earnings.upsert(instrument.id, dates)
+        return EarningsSyncResult(checked=len(targets), events=events, failures=failures)
 
     def sync_intraday(
         self, failures: list[str] | None = None, now: datetime | None = None
