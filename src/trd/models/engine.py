@@ -2,7 +2,7 @@ from datetime import date, datetime
 from decimal import Decimal
 from enum import StrEnum
 
-from pydantic import BaseModel
+from pydantic import BaseModel, computed_field
 
 from trd.models.core import Instrument
 
@@ -43,6 +43,7 @@ class EngineConfig(BaseModel):
     # reads price_intraday, which is what makes a stop reachable inside a session.
     timeframe: str = "1d"
 
+    @computed_field  # type: ignore[prop-decorator]
     @property
     def is_intraday(self) -> bool:
         return self.timeframe != "1d"
@@ -66,6 +67,7 @@ class EngineSignal(BaseModel):
     reason: str
     acted: bool = False
 
+    @computed_field  # type: ignore[prop-decorator]
     @property
     def bar_date(self) -> date:
         """The session the signal belongs to, for anything that groups by day."""
@@ -99,11 +101,13 @@ class EnginePosition(BaseModel):
     exit_price: Decimal | None = None
     exit_reason: str | None = None
 
+    @computed_field  # type: ignore[prop-decorator]
     @property
     def risk_per_share(self) -> Decimal:
         """Entry minus the initial stop — one R, the unit every result is measured in."""
         return self.entry_price - self.stop_price
 
+    @computed_field  # type: ignore[prop-decorator]
     @property
     def cost(self) -> Decimal:
         return self.entry_price * self.quantity
@@ -124,10 +128,12 @@ class EnginePosition(BaseModel):
             return None
         return (price - self.entry_price) / self.risk_per_share
 
+    @computed_field  # type: ignore[prop-decorator]
     @property
     def realized_pnl(self) -> Decimal | None:
         return self.pnl_at(self.exit_price)
 
+    @computed_field  # type: ignore[prop-decorator]
     @property
     def realized_r(self) -> Decimal | None:
         return self.r_multiple_at(self.exit_price)
@@ -158,6 +164,7 @@ class PositionRow(BaseModel):
     instrument: Instrument
     price: Decimal | None = None
 
+    @computed_field  # type: ignore[prop-decorator]
     @property
     def mark(self) -> Decimal | None:
         """Exit price for a closed trade, live price for an open one."""
@@ -165,6 +172,7 @@ class PositionRow(BaseModel):
             return self.position.exit_price
         return self.price
 
+    @computed_field  # type: ignore[prop-decorator]
     @property
     def trail_stop(self) -> Decimal:
         """Where the chandelier stop currently sits. Never below the initial stop."""
@@ -207,21 +215,25 @@ class EngineStatus(BaseModel):
     last_scan: datetime | None
     scans_today: int
 
+    @computed_field  # type: ignore[prop-decorator]
     @property
     def day_mode(self) -> bool:
         return self.flat_at_minute > 0
 
+    @computed_field  # type: ignore[prop-decorator]
     @property
     def regime_gated(self) -> bool:
         """True when any regime switch is on. A gate that silently blocks every
         entry is indistinguishable from a quiet market until you can see it."""
         return self.regime_sma > 0 or self.regime_vix_max > 0
 
+    @computed_field  # type: ignore[prop-decorator]
     @property
     def bar_unit(self) -> str:
         """What one bar is, for anything that counts them at the user."""
         return "day" if self.timeframe == "1d" else self.timeframe
 
+    @computed_field  # type: ignore[prop-decorator]
     @property
     def capacity(self) -> int:
         return max(0, self.max_positions - self.open_positions)
@@ -276,12 +288,14 @@ class StrategyStat(BaseModel):
     avg_r: Decimal | None = None
     open_trades: int = 0
 
+    @computed_field  # type: ignore[prop-decorator]
     @property
     def win_rate(self) -> Decimal | None:
         if self.trades == 0:
             return None
         return Decimal(self.wins) / Decimal(self.trades) * 100
 
+    @computed_field  # type: ignore[prop-decorator]
     @property
     def expectancy_r(self) -> Decimal | None:
         """Average R per trade. Above 0 means the rule paid for its risk."""
