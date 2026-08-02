@@ -38,11 +38,11 @@ import duckdb
 from pydantic import BaseModel, computed_field
 
 from trd.engine import REGISTRY as STRATEGIES
-from trd.engine import evaluate_exits
+from trd.engine import evaluate_exits, regime
 from trd.engine.bars import DAILY, BarSource
 from trd.engine.exits import RULES, ExitDecision
 from trd.errors import TrdError
-from trd.models import Bar, EnginePosition, PositionStatus, SizingMode, StrategyStat
+from trd.models import Bar, DailyBar, EnginePosition, PositionStatus, SizingMode, StrategyStat
 from trd.repos import EarningsRepo, InstrumentRepo, PriceRepo, WatchlistRepo
 from trd.repos.engine import EngineConfigRepo
 from trd.services.engine import ENTRY_CUTOFF_MINUTES, plan_entry, strategy_stats
@@ -133,6 +133,8 @@ class BacktestResult(BaseModel):
     trades: list[BacktestTrade]
     open_at_end: int
     blackout_blocked: int
+    # Bars on which the regime gate refused new entries. 0 when the gate is off.
+    regime_blocked: int = 0
     equity: list[EquityPoint]
     start_value: Decimal
     end_value: Decimal
@@ -261,6 +263,7 @@ def simulate(
     start: date | None = None,
     end: date | None = None,
     timeframe: str = DAILY,
+    regime_bars: Mapping[str, Sequence[DailyBar]] | None = None,
 ) -> BacktestResult:
     """Walk history forward and run the live rules at every step.
 
@@ -334,6 +337,9 @@ def simulate(
     equity: list[EquityPoint] = []
     last_close: dict[str, Decimal] = {}
     blackout_blocked = 0
+    regime_blocked = 0
+    regime_series = {k.upper(): list(v) for k, v in (regime_bars or {}).items()}
+    regime_on = regime.is_configured(exit_params)
     next_id = 1
 
     equity_by_session: dict[date, Decimal] = {}
@@ -389,7 +395,20 @@ def simulate(
         # way _run_entries ranks, filled while capacity lasts.
         capacity = max_positions - len(open_positions)
         too_late = entry_cutoff is not None and (stamp.hour * 60 + stamp.minute) >= entry_cutoff
-        if capacity > 0 and today >= trading_start and not too_late:
+        # Same gate the live scanner runs, over the prefix up to today — the
+        # slice is the lookahead guarantee. Shared code, so the two cannot drift.
+        blocked_by_regime = (
+            regime.blocks_entries(
+                exit_params,
+                trend_bars=regime.slice_to(regime_series.get(regime.TREND_SYMBOL), today),
+                vix_bars=regime.slice_to(regime_series.get(regime.VIX_SYMBOL), today),
+            )
+            if regime_on
+            else None
+        )
+        if blocked_by_regime is not None:
+            regime_blocked += 1
+        if capacity > 0 and today >= trading_start and not too_late and blocked_by_regime is None:
             candidates: list[tuple[float, str, str, list[Bar], str]] = []
             for symbol in sorted(series):
                 i = index[symbol].get(stamp)
@@ -478,6 +497,7 @@ def simulate(
         trades=trades,
         open_at_end=len(open_positions),
         blackout_blocked=blackout_blocked,
+        regime_blocked=regime_blocked,
         equity=equity,
         start_value=start_value,
         end_value=equity[-1].value if equity else start_value,
@@ -511,6 +531,7 @@ class BacktestService:
         sizing_mode: SizingMode | None = None,
         position_size: Decimal | None = None,
         capital: Decimal | None = None,
+        regime_filter: bool | None = None,
     ) -> BacktestResult:
         config = self.configs.get()
         if config is None:
@@ -550,12 +571,31 @@ class BacktestService:
             bars_by_symbol[symbol] = bars
             earnings_by_symbol[symbol] = self.earnings.dates_for_instrument(instrument.id)
 
+        # The point of SB-492: run the same history with the gate on and off and
+        # compare. `regime_filter=False` zeroes the switches for this run only.
+        params = dict(config.exit_params)
+        if regime_filter is False:
+            params["regime_sma"] = 0.0
+            params["regime_vix_max"] = 0.0
+
+        regime_series: dict[str, list[DailyBar]] = {}
+        if regime.is_configured(params):
+            for symbol in regime.REGIME_SYMBOLS:
+                found = self.instruments.get_by_symbol(symbol)
+                if found is None or not self.prices.daily_bars(found.id):
+                    raise TrdError(
+                        f"The regime filter needs {symbol} bars, which are not stored. "
+                        "Run 'trd engine init' to register the regime instruments, "
+                        "then 'trd sync --years 10'."
+                    )
+                regime_series[symbol] = self.prices.daily_bars(found.id)
+
         return simulate(
             bars_by_symbol,
             strategies=config.strategies,
             position_size=position_size or config.position_size,
             max_positions=config.max_positions,
-            exit_params=config.exit_params,
+            exit_params=params,
             earnings_by_symbol=earnings_by_symbol,
             earnings_blackout_days=config.earnings_blackout_days if blackout else 0,
             sizing_mode=sizing_mode or config.sizing_mode,
@@ -564,4 +604,5 @@ class BacktestService:
             start=start,
             end=end,
             timeframe=config.timeframe,
+            regime_bars=regime_series,
         )

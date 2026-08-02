@@ -23,16 +23,18 @@ import duckdb
 from pydantic import BaseModel
 
 from trd.build import build_version
-from trd.engine import DEFAULT_EXIT_PARAMS, EXIT_REGISTRY, evaluate_exits, missing_rules
+from trd.engine import DEFAULT_EXIT_PARAMS, EXIT_REGISTRY, evaluate_exits, missing_rules, regime
 from trd.engine import REGISTRY as STRATEGIES
 from trd.engine.bars import DAILY, INTRADAY_MINUTES, BarSource, validate_timeframe
 from trd.engine.base import indicator, last
+from trd.engine.regime import REGIME_SYMBOLS
 from trd.errors import ProviderError, TrdError
 from trd.learn import GLOSSARY
 from trd.models import (
     Account,
     AccountType,
     Bar,
+    DailyBar,
     EngineConfig,
     EnginePosition,
     EngineRun,
@@ -383,6 +385,46 @@ class EngineService:
             return []
         return [instrument for _, instrument in self.watchlists.items(board.id)]
 
+    # --------------------------------------------------------- market regime
+
+    def ensure_regime_instruments(self) -> list[str]:
+        """Make sure SPY and ^VIX exist as instruments so `trd sync` pulls their
+        bars. They are deliberately *not* added to the engine watchlist: the
+        engine reads them, it never trades them."""
+        created: list[str] = []
+        for symbol in REGIME_SYMBOLS:
+            if self.instruments.get_by_symbol(symbol) is not None:
+                continue
+            try:
+                self.instruments.insert(self.provider.get_info(symbol))
+            except ProviderError:
+                # An index that will not resolve is not worth failing init over.
+                continue
+            created.append(symbol)
+        return created
+
+    def regime_bars(self, symbol: str) -> list[DailyBar]:
+        """Daily bars for a regime instrument, empty when it is not tracked yet.
+
+        Always daily, even on a 5-minute engine: "is the market in a downtrend"
+        is a daily question, and asking it of intraday bars answers a different,
+        noisier one.
+        """
+        instrument = self.instruments.get_by_symbol(symbol)
+        if instrument is None:
+            return []
+        return self.prices.daily_bars(instrument.id)
+
+    def regime_block(self, params: dict[str, float]) -> str | None:
+        """Why new entries are blocked by market regime right now, or None."""
+        if not regime.is_configured(params):
+            return None
+        return regime.blocks_entries(
+            params,
+            trend_bars=self.regime_bars(regime.TREND_SYMBOL),
+            vix_bars=self.regime_bars(regime.VIX_SYMBOL),
+        )
+
     # ------------------------------------------------------------ bar plumbing
 
     @staticmethod
@@ -599,6 +641,15 @@ class EngineService:
                 f"no new entries within {ENTRY_CUTOFF_MINUTES}m of the session close — "
                 "a fill now would be flattened before it could work"
             )
+            return
+
+        # Market regime, checked before any symbol is scanned: when the tape is
+        # broken there is no name worth ranking. Exits are untouched above — a
+        # regime that stops you buying is not a reason to abandon a working stop.
+        blocked = self.regime_block(config.exit_params)
+        if blocked is not None:
+            result.capacity = max(0, config.max_positions - len(held))
+            result.skipped.append(blocked)
             return
         candidates: list[tuple[float, Instrument, list[Bar], int | None, ScanSignal]] = []
         source = self.bars(config)

@@ -33,6 +33,12 @@ DEFAULT_EXIT_PARAMS: dict[str, float] = {
     # Flat-by-the-bell, as HHMM in the engine's local time. 0 disables it, which is
     # what a swing engine wants: its whole design is to carry positions overnight.
     "flat_at_minute": 0.0,
+    # Market-regime gates on *new entries* (see trd.engine.regime). Both 0 = off,
+    # which is every engine that predates them. They live in this bag because it
+    # is the one set of rule knobs both the live scanner and the backtest already
+    # thread through, which is what lets the two share one implementation.
+    "regime_sma": 0.0,  # block entries while SPY closes below its N-day SMA
+    "regime_vix_max": 0.0,  # block entries while VIX closes above this level
 }
 
 
