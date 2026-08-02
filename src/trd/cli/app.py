@@ -1648,6 +1648,20 @@ def engine_init(
             help="Bar width the rules run on: 1d (swing) or 5m/15m/30m/1h (day).",
         ),
     ] = DAILY,
+    regime_sma: Annotated[
+        int,
+        typer.Option(
+            "--regime-sma",
+            help="Block new entries while SPY closes below its N-day average. 0 = off.",
+        ),
+    ] = 0,
+    regime_vix_max: Annotated[
+        float,
+        typer.Option(
+            "--regime-vix-max",
+            help="Block new entries while VIX closes above this level. 0 = off.",
+        ),
+    ] = 0.0,
 ) -> None:
     """Set up the engine: a simulation account, a 10-name universe, and the rule set."""
     service = _engine_service()
@@ -1668,10 +1682,24 @@ def engine_init(
             strategies=[s.strip() for s in strategies.split(",") if s.strip()]
             if strategies
             else None,
-            exit_params={"flat_at_minute": float(flat_at)} if flat_at else None,
+            exit_params={
+                k: v
+                for k, v in {
+                    "flat_at_minute": float(flat_at),
+                    "regime_sma": float(regime_sma),
+                    "regime_vix_max": float(regime_vix_max),
+                }.items()
+                if v
+            }
+            or None,
             sizing_mode=mode,
             timeframe=timeframe,
         )
+        # SPY and ^VIX become tracked instruments so `trd sync` pulls their bars.
+        # Registered unconditionally: the backtest needs them to answer "what
+        # would the gate have done", which is the question you ask *before*
+        # switching it on.
+        service.ensure_regime_instruments()
     except TrdError as exc:
         _fail(exc)
         return
@@ -2090,6 +2118,14 @@ def engine_backtest(
             "--size", help="Override dollars per trade — needed to compare sizing modes fairly."
         ),
     ] = None,
+    regime_filter: Annotated[
+        bool | None,
+        typer.Option(
+            "--regime/--no-regime",
+            help="Override the market-regime gate for this run — the point is to "
+            "compare the same history with it on and off.",
+        ),
+    ] = None,
     as_json: Annotated[bool, typer.Option("--json", help="Emit the result as JSON.")] = False,
 ) -> None:
     """Replay the engine's rules against stored history. Same rules, same
@@ -2115,6 +2151,7 @@ def engine_backtest(
             sizing_mode=SizingMode(sizing) if sizing else None,
             position_size=_parse_decimal(size, "size") if size else None,
             capital=_parse_decimal(capital, "capital") if capital else None,
+            regime_filter=regime_filter,
         )
     except TrdError as exc:
         _fail(exc)
