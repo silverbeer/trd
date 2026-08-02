@@ -905,6 +905,8 @@ class EngineService:
             earnings_blackout_days=config.earnings_blackout_days,
             flat_at_minute=int(config.exit_params.get("flat_at_minute", 0)),
             timeframe=config.timeframe,
+            regime_sma=int(config.exit_params.get("regime_sma", 0)),
+            regime_vix_max=float(config.exit_params.get("regime_vix_max", 0)),
             open_positions=len(open_pairs),
             committed=committed,
             unrealized=unrealized,

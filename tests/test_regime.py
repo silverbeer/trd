@@ -288,3 +288,43 @@ def test_backtest_refuses_when_the_gate_has_no_bars(
 
     with pytest.raises(TrdError, match="regime filter needs"):
         BacktestService(conn).run(years=1)
+
+
+# ------------------------------------------------------------------ visibility
+
+
+def test_status_reports_the_gate_when_it_is_off(engine, provider) -> None:
+    provider.add_symbol("AAA", price="100")
+    engine.init(symbols=["AAA"])
+    status = engine.status()
+    assert status.regime_gated is False
+    assert status.regime_sma == 0
+
+
+def test_status_reports_the_gate_when_it_is_on(engine, provider) -> None:
+    """An engine that silently refuses every entry looks exactly like a quiet
+    market. The only way to tell used to be reading the config by hand."""
+    provider.add_symbol("AAA", price="100")
+    engine.init(symbols=["AAA"], exit_params={"regime_sma": 100.0, "regime_vix_max": 30.0})
+    status = engine.status()
+    assert status.regime_gated is True
+    assert status.regime_sma == 100
+    assert status.regime_vix_max == 30.0
+
+
+def test_the_gate_appears_in_the_status_panel(engine, provider) -> None:
+    from trd.cli.render import engine_status_renderables
+
+    provider.add_symbol("AAA", price="100")
+    engine.init(symbols=["AAA"], exit_params={"regime_sma": 100.0})
+    rendered = engine_status_renderables(engine.status())
+
+    from rich.console import Console
+
+    console = Console(width=120, no_color=True)
+    with console.capture() as cap:
+        for r in rendered:
+            console.print(r)
+    text = cap.get()
+    assert "regime gate" in text
+    assert "SPY below its 100-day" in text
