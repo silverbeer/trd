@@ -634,6 +634,36 @@ _ENTRIES: list[GlossaryEntry] = [
         used_in=["trd engine init --flat-at", "trd engine rules"],
     ),
     GlossaryEntry(
+        key="market-regime",
+        term="Market regime filter",
+        category=Category.ENGINE,
+        definition=(
+            "A gate on *new entries* that asks what the whole market is doing, not what "
+            "one name is doing. Every entry strategy already checks that its own symbol is "
+            "above its own 200-day; none of them ask whether the tape is falling. That gap "
+            "matters because correlations converge in a selloff — five slots filled with "
+            "whatever is still above its own average becomes one bet, not five. The gate "
+            "blocks buying and nothing else: open positions keep running their exits, "
+            "because a regime that stops you buying is not a reason to abandon a stop that "
+            "is already working. Off by default, and missing data never blocks — a filter "
+            "that halts trading because a sync failed looks identical to one that is working."
+        ),
+        formula=(
+            "regime_sma = N: block entries while SPY close < SMA(N) of SPY; "
+            "regime_vix_max = V: block entries while VIX close > V. 0 disables either."
+        ),
+        example=(
+            "Backtested 8y on 25 names: off -> -37.3% max drawdown; SPY 100-day gate -> "
+            "-16.1%, ending with 10% less money. Less profit, half the pain."
+        ),
+        related=["max-drawdown", "expectancy", "backtest", "timeframe"],
+        used_in=[
+            "trd engine init --regime-sma",
+            "trd engine status",
+            "trd engine backtest --regime",
+        ],
+    ),
+    GlossaryEntry(
         key="timeframe",
         term="Timeframe (bar width)",
         category=Category.ENGINE,
