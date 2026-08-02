@@ -1568,6 +1568,20 @@ def engine_status_renderables(status: EngineStatus) -> list[RenderableType]:
         "earnings blackout",
         f"{status.earnings_blackout_days}d" if status.earnings_blackout_days else "off",
     )
+    # Loud on purpose. An engine that quietly refuses every entry looks exactly
+    # like a quiet market, and the only way to tell used to be reading the config.
+    if status.regime_gated:
+        gates = []
+        if status.regime_sma:
+            gates.append(f"SPY below its {status.regime_sma}-day")
+        if status.regime_vix_max:
+            gates.append(f"VIX above {status.regime_vix_max:g}")
+        rules.add_row(
+            "[yellow]regime gate[/yellow]",
+            f"[yellow]on — no entries while {' or '.join(gates)}[/yellow]",
+        )
+    else:
+        rules.add_row("regime gate", "off")
     out.append(rules)
 
     book = Table(title="Book", title_justify="left", show_header=False, box=None)

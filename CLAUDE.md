@@ -73,11 +73,16 @@ trd sim init --monthly 100 [--strategy ticker|momentum] [--ticker SPY] [--alloc 
                                       # sim = plan on a paper (simulation) account; sim invest/status same
 trd engine init [--account NAME] [--size 1000] [--max 5] [--symbols A,B,...] [--strategies K,K]
                       [--sizing exposure|risk] [--timeframe 1d|5m|15m|30m|1h] [--flat-at 1555]
+                      [--regime-sma 100] [--regime-vix-max 30]
                                                  # 'exposure' commits --size/trade (risk floats);
                                                  # 'risk' risks --size/trade (position size floats)
                                                  # --timeframe is the bar width the rules run on;
                                                  # a day engine (--flat-at) is refused on 1d bars,
                                                  # where a 2xATR stop can't be reached before the bell
+                                                 # --regime-* gate NEW ENTRIES on the market, not the
+                                                 # name: no buys while SPY is under its N-day or VIX
+                                                 # is over V. Exits keep running. BOTH OFF BY DEFAULT
+                                                 # ('trd engine status' shows the gate either way)
                                       # monitor-mode trading engine: paper-trades a 10-name universe
                                       # on a simulation account. Needs 'trd sync --full' (200 bars)
 trd engine scan [--paper/--no-paper] [--json]   # one pass: exits first, then best-ranked entries
@@ -93,6 +98,8 @@ trd engine runs [-n N] [--today]      # scan history + interval between passes; 
 trd engine status [--json]            # what this engine is + whether it's healthy: build, DB, rule set,
                                       # capacity, bar depth, last scan. No network — answers when yfinance doesn't
 trd engine backtest [--years N] [--fill intrabar|close] [--no-blackout] [--symbols A,B]
+trd engine backtest --regime/--no-regime        # same history with the regime gate on and off —
+                                      # the comparison the gate should be judged on, never assumed
                                       # replay the rules against stored history — same scorecard as
                                       # 'report', hundreds of trades per run. Needs 'trd sync
                                       # --years 10'. Day-mode engines backtest on their intraday

@@ -248,6 +248,33 @@ and retroactively adjusted prices. The output says so every time.
   interval between scans, because "the engine did nothing" and "the engine never
   ran" look identical without the cadence.
 
+### Market regime — the one filter that is off by default
+
+Every entry strategy asks whether *one name* is in an uptrend. None asks what the
+market is doing, which is fine while correlations are loose and dangerous when they
+are not: in a selloff they converge toward 1, and five slots filled with whatever is
+still above its own average is one bet, not five.
+
+`trd.engine.regime` gates **new entries only** on two independent switches —
+`regime_sma` (SPY under its N-day) and `regime_vix_max` (VIX over V). Exits keep
+running throughout, because a regime that stops you buying is not a reason to
+abandon a stop that already works.
+
+It ships **off**, and that is a deliberate stance rather than caution. Measured over
+8 years and 25 names, a 100-day gate cut max drawdown from -37.3% to -16.1% while
+ending with about 10% less money. That is a preference about how much pain is worth
+how much return, and the tool does not get to hold a preference. Two details make
+the number less authoritative than it looks: settings 120 and 130 both produce
+*exactly* -24.5%, and 140 and 150 both produce *exactly* -34.4% — identical to the
+decimal means one market episode is setting the value and the parameter only decides
+which side of it you stood on. So the shape is evidence and the precision is not:
+anything in 90-110 is one setting.
+
+The same code runs in the live scanner and the backtest, and `trd engine status`
+always prints whether the gate is on. A filter that silently refuses every entry is
+indistinguishable from a quiet market, which is exactly the failure this project
+keeps finding: nothing errors, it just stops protecting you.
+
 ## Indicator Data Model (evolvable by design)
 
 The set of indicators I follow will change as I learn. The model splits three layers so adding/removing an indicator is a data change, not a schema or code change.

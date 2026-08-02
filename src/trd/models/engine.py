@@ -189,6 +189,9 @@ class EngineStatus(BaseModel):
     earnings_blackout_days: int
     flat_at_minute: int
     timeframe: str = "1d"
+    # Market-regime gate on new entries. 0 = off, which is the default.
+    regime_sma: int = 0
+    regime_vix_max: float = 0.0
 
     open_positions: int
     committed: Decimal
@@ -207,6 +210,12 @@ class EngineStatus(BaseModel):
     @property
     def day_mode(self) -> bool:
         return self.flat_at_minute > 0
+
+    @property
+    def regime_gated(self) -> bool:
+        """True when any regime switch is on. A gate that silently blocks every
+        entry is indistinguishable from a quiet market until you can see it."""
+        return self.regime_sma > 0 or self.regime_vix_max > 0
 
     @property
     def bar_unit(self) -> str:
