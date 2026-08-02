@@ -3,7 +3,7 @@ from decimal import Decimal
 from enum import StrEnum
 from typing import Protocol
 
-from pydantic import BaseModel
+from pydantic import BaseModel, computed_field
 
 
 class InstrumentType(StrEnum):
@@ -72,18 +72,21 @@ class Quote(BaseModel):
     volume: int | None = None
     avg_volume: int | None = None
 
+    @computed_field  # type: ignore[prop-decorator]
     @property
     def day_change(self) -> Decimal | None:
         if self.prev_close is None:
             return None
         return self.price - self.prev_close
 
+    @computed_field  # type: ignore[prop-decorator]
     @property
     def day_change_pct(self) -> Decimal | None:
         if self.prev_close is None or self.prev_close == 0:
             return None
         return (self.price - self.prev_close) / self.prev_close * 100
 
+    @computed_field  # type: ignore[prop-decorator]
     @property
     def year_range_pct(self) -> Decimal | None:
         """Where price sits in the 52-week range: 0 = at low, 100 = at high."""
@@ -94,6 +97,7 @@ class Quote(BaseModel):
             return None
         return (self.price - self.year_low) / span * 100
 
+    @computed_field  # type: ignore[prop-decorator]
     @property
     def volume_ratio(self) -> Decimal | None:
         """Today's volume vs average — >1 means heavier than usual."""
@@ -115,12 +119,14 @@ class LotPosition(BaseModel):
     price: Decimal | None = None
     price_stale: bool = False
 
+    @computed_field  # type: ignore[prop-decorator]
     @property
     def value(self) -> Decimal | None:
         if self.price is None:
             return None
         return self.price * self.quantity
 
+    @computed_field  # type: ignore[prop-decorator]
     @property
     def gain(self) -> Decimal | None:
         value = self.value
@@ -128,6 +134,7 @@ class LotPosition(BaseModel):
             return None
         return value - self.cost
 
+    @computed_field  # type: ignore[prop-decorator]
     @property
     def gain_pct(self) -> Decimal | None:
         gain = self.gain
@@ -170,6 +177,7 @@ class ExitCheckRow(BaseModel):
     note: str | None = None
     last_close: Decimal | None = None
 
+    @computed_field  # type: ignore[prop-decorator]
     @property
     def status(self) -> ExitStatus:
         if self.last_close is None:
@@ -180,6 +188,7 @@ class ExitCheckRow(BaseModel):
             return ExitStatus.TARGET_HIT
         return ExitStatus.OK
 
+    @computed_field  # type: ignore[prop-decorator]
     @property
     def stop_cushion_pct(self) -> Decimal | None:
         """How far the close sits above the stop, as % of close. Positive = cushion."""
@@ -187,6 +196,7 @@ class ExitCheckRow(BaseModel):
             return None
         return (self.last_close - self.stop_price) / self.last_close * 100
 
+    @computed_field  # type: ignore[prop-decorator]
     @property
     def target_upside_pct(self) -> Decimal | None:
         """How far the close is below the target, as % of close. Positive = room to run."""
@@ -293,18 +303,21 @@ class Position(BaseModel):
     prev_close: Decimal | None = None
     price_stale: bool = False
 
+    @computed_field  # type: ignore[prop-decorator]
     @property
     def avg_cost(self) -> Decimal | None:
         if self.quantity == 0:
             return None
         return self.cost_basis / self.quantity
 
+    @computed_field  # type: ignore[prop-decorator]
     @property
     def market_value(self) -> Decimal | None:
         if self.price is None:
             return None
         return self.price * self.quantity
 
+    @computed_field  # type: ignore[prop-decorator]
     @property
     def unrealized_pl(self) -> Decimal | None:
         mv = self.market_value
@@ -312,6 +325,7 @@ class Position(BaseModel):
             return None
         return mv - self.cost_basis
 
+    @computed_field  # type: ignore[prop-decorator]
     @property
     def unrealized_pl_pct(self) -> Decimal | None:
         pl = self.unrealized_pl
@@ -319,12 +333,14 @@ class Position(BaseModel):
             return None
         return pl / self.cost_basis * 100
 
+    @computed_field  # type: ignore[prop-decorator]
     @property
     def day_change(self) -> Decimal | None:
         if self.price is None or self.prev_close is None:
             return None
         return (self.price - self.prev_close) * self.quantity
 
+    @computed_field  # type: ignore[prop-decorator]
     @property
     def day_change_pct(self) -> Decimal | None:
         if self.price is None or self.prev_close is None or self.prev_close == 0:

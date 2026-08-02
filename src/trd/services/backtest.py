@@ -143,6 +143,7 @@ class BacktestResult(BaseModel):
     skipped: list[str] = []
     caveat: str = CAVEAT
 
+    @computed_field  # type: ignore[prop-decorator]
     @property
     def total_return_pct(self) -> Decimal | None:
         if self.start_value == 0:
