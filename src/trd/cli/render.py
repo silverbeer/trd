@@ -1566,6 +1566,21 @@ def engine_status_renderables(status: EngineStatus) -> list[RenderableType]:
     header = f"[bold]{status.account}[/bold]  ·  {mode}\nbuild {status.build}\n{status.db_path}"
     out: list[RenderableType] = [Panel(header, expand=False, border_style="cyan")]
 
+    # Directly under the header, before any number it invalidates. An engine in a
+    # configuration `init` would refuse produces results that look like a flat
+    # strategy rather than a broken one, so the scorecard below must not be read
+    # before this is.
+    if status.config_refused:
+        out.append(
+            Panel(
+                f"[red]{status.config_refused}[/red]",
+                title="[red]misconfigured[/red]",
+                title_align="left",
+                expand=False,
+                border_style="red",
+            )
+        )
+
     rules = Table(title="Rule set", title_justify="left", show_header=False, box=None)
     rules.add_column(style="dim")
     rules.add_column()

@@ -5,6 +5,7 @@ from enum import StrEnum
 from pydantic import BaseModel, computed_field
 
 from trd.models.core import Instrument
+from trd.timeframes import INTRADAY_MINUTES, day_mode_on_daily_bars
 
 
 class PositionStatus(StrEnum):
@@ -306,6 +307,26 @@ class EngineStatus(BaseModel):
     @property
     def day_mode(self) -> bool:
         return self.flat_at_minute > 0
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def config_refused(self) -> str | None:
+        """Why this engine's own configuration is one `init` would now reject.
+
+        The guard runs at init, so an engine created before it keeps running in a
+        state the code calls a bug and nothing says so. Status is where that has
+        to surface: it is the command reached for when results look wrong, and
+        "every trade exits on the clock" looks like a flat strategy, not a
+        misconfiguration.
+        """
+        refused = day_mode_on_daily_bars(self.timeframe, self.flat_at_minute)
+        if refused is None:
+            return None
+        return (
+            f"{refused} This engine is already running that way — rebuild it on an "
+            f"intraday timeframe ({'/'.join(INTRADAY_MINUTES)}). Until then its "
+            "R-multiples describe risk it never took."
+        )
 
     @computed_field  # type: ignore[prop-decorator]
     @property
