@@ -25,16 +25,8 @@ path does not: a k3s CronJob has nobody to click "Sign in".
 ### 1. Deny the writes first
 
 `.claude/settings.json` — the **committed** project file, not
-`settings.local.json` — carries the deny rule. It is in place before the server
-is added, so no write tool is ever callable, not even by accident during setup:
-
-```json
-{
-  "permissions": {
-    "deny": ["mcp__robinhood-trading"]
-  }
-}
-```
+`settings.local.json` — carries the gate. It is in place before the server is
+added, so no write tool is ever callable, not even by accident during setup.
 
 It is committed on purpose. `settings.local.json` is globally gitignored, so a
 gate that lived there would exist on exactly one machine and silently not exist
@@ -42,26 +34,45 @@ on any fresh clone — the failure mode being "writes are allowed and nobody
 said so". Denying a server that a given checkout has not configured costs
 nothing.
 
-The rule denies the **whole server** while the exact tool names are unknown.
-Once the server is authenticated and its tool list is visible, narrow it in
-`.claude/settings.json` to the write tools by name and allow the reads
-explicitly:
+Bootstrapping is deliberately two-stage, because the exact tool names are not
+knowable until the server answers. **Stage one**, before the server is added,
+denies the whole server:
 
 ```json
-{
-  "permissions": {
-    "allow": ["mcp__robinhood-trading__<read tool>", "..."],
-    "deny":  ["mcp__robinhood-trading__<write tool>", "..."]
-  }
-}
+{ "permissions": { "deny": ["mcp__robinhood-trading"] } }
 ```
 
-`deny` beats `allow`, so a write tool listed in both stays blocked. Permission
-rules match MCP tools as `mcp__<server>` (all tools on that server) or
+That blocks the reads too, which is correct for a checkout that has not been
+through stage two — nothing is trusted before it has been named.
+
+**Stage two**, once authenticated, replaces it with every tool listed by name:
+34 reads allowed, 19 denied. `deny` beats `allow`, so a tool in both stays
+blocked. Permission rules match MCP tools as `mcp__<server>` (all tools) or
 `mcp__<server>__<tool>` (exactly one) — there is no mid-name wildcard, so each
-write tool needs its own line. That is deliberate: a new write tool added by
-Robinhood next month is *not* silently covered by a pattern, and shows up as an
-unlisted tool rather than an allowed one.
+tool needs its own line. That is the point: a tool Robinhood adds next month
+matches neither list, so it is neither silently allowed nor silently denied — it
+surfaces as an unlisted tool that requires an explicit decision.
+
+The 19 denied are the 17 that mutate broker state — `place_equity_order`,
+`place_option_order`, `cancel_equity_order`, `cancel_option_order`,
+`exercise_option`, `cancel_option_exercise`, the six watchlist mutations and the
+four scan mutations — plus `review_equity_order` and `review_option_order`.
+
+The two `review_*` tools do not place anything; they price an order and return
+pre-trade alerts. They are denied anyway. trd decides what to trade from its own
+data, so the order path has no read that trd needs, and leaving the
+order-shaped surface reachable invites a session to drift toward it one harmless
+call at a time.
+
+### Re-enumerating the tool list
+
+The list above is a snapshot. To re-derive it — from the server, not from
+documentation, and without calling a single tool — issue a JSON-RPC
+`initialize` followed by `tools/list` against the endpoint with the stored OAuth
+token. Never read that token by a means that prints it to a terminal or a
+transcript; pipe it. `security find-generic-password -s "Claude Code-credentials" -g`
+prints the secret and will leak both the Robinhood tokens and the Claude Code
+session token — use `-w` and pipe it into the request.
 
 ### 2. Add the server, at **local** scope
 
@@ -95,7 +106,9 @@ claude mcp list
 Don't, for now. The ticket that built this gate ([SB-500]) explicitly excludes
 order placement even behind a flag. When that changes, the opt-in is an explicit
 per-tool `allow` entry plus removing that tool from `deny` — one tool at a time,
-in `settings.local.json`, reviewed as a diff.
+in the **committed** `.claude/settings.json`, reviewed as a diff. Not
+`settings.local.json`: a lifted ban is exactly the change that must be visible
+in version control on every machine, not just the one that made it.
 
 ## Reconciliation
 
