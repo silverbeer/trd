@@ -592,7 +592,8 @@ class EngineService:
             fill = ScanFill(
                 symbol=instrument.symbol,
                 strategy=position.strategy,
-                quantity=position.quantity,
+                # What is still on. A trimmed position sells only its remainder.
+                quantity=live.remaining_quantity,
                 price=price,
                 reason=decision.reason,
                 rule=decision.rule,
@@ -604,7 +605,7 @@ class EngineService:
                     account_id=account.id,
                     instrument_id=instrument.id,
                     side=Side.SELL,
-                    quantity=position.quantity,
+                    quantity=live.remaining_quantity,
                     price=price,
                     fees=Decimal(0),
                     executed_at=now,
@@ -826,6 +827,89 @@ class EngineService:
             quantity=plan.quantity,
             price=price,
             reason=scan_signal.reason,
+        )
+
+    def trim(
+        self,
+        symbol: str,
+        pct: Decimal | None = None,
+        quantity: Decimal | None = None,
+        price: Decimal | None = None,
+        at: datetime | None = None,
+    ) -> ScanFill:
+        """Sell part of an open engine position and leave the rest running.
+
+        The manual counterpart to an exit rule: life happens and you want some
+        cash out, without abandoning the trade or corrupting the book. `trd sell`
+        cannot do this — it would leave `engine_position` claiming the original
+        size, and the engine would later sell all of it (SB-550).
+
+        The stop, target and trail are deliberately untouched. Taking money off
+        the table is not a reason to change the plan for what is left.
+        """
+        account = self.account()
+        instrument = self.instruments.get_by_symbol(symbol.upper())
+        if instrument is None:
+            raise TrdError(f"Unknown symbol {symbol.upper()}.")
+        pairs = [(p, i) for p, i in self.positions.list_open(account.id) if i.id == instrument.id]
+        if not pairs:
+            raise TrdError(
+                f"The engine holds no open position in {instrument.symbol} on "
+                f"'{account.name}'. 'trd engine positions' shows what it does hold."
+            )
+        position, _ = pairs[0]
+
+        if (pct is None) == (quantity is None):
+            raise TrdError("Give exactly one of --pct or --quantity.")
+        if pct is not None:
+            if not (0 < pct < 100):
+                raise TrdError("--pct must be between 0 and 100 exclusive. Use an exit to close.")
+            sell = (position.remaining_quantity * pct / 100).quantize(
+                Decimal("0.000001"), rounding=ROUND_DOWN
+            )
+        else:
+            assert quantity is not None
+            sell = quantity
+        if sell <= 0:
+            raise TrdError("That rounds to nothing — nothing to sell.")
+        if sell >= position.remaining_quantity:
+            raise TrdError(
+                f"Only {position.remaining_quantity.normalize():f} left. Trimming all of it "
+                "would close the position — let an exit rule do that, so the trade records "
+                "why it ended."
+            )
+
+        if price is None:
+            quote = self._quotes([instrument.symbol]).get(instrument.symbol)
+            if quote is None:
+                raise TrdError(f"No quote for {instrument.symbol} — pass --price.")
+            price = quote.price
+
+        now = at or datetime.now()
+        self.txns.insert(
+            account_id=account.id,
+            instrument_id=instrument.id,
+            side=Side.SELL,
+            quantity=sell,
+            price=price,
+            fees=Decimal(0),
+            executed_at=now,
+            note=f"engine {position.strategy} trim",
+        )
+        self.positions.trim(position.id, sell, price)
+        return ScanFill(
+            symbol=instrument.symbol,
+            strategy=position.strategy,
+            quantity=sell,
+            price=price,
+            reason=(
+                f"trimmed {sell.normalize():f} of "
+                f"{position.remaining_quantity.normalize():f} at {price} — "
+                f"{(position.remaining_quantity - sell).normalize():f} still running on the "
+                "same stop and target"
+            ),
+            rule="trim",
+            pnl=(price - position.entry_price) * sell,
         )
 
     # ----------------------------------------------------------------- views
