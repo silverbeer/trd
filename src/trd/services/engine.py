@@ -950,9 +950,11 @@ class EngineService:
         account = self.account()
         universe = self.universe()
         open_pairs = self.positions.list_open(account.id)
+        closed_pairs = self.positions.list_closed(account.id)
 
         committed = sum((p.cost for p, _ in open_pairs), Decimal(0))
         unrealized = Decimal(0)
+        risk = Decimal(0)
         stale = False
         for position, instrument in open_pairs:
             close = self.prices.latest_close(instrument.id)
@@ -960,6 +962,18 @@ class EngineService:
                 stale = True
                 continue
             unrealized += position.pnl_at(close) or Decimal(0)
+            # Same object the positions table renders, so the total and the
+            # per-position column can never disagree about what a stop is worth.
+            row = PositionRow(position=position, instrument=instrument, price=close)
+            risk += row.risk_at_stop or Decimal(0)
+
+        # Booked cash from closed trades *and* from partial exits on positions
+        # still running: a trim takes real money off the table, and it is in
+        # neither `unrealized` (which prices only what is left) nor the closed set.
+        realized = sum(
+            (p.booked_pnl for p, _ in [*closed_pairs, *open_pairs]),
+            Decimal(0),
+        )
 
         source = self.bars(config)
         if source.is_intraday:
@@ -992,8 +1006,11 @@ class EngineService:
             regime_sma=int(config.exit_params.get("regime_sma", 0)),
             regime_vix_max=float(config.exit_params.get("regime_vix_max", 0)),
             open_positions=len(open_pairs),
+            closed_trades=len(closed_pairs),
             committed=committed,
             unrealized=unrealized,
+            realized=realized,
+            risk_at_stop=risk,
             marks_are_stale=stale,
             bars_total=total,
             bars_first=first,
