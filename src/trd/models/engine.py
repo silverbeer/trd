@@ -100,6 +100,22 @@ class EnginePosition(BaseModel):
     closed_at: datetime | None = None
     exit_price: Decimal | None = None
     exit_reason: str | None = None
+    # How much of the original size has been sold, and the cash it booked.
+    # `quantity` stays the size taken at entry so the R denominator never moves.
+    closed_quantity: Decimal = Decimal(0)
+    booked_pnl: Decimal = Decimal(0)
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def remaining_quantity(self) -> Decimal:
+        """What is still on. Exits sell this, not the original size."""
+        return self.quantity - self.closed_quantity
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def is_partial(self) -> bool:
+        """Some has been sold and some is still running."""
+        return self.closed_quantity > 0 and self.remaining_quantity > 0
 
     @computed_field  # type: ignore[prop-decorator]
     @property
@@ -113,9 +129,10 @@ class EnginePosition(BaseModel):
         return self.entry_price * self.quantity
 
     def pnl_at(self, price: Decimal | None) -> Decimal | None:
+        """Unrealised P&L on what is still held — the part a price can still move."""
         if price is None:
             return None
-        return (price - self.entry_price) * self.quantity
+        return (price - self.entry_price) * self.remaining_quantity
 
     def pnl_pct_at(self, price: Decimal | None) -> Decimal | None:
         if price is None or self.entry_price == 0:
@@ -128,15 +145,48 @@ class EnginePosition(BaseModel):
             return None
         return (price - self.entry_price) / self.risk_per_share
 
+    def book_exit(self, quantity: Decimal, price: Decimal) -> None:
+        """Record a sale of `quantity` at `price` against this position.
+
+        The one place a partial or final exit is accounted, so the live engine and
+        the backtest cannot drift on how a scaled-out trade is scored. `quantity`
+        (the original size) is never touched — R is measured against what was
+        risked at entry.
+        """
+        prior = self.closed_quantity
+        self.booked_pnl += (price - self.entry_price) * quantity
+        self.closed_quantity = prior + quantity
+        self.exit_price = (
+            price
+            if prior <= 0 or self.exit_price is None
+            else ((self.exit_price * prior) + price * quantity) / (prior + quantity)
+        )
+
     @computed_field  # type: ignore[prop-decorator]
     @property
     def realized_pnl(self) -> Decimal | None:
-        return self.pnl_at(self.exit_price)
+        """Cash actually taken, summed over every exit this position has had.
+
+        For a trade that closed in one go this is exactly what it always was:
+        (exit - entry) x quantity. A scaled-out trade adds each piece as it goes.
+        """
+        if self.closed_quantity <= 0:
+            return None
+        return self.booked_pnl
 
     @computed_field  # type: ignore[prop-decorator]
     @property
     def realized_r(self) -> Decimal | None:
-        return self.r_multiple_at(self.exit_price)
+        """Booked result in units of the risk taken at entry.
+
+        The denominator is deliberately the *original* size: R measures the trade
+        against what it risked, not against whatever is left of it. Sell 90% at
+        +2R and stop the last 10% at -1R and this reads +1.7R — one number for one
+        trade, which is what makes the scorecard mean anything.
+        """
+        if self.closed_quantity <= 0 or self.risk_per_share <= 0 or self.quantity <= 0:
+            return None
+        return self.booked_pnl / (self.risk_per_share * self.quantity)
 
 
 class EngineRun(BaseModel):

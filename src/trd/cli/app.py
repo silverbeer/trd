@@ -2233,6 +2233,48 @@ def version_cmd() -> None:
     console.print(build_version())
 
 
+@engine_app.command("trim")
+def engine_trim(
+    symbol: Annotated[str, typer.Argument(help="Symbol the engine is holding.")],
+    pct: Annotated[
+        float | None,
+        typer.Option("--pct", help="Percent of what is still held to sell, e.g. 50."),
+    ] = None,
+    quantity: Annotated[
+        str | None, typer.Option("--quantity", help="Exact quantity to sell instead of a percent.")
+    ] = None,
+    price: Annotated[
+        str | None, typer.Option("--price", help="Fill price. Omit to use the live quote.")
+    ] = None,
+    as_json: Annotated[bool, typer.Option("--json", help="Emit the fill as JSON.")] = False,
+) -> None:
+    """Sell part of an open engine position and leave the rest running.
+
+    For taking cash out of a live trade without abandoning it. The stop, target
+    and trail are untouched — trimming changes the size, not the plan. Use an
+    exit rule to close a position outright, so the trade records why it ended.
+    """
+    _use_json(as_json)
+    service = _engine_service()
+    try:
+        fill = service.trim(
+            symbol,
+            pct=Decimal(str(pct)) if pct is not None else None,
+            quantity=_parse_decimal(quantity, "quantity") if quantity else None,
+            price=_parse_decimal(price, "price") if price else None,
+        )
+    except TrdError as exc:
+        _fail(exc)
+        return
+    if as_json:
+        console.print_json(fill.model_dump_json())
+        return
+    console.print(
+        f"Trimmed [bold]{fill.quantity.normalize():f}[/bold] {fill.symbol} @ "
+        f"{fmt_money(fill.price)} ({fmt_signed(fill.pnl)} booked).\n{fill.reason}"
+    )
+
+
 @engine_app.command("rules")
 def engine_rules() -> None:
     """What every entry strategy looks for and how each exit rule works."""

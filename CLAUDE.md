@@ -89,6 +89,15 @@ trd engine scan [--paper/--no-paper] [--json]   # one pass: exits first, then be
 trd engine monitor [--interval 60] [--passes N] # live view on a terminal: book stays still, clock/
                                       # capacity/activity move. Piped or --ndjson falls back to scrolling
 trd engine positions [--all]          # open trades: entry, stop (↑ = trailing in force), target, R
+trd engine trim SYM --pct 50          # sell part of an open position, leave the rest running.
+                      [--quantity N] [--price P]   # for taking cash out without abandoning the
+                                      # trade. Stop/target/trail untouched — trimming changes the
+                                      # size, not the plan. Trimming ALL of it is refused: closing
+                                      # goes through an exit rule so the trade records why it ended.
+                                      # R stays honest — 90% at +2R then -1R on the rest = +1.7R,
+                                      # measured against the size taken at entry.
+                                      # NOTE 'trd sell' on an engine-held symbol is refused; it
+                                      # would desync engine_position and take the account short
 trd engine signals [-n 25] [-s KEY]   # every signal fired, taken or passed over, with its reason
 trd engine report                     # per-strategy scorecard: win%, avg win/loss, expectancy in R
 trd engine rules                      # what each entry strategy looks for + the 5 exit rules

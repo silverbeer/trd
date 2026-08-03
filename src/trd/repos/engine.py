@@ -26,7 +26,7 @@ _SIGNAL_COLS = "id, run_id, instrument_id, strategy, bar_ts, fired_at, price, sc
 _POSITION_COLS = (
     "id, account_id, instrument_id, signal_id, strategy, opened_at, entry_price, quantity, "
     "stop_price, target_price, atr_at_entry, trail_high, bars_held, last_bar_date, status, "
-    "closed_at, exit_price, exit_reason"
+    "closed_at, exit_price, exit_reason, closed_quantity, booked_pnl"
 )
 _RUN_COLS = "id, started_at, scanned, signals, opened, closed, paper, note"
 
@@ -87,6 +87,10 @@ def _row_to_position(row: tuple) -> EnginePosition:
         closed_at=row[15],
         exit_price=row[16],
         exit_reason=row[17],
+        # Nullable in the schema: DuckDB rejects ADD COLUMN with a constraint, so a
+        # row written before migration 016 reads NULL and means 'nothing sold yet'.
+        closed_quantity=row[18] if row[18] is not None else Decimal(0),
+        booked_pnl=row[19] if row[19] is not None else Decimal(0),
     )
 
 
@@ -326,7 +330,10 @@ class EnginePositionRepo:
             """,
             params,
         ).fetchall()
-        return [(_row_to_position(r[:18]), _row_to_instrument(r[18:])) for r in rows]
+        # Derived, not a literal: this split silently broke when migration 016
+        # added two columns and the hardcoded 18 stopped matching.
+        n = len(_POSITION_COLS.split(", "))
+        return [(_row_to_position(r[:n]), _row_to_instrument(r[n:])) for r in rows]
 
     def list_open(self, account_id: int) -> list[tuple[EnginePosition, Instrument]]:
         return self._list("WHERE p.account_id = ? AND p.status = 'open'", [account_id])
@@ -363,11 +370,63 @@ class EnginePositionRepo:
     def close(
         self, position_id: int, closed_at: datetime, exit_price: Decimal, exit_reason: str
     ) -> None:
+        """Sell whatever is left and book the result.
+
+        Written as one statement over the row's own values so it stays correct
+        whether the position is untouched or has already been trimmed: the last
+        piece is `quantity - closed_quantity`, and its P&L is added to whatever
+        earlier exits already booked. `exit_price` becomes the quantity-weighted
+        average across every exit, which is the only price that describes the
+        whole trade.
+        """
         self.conn.execute(
             """
             UPDATE engine_position
-            SET status = ?, closed_at = ?, exit_price = ?, exit_reason = ?
+            SET status = ?,
+                closed_at = ?,
+                exit_reason = ?,
+                exit_price = CASE
+                    WHEN coalesce(closed_quantity, 0) > 0 AND quantity > 0
+                        THEN (coalesce(exit_price, 0) * coalesce(closed_quantity, 0)
+                              + ? * (quantity - coalesce(closed_quantity, 0))) / quantity
+                    ELSE ?
+                END,
+                booked_pnl = coalesce(booked_pnl, 0)
+                    + (? - entry_price) * (quantity - coalesce(closed_quantity, 0)),
+                closed_quantity = quantity
             WHERE id = ?
             """,
-            [PositionStatus.CLOSED.value, closed_at, exit_price, exit_reason, position_id],
+            [
+                PositionStatus.CLOSED.value,
+                closed_at,
+                exit_reason,
+                exit_price,
+                exit_price,
+                exit_price,
+                position_id,
+            ],
+        )
+
+    def trim(self, position_id: int, quantity: Decimal, price: Decimal) -> None:
+        """Sell part of a position, leaving the rest running.
+
+        Books the cash and advances `closed_quantity`; `quantity` is never
+        touched, because R is measured against the size taken at entry. The stop,
+        target and trail are untouched too — trimming takes money off the table,
+        it does not change the plan for what is left.
+        """
+        self.conn.execute(
+            """
+            UPDATE engine_position
+            SET closed_quantity = coalesce(closed_quantity, 0) + ?,
+                booked_pnl = coalesce(booked_pnl, 0) + (? - entry_price) * ?,
+                exit_price = CASE
+                    WHEN coalesce(closed_quantity, 0) > 0
+                        THEN (coalesce(exit_price, 0) * coalesce(closed_quantity, 0) + ? * ?)
+                             / (coalesce(closed_quantity, 0) + ?)
+                    ELSE ?
+                END
+            WHERE id = ?
+            """,
+            [quantity, price, quantity, price, quantity, quantity, price, position_id],
         )
