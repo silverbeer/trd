@@ -35,12 +35,23 @@ from trd.models.engine import (
     StrategyStat,
     TradeExplanation,
 )
+from trd.models.reconcile import (
+    QUANTITY_TOLERANCE,
+    BrokerPosition,
+    BrokerSnapshot,
+    ReconcileRow,
+    ReconcileStatus,
+    Reconciliation,
+)
 
 __all__ = [
+    "QUANTITY_TOLERANCE",
     "Account",
     "AccountType",
     "Bar",
     "BoardRow",
+    "BrokerPosition",
+    "BrokerSnapshot",
     "DailyBar",
     "EarningsDate",
     "EarningsEvent",
@@ -63,6 +74,9 @@ __all__ = [
     "PositionRow",
     "PositionStatus",
     "Quote",
+    "ReconcileRow",
+    "ReconcileStatus",
+    "Reconciliation",
     "Side",
     "SignalRow",
     "SizingMode",
