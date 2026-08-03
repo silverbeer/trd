@@ -559,6 +559,41 @@ _ENTRIES: list[GlossaryEntry] = [
         used_in=["trd engine positions", "trd engine rules"],
     ),
     GlossaryEntry(
+        key="risk-at-stop",
+        term="Money at risk (vs committed)",
+        category=Category.ENGINE,
+        definition=(
+            "Two different numbers, and confusing them is how a book looks ten times "
+            "more dangerous than it is. Committed is the cash tied up in open "
+            "positions — unavailable, but not at risk. Money at risk is what is lost "
+            "if every stop is hit, which is a small fraction of it: usually 10-20% of "
+            "committed.\n\n"
+            "It is measured from the current mark, not from entry, because that is the "
+            "money still on the table — a trade already up 20% with a trailing stop "
+            "above its entry risks giving back the gain, not the original stake. The "
+            "stop used is the one actually in force: the chandelier stop once it "
+            "overtakes the initial stop, the initial stop until then.\n\n"
+            "Read it per position, not just as a total. Under exposure sizing every "
+            "trade commits the same dollars but risks wildly different ones, because "
+            "the stop distance is set by the name's volatility — a couple of positions "
+            "routinely carry most of a whole book's risk. That gap is the concrete "
+            "argument for risk sizing (--sizing risk), which equalises the risk and "
+            "lets the committed capital float instead."
+        ),
+        formula=(
+            "stop in force = max(initial stop, trailing stop)\n"
+            "risk at stop  = max(0, (mark - stop in force) x remaining quantity)\n"
+            "book risk     = sum over open positions"
+        ),
+        example=(
+            "$1,000 committed at 100 with a stop at 94, now marked at 105 -> 10 shares "
+            "x (105 - 94) = $110 at risk, not $1,000. If the trail has ridden up to 101, "
+            "it is 10 x (105 - 101) = $40."
+        ),
+        related=["initial-stop", "trailing-stop", "position-sizing", "r-multiple"],
+        used_in=["trd engine status", "trd engine positions"],
+    ),
+    GlossaryEntry(
         key="position-sizing",
         term="Position sizing (fixed dollar)",
         category=Category.ENGINE,

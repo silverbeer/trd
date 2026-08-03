@@ -228,6 +228,35 @@ class PositionRow(BaseModel):
         """Where the chandelier stop currently sits. Never below the initial stop."""
         return self.position.trail_high - self.position.atr_at_entry * Decimal("3")
 
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def stop_in_force(self) -> Decimal:
+        """The stop actually protecting the trade right now.
+
+        The chandelier stop once it has overtaken the initial one, the initial
+        stop until then — the same rule `TrailingStop` applies, so what is shown
+        is what would fire.
+        """
+        return max(self.position.stop_price, self.trail_stop)
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def risk_at_stop(self) -> Decimal | None:
+        """Dollars lost from here if the stop in force is hit.
+
+        Not the same thing as committed capital: a $1,000 position with a stop
+        6% below the mark is $60 at risk, not $1,000. Measured from the *mark*
+        rather than the entry, because that is the money still on the table —
+        a trade already up 20% is no longer risking what it started with.
+
+        Floored at zero: a position trading below its own stop between scans has
+        no further protected downside to report, and a negative "risk" would
+        quietly cancel out real risk elsewhere in the total.
+        """
+        if self.position.status == PositionStatus.CLOSED or self.mark is None:
+            return None
+        return max(Decimal(0), (self.mark - self.stop_in_force) * self.position.remaining_quantity)
+
 
 class EngineStatus(BaseModel):
     """Everything you need to know before trusting a running engine, in one object.
@@ -252,8 +281,16 @@ class EngineStatus(BaseModel):
     regime_vix_max: float = 0.0
 
     open_positions: int
+    closed_trades: int = 0
     committed: Decimal
     unrealized: Decimal
+    # Cash actually booked, over every completed trade *and* every partial exit
+    # taken out of a position that is still running. Without it, "am I up?" is a
+    # two-command question with arithmetic in the middle.
+    realized: Decimal = Decimal(0)
+    # What is lost if every stop in force is hit. Always far below `committed`,
+    # and the only number that says how the risk is distributed.
+    risk_at_stop: Decimal = Decimal(0)
     marks_are_stale: bool  # marked at last stored close, not a live quote
 
     bars_total: int
@@ -287,6 +324,17 @@ class EngineStatus(BaseModel):
     @property
     def capacity(self) -> int:
         return max(0, self.max_positions - self.open_positions)
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def net_pnl(self) -> Decimal:
+        """Everything the engine has made or lost, booked and on paper.
+
+        Shown next to its two halves and never instead of them: an engine up on
+        net only because of open positions, while most of its completed trades
+        lost money, is a different engine from one that is up on both.
+        """
+        return self.realized + self.unrealized
 
 
 class ExitOutlook(BaseModel):

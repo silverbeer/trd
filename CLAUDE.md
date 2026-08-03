@@ -88,7 +88,9 @@ trd engine init [--account NAME] [--size 1000] [--max 5] [--symbols A,B,...] [--
 trd engine scan [--paper/--no-paper] [--json]   # one pass: exits first, then best-ranked entries
 trd engine monitor [--interval 60] [--passes N] # live view on a terminal: book stays still, clock/
                                       # capacity/activity move. Piped or --ndjson falls back to scrolling
-trd engine positions [--all]          # open trades: entry, stop (↑ = trailing in force), target, R
+trd engine positions [--all]          # open trades: entry, stop (↑ = trailing in force), risk, target, R
+                                      # risk = (mark − stop in force) × remaining qty, floored at 0 —
+                                      # what this trade loses from here, not what it committed
 trd engine trim SYM --pct 50          # sell part of an open position, leave the rest running.
                       [--quantity N] [--price P]   # for taking cash out without abandoning the
                                       # trade. Stop/target/trail untouched — trimming changes the
@@ -106,6 +108,9 @@ trd engine why SYMBOL                 # why THIS trade was taken: the numbers th
 trd engine runs [-n N] [--today]      # scan history + interval between passes; ⚠ marks missing scans
 trd engine status [--json]            # what this engine is + whether it's healthy: build, DB, rule set,
                                       # capacity, bar depth, last scan. No network — answers when yfinance doesn't
+                                      # also: realized / unrealized / NET (all three, never the total alone)
+                                      # and money at risk — what's lost if every stop hits, typically a
+                                      # tenth of 'committed'. See 'trd learn risk-at-stop'
 trd engine backtest [--years N] [--fill intrabar|close] [--no-blackout] [--symbols A,B]
 trd engine backtest --regime/--no-regime        # same history with the regime gate on and off —
                                       # the comparison the gate should be judged on, never assumed
