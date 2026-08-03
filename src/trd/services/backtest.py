@@ -366,13 +366,17 @@ def simulate(
                 position.trail_high = max(position.trail_high, bar.close)
                 continue
             exit_price, decision = hit
+            # Booked through the model so the backtest and the live engine score a
+            # trade the same way — including a scaled-out one, where R must weigh
+            # each piece against the size taken at entry.
+            sold = position.remaining_quantity
+            position.book_exit(sold, exit_price)
             position.status = PositionStatus.CLOSED
             position.closed_at = (
                 stamp if source.is_intraday else datetime.combine(today, _FILL_TIME)
             )
-            position.exit_price = exit_price
             position.exit_reason = decision.reason
-            cash += exit_price * position.quantity
+            cash += exit_price * sold
             closed.append(position)
             del open_positions[symbol]
             trades.append(
