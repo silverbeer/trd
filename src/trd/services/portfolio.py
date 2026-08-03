@@ -6,10 +6,15 @@ from pathlib import Path
 
 import duckdb
 
-from trd.errors import InsufficientPositionError, TrdError, UnknownAccountError
+from trd.errors import (
+    EnginePositionConflictError,
+    InsufficientPositionError,
+    TrdError,
+    UnknownAccountError,
+)
 from trd.models import AccountType, Instrument, LotPosition, Position, Side, Transaction
 from trd.providers.base import MarketDataProvider
-from trd.repos import AccountRepo, InstrumentRepo, PriceRepo, TransactionRepo
+from trd.repos import AccountRepo, EnginePositionRepo, InstrumentRepo, PriceRepo, TransactionRepo
 from trd.services.fifo import fifo_position, open_lots
 
 CSV_COLUMNS = ["date", "account", "symbol", "side", "quantity", "price", "fees", "note"]
@@ -23,6 +28,7 @@ class PortfolioService:
         self.accounts = AccountRepo(conn)
         self.txns = TransactionRepo(conn)
         self.prices = PriceRepo(conn)
+        self.engine_positions = EnginePositionRepo(conn)
 
     def ensure_instrument(self, symbol: str) -> Instrument:
         """Find a tracked instrument, or resolve it via the provider and track it."""
@@ -48,6 +54,18 @@ class PortfolioService:
         if account is None:
             raise UnknownAccountError(account_name)
         instrument = self.ensure_instrument(symbol)
+        # The engine tracks its own quantity in `engine_position`, and nothing here
+        # updates it. A manual trade against a symbol the engine is holding leaves the
+        # two disagreeing: the engine keeps believing it holds the original size and
+        # later sells all of it, taking a long-only paper account short — measured on a
+        # copy of the live database, a 1.8-share manual sell ended with net -1.8 AMZN
+        # and no error raised at any step. Refusing is the honest response until
+        # partial exits exist as a first-class operation.
+        #
+        # The engine itself is unaffected: it writes through TransactionRepo directly,
+        # not this method, so its own entries and exits still work.
+        if self.engine_positions.has_open(account.id, instrument.id):
+            raise EnginePositionConflictError(instrument.symbol, account.name)
         if price is None:
             price = self.provider.get_quote(instrument.symbol).price
         if side == Side.SELL:
