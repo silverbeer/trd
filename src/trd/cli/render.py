@@ -1310,8 +1310,8 @@ def _effective_stop(row: PositionRow) -> str:
     """The stop actually in force. An arrow marks the bars where the chandelier
     stop has overtaken the initial one — the trade can no longer give it all back."""
     initial = row.position.stop_price
-    if row.trail_stop > initial:
-        return f"[green]↑{MONEY.format(row.trail_stop)}[/green]"
+    if row.stop_in_force > initial:
+        return f"[green]↑{MONEY.format(row.stop_in_force)}[/green]"
     return fmt_money(initial)
 
 
@@ -1338,6 +1338,9 @@ def engine_positions_table(
     table.add_column("Entry", justify="right")
     table.add_column("Now", justify="right")
     table.add_column("Stop", justify="right")
+    # Next to the stop it is derived from. Equal dollars committed do not mean
+    # equal dollars risked, and this is the column where that becomes visible.
+    table.add_column("Risk", justify="right")
     table.add_column("Target", justify="right")
     table.add_column("Bars", justify="right")
     table.add_column("P&L", justify="right")
@@ -1345,7 +1348,7 @@ def engine_positions_table(
     # The gauge is the first thing to go when space runs short: it is a second
     # reading of numbers already in the row, and a truncated table loses data
     # silently, which is worse than losing decoration.
-    show_gauge = terminal_width is None or terminal_width >= 150
+    show_gauge = terminal_width is None or terminal_width >= 160
     if show_gauge:
         table.add_column("stop → target", justify="center")
     if show_exit:
@@ -1361,6 +1364,7 @@ def engine_positions_table(
             fmt_money(position.entry_price),
             fmt_money(mark),
             _effective_stop(row),
+            fmt_money(row.risk_at_stop),
             fmt_money(position.target_price),
             str(position.bars_held),
             fmt_signed(position.pnl_at(mark)),
@@ -1401,6 +1405,8 @@ def engine_positions_table(
                 "no capacity — nothing new can be taken" if room <= 0 else f"room for {room}"
             )
         parts.append(f"{fmt_money(committed)} committed")
+        risk = sum((r.risk_at_stop or Decimal(0) for r in open_rows), Decimal(0))
+        parts.append(f"{fmt_money(risk)} at risk")
         parts.append(f"{fmt_signed(pnl)} unrealized")
         table.caption = "  ·  ".join(parts)
         table.caption_justify = "left"
@@ -1594,9 +1600,34 @@ def engine_status_renderables(status: EngineStatus) -> list[RenderableType]:
     )
     book.add_row("positions", f"{status.open_positions} of {status.max_positions}  ·  {room}")
     book.add_row("committed", fmt_money(status.committed))
-    mark = " [dim](marked at last close, not live)[/dim]" if status.open_positions else ""
-    book.add_row("unrealized", fmt_signed(status.unrealized) + mark)
+    # Committed capital reads as the exposure, and it is not: every position has
+    # a stop under it. The share says how much of the committed money is actually
+    # in play, which is the number that argues for one sizing mode over the other.
+    share = (
+        f" [dim]({status.risk_at_stop / status.committed * 100:.1f}% of committed, "
+        "if every stop hits)[/dim]"
+        if status.committed > 0
+        else ""
+    )
+    book.add_row("at risk", fmt_money(status.risk_at_stop) + share)
     out.append(book)
+
+    # Realized and unrealized separately, then the sum. An engine up only on open
+    # positions while most of its completed trades lost money is a different
+    # engine from one that is up on both, and a lone net number hides that.
+    pnl = Table(title="P&L", title_justify="left", show_header=False, box=None)
+    pnl.add_column(style="dim")
+    pnl.add_column()
+    closed = f" [dim]({status.closed_trades} closed)[/dim]" if status.closed_trades else ""
+    pnl.add_row("realized", fmt_signed(status.realized) + closed)
+    open_note = (
+        f" [dim]({status.open_positions} open, marked at last close, not live)[/dim]"
+        if status.open_positions
+        else ""
+    )
+    pnl.add_row("unrealized", fmt_signed(status.unrealized) + open_note)
+    pnl.add_row("[bold]net[/bold]", f"[bold]{fmt_signed(status.net_pnl)}[/bold]")
+    out.append(pnl)
 
     data = Table(title="Data", title_justify="left", show_header=False, box=None)
     data.add_column(style="dim")
