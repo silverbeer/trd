@@ -1,22 +1,11 @@
 from pathlib import Path
 
-import pytest
 from typer.testing import CliRunner
 
-import trd.cli.app as cli
 from tests.conftest import FakeProvider
 from trd.cli.app import app
 
 runner = CliRunner()
-
-
-@pytest.fixture
-def cli_env(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, provider: FakeProvider
-) -> FakeProvider:
-    monkeypatch.setenv("TRD_HOME", str(tmp_path / "home"))
-    monkeypatch.setattr(cli, "YFinanceProvider", lambda: provider)
-    return provider
 
 
 def test_init_creates_db_and_account(cli_env: FakeProvider, tmp_path: Path) -> None:

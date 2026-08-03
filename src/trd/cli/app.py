@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Annotated, Any
 
 import typer
+from pydantic import ValidationError
 from rich.console import Console
 from rich.live import Live
 from rich.table import Table
@@ -48,6 +49,7 @@ from trd.cli.render import (
     plans_pnl_table,
     positions_table,
     prep_history_table,
+    reconcile_renderables,
     sunday_prep_markdown,
     sunday_prep_renderables,
 )
@@ -55,7 +57,7 @@ from trd.config import DEFAULT_ACCOUNT, get_settings
 from trd.db.connection import connect
 from trd.engine.bars import DAILY
 from trd.errors import TrdError
-from trd.models import AccountType, Side, SizingMode
+from trd.models import AccountType, BrokerSnapshot, Side, SizingMode
 from trd.notify import label_from_env, scan_messages
 from trd.notify.telegram import from_env as notify_from_env
 from trd.providers import YFinanceProvider
@@ -74,6 +76,7 @@ from trd.services import (
     PlanService,
     PortfolioService,
     PrepHistoryService,
+    ReconcileService,
     SundayPrepBriefing,
     SundayPrepService,
     SyncService,
@@ -139,6 +142,13 @@ def _exit_service() -> ExitTriggerService:
 def _engine_service() -> EngineService:
     settings = get_settings()
     return EngineService(connect(settings.db_path), YFinanceProvider())
+
+
+def _reconcile_service() -> ReconcileService:
+    """No provider: reconciliation is arithmetic over a snapshot file and the
+    database, and must stay answerable when the market data source is down."""
+    settings = get_settings()
+    return ReconcileService(connect(settings.db_path))
 
 
 def _prefetched_quotes(symbols_of) -> dict:
@@ -2070,6 +2080,58 @@ def engine_status(
         return
     for renderable in engine_status_renderables(status):
         console.print(renderable)
+
+
+@engine_app.command("reconcile")
+def engine_reconcile(
+    snapshot: Annotated[
+        Path,
+        typer.Argument(
+            help="Broker snapshot JSON: {as_of, source, cash, positions:[{symbol, quantity}]}."
+        ),
+    ],
+    account: Annotated[
+        str | None,
+        typer.Option("--account", help="Which trd account to compare. Defaults to the engine's."),
+    ] = None,
+    as_json: JsonOpt = False,
+) -> None:
+    """Diff a brokerage against what trd believes it holds.
+
+    The gap no backtest shows: a paper book can be perfectly consistent with
+    itself and still describe a portfolio that does not exist. Reading the
+    broker is an authenticated, interactive step done outside trd (see
+    docs/robinhood-mcp.md); this command does the deterministic comparison, so
+    it needs no network and no credentials.
+
+    Exits non-zero when the two disagree, so a scheduled check can act on it.
+    """
+    _use_json(as_json)
+    try:
+        text = snapshot.read_text()
+    except OSError as exc:
+        _fail(TrdError(f"{snapshot}: {exc.strerror or exc}"))
+        return
+    try:
+        parsed = BrokerSnapshot.model_validate_json(text)
+    except ValidationError as exc:
+        _fail(TrdError(f"{snapshot}: not a broker snapshot ({exc.error_count()} problems) — {exc}"))
+        return
+
+    service = _reconcile_service()
+    try:
+        name = account or EngineService(service.conn, YFinanceProvider()).account().name
+        result = service.reconcile(parsed, name)
+    except TrdError as exc:
+        _fail(exc)
+        return
+    if as_json:
+        _emit_json(result)
+    else:
+        for renderable in reconcile_renderables(result):
+            console.print(renderable)
+    if not result.in_sync:
+        raise typer.Exit(code=1)
 
 
 @engine_app.command("backtest")

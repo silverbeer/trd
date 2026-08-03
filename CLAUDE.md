@@ -120,6 +120,14 @@ trd engine backtest --regime/--no-regime        # same history with the regime g
                                       # bars (the walk is keyed on each bar's instant, so
                                       # session_close fires at the bell); day mode on 1d is refused
 trd engine scan --ndjson --notify     # one JSON event per line (log shipping) + Telegram on fills
+trd engine reconcile broker.json [--account NAME]
+                                      # diff a broker snapshot against what trd believes it holds:
+                                      # per symbol ok / QUANTITY / MISSING AT BROKER / UNTRACKED,
+                                      # plus how far trd's stored close sits from the broker's mark
+                                      # (with its date — a gap there is stale bars, not bookkeeping).
+                                      # Exits non-zero when they disagree. No network, no credentials:
+                                      # the brokerage read is an authenticated MCP session that writes
+                                      # the snapshot ([docs/robinhood-mcp.md](docs/robinhood-mcp.md))
 ```
 
 ## Deployment
@@ -157,6 +165,7 @@ CSV import format (header required): `date,account,symbol,side,quantity,price[,f
 - Holdings are always derived from transactions via FIFO ([src/trd/services/fifo.py](src/trd/services/fifo.py)) — never stored as mutable balances.
 - Schema changes = new numbered file in [src/trd/db/migrations](src/trd/db/migrations). Never edit an applied migration.
 - Money/quantities are `Decimal` end to end. Never float.
+- Broker integration is **agent-side only**: an MCP session reads the brokerage and writes a snapshot file; `trd engine reconcile` does the diff. Nothing under `src/trd` imports or knows about MCP, and every MCP write tool (place/cancel order, watchlist mutation) is denied by policy in the committed `.claude/settings.json` (never `settings.local.json`, which is gitignored and would put the gate on one machine only). See [docs/robinhood-mcp.md](docs/robinhood-mcp.md).
 - Static reference data (curated universe, FOMC/macro calendar) lives in [src/trd/data](src/trd/data) as plain Python — no YAML dep. `SundayPrepService` is pure (provider + data, no DuckDB); its briefing narrative is deterministic templates, leaving a seam for a future `--ai` pass.
 - Engine rules are code-registry entries, never config: entry strategies in [src/trd/engine/strategies.py](src/trd/engine/strategies.py) (`@register`, mirroring the indicator registry), exit rules in [src/trd/engine/exits.py](src/trd/engine/exits.py). Strategies never reimplement indicator math — they call the indicator registry. Every signal and exit carries a plain-English `reason`; a rule you can't explain doesn't ship.
 - The engine only ever trades a `simulation` account, and its fills are ordinary `txn` rows — so portfolio/equity/XIRR/drawdown work on it unchanged. `engine_position` stores only what a txn can't: strategy, stop/target, trail high-water mark, exit reason. The initial stop is immutable so closed-trade R-multiples stay meaningful.
