@@ -12,6 +12,7 @@ from trd.services.movers import MoverRow, MoversService
 from trd.services.plan import PlanService
 from trd.services.portfolio import PortfolioService
 from trd.services.prep_history import PrepHistoryService
+from trd.services.reconcile import ReconcileService
 from trd.services.sunday_prep import SundayPrepBriefing, SundayPrepService
 from trd.services.sync import SyncResult, SyncService
 from trd.services.watchlist import WatchlistService
@@ -35,6 +36,7 @@ __all__ = [
     "PlanService",
     "PortfolioService",
     "PrepHistoryService",
+    "ReconcileService",
     "ScanFill",
     "ScanResult",
     "ScanSignal",

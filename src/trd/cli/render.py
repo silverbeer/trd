@@ -19,6 +19,8 @@ from trd.models import (
     Position,
     PositionRow,
     PositionStatus,
+    ReconcileStatus,
+    Reconciliation,
     Side,
     SignalRow,
     StrategyStat,
@@ -1663,6 +1665,80 @@ def engine_status_renderables(status: EngineStatus) -> list[RenderableType]:
         activity.add_row("last scan", status.last_scan.strftime("%Y-%m-%d %H:%M:%S"))
     activity.add_row("scans today", str(status.scans_today))
     out.append(activity)
+    return out
+
+
+def _fmt_qty_signed(value: Decimal | None) -> str:
+    """A share-count delta at full precision. Money formatting would round a
+    0.0004-share break to 0.00 and print it as if the books agreed."""
+    if value is None or value == 0:
+        return ""
+    color = "green" if value > 0 else "red"
+    return f"[{color}]{'+' if value > 0 else '-'}{fmt_qty(abs(value))}[/{color}]"
+
+
+_RECONCILE_LABELS = {
+    ReconcileStatus.OK: "[green]ok[/green]",
+    ReconcileStatus.QUANTITY: "[red]QUANTITY[/red]",
+    ReconcileStatus.MISSING_AT_BROKER: "[red]MISSING AT BROKER[/red]",
+    ReconcileStatus.UNTRACKED: "[yellow]UNTRACKED[/yellow]",
+}
+
+
+def reconcile_renderables(result: Reconciliation) -> list[RenderableType]:
+    """What the broker holds against what trd believes it holds.
+
+    Problems sort to the top, because the reason to run this is to find them. A
+    clean book still prints every row: "checked and matched" is the answer being
+    asked for, and an empty screen does not distinguish it from "nothing ran".
+    """
+    header = (
+        f"[bold]{result.account}[/bold] vs {result.source}\n"
+        f"broker read at {result.as_of:%Y-%m-%d %H:%M}"
+    )
+    verdict = (
+        "[green]in sync[/green]"
+        if result.in_sync
+        else f"[red]{result.mismatches} of {result.symbols_compared} disagree[/red]"
+    )
+    out: list[RenderableType] = [Panel(f"{header}\n{verdict}", expand=False, border_style="cyan")]
+
+    table = Table(title="Positions", title_justify="left")
+    table.add_column("Symbol", style="bold")
+    table.add_column("Broker qty", justify="right")
+    table.add_column("trd qty", justify="right")
+    table.add_column("Δ qty", justify="right")
+    table.add_column("Broker px", justify="right")
+    # trd's mark and the session it came from. A price gap next to matching share
+    # counts is a stale-bar problem, and only the date tells the two apart.
+    table.add_column("trd px", justify="right")
+    table.add_column("Δ px", justify="right")
+    table.add_column("Status")
+    for row in result.rows:
+        mark = fmt_money(row.trd_price)
+        if row.trd_price_date is not None:
+            mark += f" [dim]{row.trd_price_date}[/dim]"
+        table.add_row(
+            row.symbol,
+            fmt_qty(row.broker_quantity) if row.broker_quantity is not None else "—",
+            fmt_qty(row.trd_quantity) if row.trd_quantity is not None else "—",
+            _fmt_qty_signed(row.quantity_delta),
+            fmt_money(row.broker_price),
+            mark,
+            fmt_signed_pct(row.price_delta_pct),
+            _RECONCILE_LABELS[row.status],
+        )
+    out.append(table)
+
+    if result.broker_cash is not None:
+        # Reported, never diffed: trd has no cash ledger, so a "delta" here would
+        # be invented. Saying so is more useful than a column of dashes.
+        out.append(
+            Text.from_markup(
+                f"[dim]broker cash {fmt_money(result.broker_cash)} — "
+                "trd tracks positions, not cash, so there is nothing to compare it to[/dim]"
+            )
+        )
     return out
 
 

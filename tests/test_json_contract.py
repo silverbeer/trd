@@ -31,6 +31,7 @@ from trd.models import (
 SERIALISED_SOURCES = [
     "src/trd/models/core.py",
     "src/trd/models/engine.py",
+    "src/trd/models/reconcile.py",
     "src/trd/services/backtest.py",
 ]
 

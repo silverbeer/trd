@@ -142,6 +142,23 @@ def conn(tmp_path: Path) -> duckdb.DuckDBPyConnection:
 
 
 @pytest.fixture
+def cli_env(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, provider: FakeProvider
+) -> FakeProvider:
+    """A CLI invocation pointed at a throwaway TRD_HOME with the fake provider.
+
+    Lives here rather than in one test module so any test that drives the app
+    through CliRunner gets the same isolation — an escaped TRD_HOME writes to the
+    real database, and an escaped provider hits the network.
+    """
+    import trd.cli.app as cli
+
+    monkeypatch.setenv("TRD_HOME", str(tmp_path / "home"))
+    monkeypatch.setattr(cli, "YFinanceProvider", lambda: provider)
+    return provider
+
+
+@pytest.fixture
 def portfolio(conn: duckdb.DuckDBPyConnection, provider: FakeProvider) -> PortfolioService:
     service = PortfolioService(conn, provider)
     AccountRepo(conn).create("main", AccountType.REAL)

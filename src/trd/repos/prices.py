@@ -237,3 +237,17 @@ class PriceRepo:
             [instrument_id],
         ).fetchone()
         return row[0] if row else None
+
+    def latest_close_dated(self, instrument_id: int) -> tuple[date, Decimal] | None:
+        """The last close and the session it belongs to.
+
+        A mark is only judgeable next to its date: a price 4% away from a
+        broker's is a stale bar if the close is three days old and a real
+        disagreement if it is today's.
+        """
+        row = self.conn.execute(
+            "SELECT date, close FROM price_daily WHERE instrument_id = ? "
+            "ORDER BY date DESC LIMIT 1",
+            [instrument_id],
+        ).fetchone()
+        return (row[0], row[1]) if row else None
