@@ -1,5 +1,6 @@
 from pathlib import Path
 
+import pytest
 from typer.testing import CliRunner
 
 from tests.conftest import FakeProvider
@@ -468,3 +469,57 @@ def test_json_output_carries_no_ansi_or_wrapping(cli_env: FakeProvider) -> None:
     assert "\x1b[" not in result.output  # no ANSI escapes
     assert len(result.output.strip().splitlines()) == 1  # one document, one line
     assert isinstance(json.loads(result.output), list)
+
+
+def test_intraday_only_sync_refreshes_just_the_engine_bars(
+    cli_env: FakeProvider, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """What an intraday engine's scheduler runs every pass.
+
+    The daily sync is stamped once a day, which is right for a daily engine and
+    starves an intraday one: the live quote only ever forms the *current* bucket,
+    so every completed bar since the morning sync exists only if something wrote
+    it. This is the cheap write — engine universe only, no quotes, no daily bars.
+    """
+    from datetime import datetime, time
+
+    from tests.test_engine import make_intraday_bars
+
+    assert runner.invoke(app, ["init"]).exit_code == 0
+    cli_env.add_symbol("AAA", price="100")
+    result = runner.invoke(
+        app,
+        ["engine", "init", "--symbols", "AAA", "--timeframe", "5m", "--flat-at", "1555"],
+    )
+    assert result.exit_code == 0, result.output
+
+    bars = make_intraday_bars([100.0, 101.0, 102.0])
+    cli_env.add_intraday("AAA", "5m", bars)
+
+    # The backfill window is anchored on "now", and the fake bars sit on a fixed
+    # 2024 session grid. Freeze the clock inside that session so the window the
+    # CLI computes is the one the bars fall in.
+    import trd.services.sync as sync_module
+
+    class _Clock(datetime):
+        @classmethod
+        def now(cls, tz: object = None) -> datetime:
+            return datetime.combine(bars[-1].ts.date(), time(16, 0))
+
+    monkeypatch.setattr(sync_module, "datetime", _Clock)
+
+    result = runner.invoke(app, ["sync", "--intraday-only"])
+    assert result.exit_code == 0, result.output
+    assert "3" in result.output and "5m" in result.output
+
+
+def test_intraday_only_sync_is_a_no_op_for_a_daily_engine(cli_env: FakeProvider) -> None:
+    """The scheduler calls this unconditionally rather than parsing JSON in shell
+    to decide, so a swing engine has to cost nothing and say so."""
+    assert runner.invoke(app, ["init"]).exit_code == 0
+    cli_env.add_symbol("AAA", price="100")
+    assert runner.invoke(app, ["engine", "init", "--symbols", "AAA"]).exit_code == 0
+
+    result = runner.invoke(app, ["sync", "--intraday-only"])
+    assert result.exit_code == 0, result.output
+    assert "No intraday engine configured" in result.output
