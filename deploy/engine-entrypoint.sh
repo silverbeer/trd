@@ -55,6 +55,23 @@ if [ "$(cat "$STAMP" 2>/dev/null || true)" != "$today" ]; then
     fi
 fi
 
+# --- refresh intraday bars every pass -----------------------------------------
+# The daily-stamp above is right for a daily engine and starves an intraday one.
+# A 5-minute engine's bars settle every five minutes, and the live quote only
+# ever forms the *current* bucket — every completed bar since the morning sync
+# exists only if something wrote it. Left alone, by 15:00 the ATR sizing the stop
+# and the prior bar MACD and RSI compare against are five hours stale.
+#
+# Cheap on purpose: this touches only the engine universe's intraday series and
+# fetches incrementally from the newest stored bar, so it is a handful of
+# requests rather than a second full sync. Unconditional because the command
+# itself reads the engine's timeframe — a daily engine, or no engine at all,
+# prints that there is nothing to refresh and makes no provider call. Deciding
+# it here would mean parsing JSON in shell to reach the same answer.
+if ! trd sync --intraday-only; then
+    echo "intraday refresh failed — continuing with stored bars"
+fi
+
 # --- refresh earnings every pass ---------------------------------------------
 # Bars settle once a day; earnings dates do not. yfinance publishes some of them
 # mid-session, and the blackout can only protect a name whose date is already in
