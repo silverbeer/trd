@@ -25,7 +25,13 @@ from pydantic import BaseModel
 from trd.build import build_version
 from trd.engine import DEFAULT_EXIT_PARAMS, EXIT_REGISTRY, evaluate_exits, missing_rules, regime
 from trd.engine import REGISTRY as STRATEGIES
-from trd.engine.bars import DAILY, INTRADAY_MINUTES, BarSource, validate_timeframe
+from trd.engine.bars import (
+    DAILY,
+    INTRADAY_MINUTES,
+    BarSource,
+    day_mode_on_daily_bars,
+    validate_timeframe,
+)
 from trd.engine.base import indicator, last
 from trd.engine.regime import REGIME_SYMBOLS
 from trd.errors import ProviderError, TrdError
@@ -306,13 +312,9 @@ class EngineService:
         # A day engine on daily bars is the bug this timeframe exists to fix: a
         # stop at 2 x the daily ATR cannot be reached inside one session, so every
         # trade exits on the clock and its R-multiples describe risk it never took.
-        if timeframe == DAILY and int(params.get("flat_at_minute", 0)) > 0:
-            raise TrdError(
-                "A day engine (--flat-at) needs an intraday timeframe. On daily bars "
-                "its stop and target cannot be reached inside one session, so every "
-                f"trade would exit on the clock. Pass --timeframe "
-                f"{'/'.join(INTRADAY_MINUTES)}."
-            )
+        refused = day_mode_on_daily_bars(timeframe, int(params.get("flat_at_minute", 0)))
+        if refused:
+            raise TrdError(f"{refused} Pass --timeframe {'/'.join(INTRADAY_MINUTES)}.")
 
         existing = self.accounts.get_by_name(account_name)
         if existing is not None and existing.type != AccountType.SIMULATION:

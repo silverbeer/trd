@@ -111,6 +111,10 @@ trd engine status [--json]            # what this engine is + whether it's healt
                                       # also: realized / unrealized / NET (all three, never the total alone)
                                       # and money at risk — what's lost if every stop hits, typically a
                                       # tenth of 'committed'. See 'trd learn risk-at-stop'
+                                      # warns in red when the engine's own config is one 'init' would
+                                      # refuse (a day engine on 1d bars). init can't catch that — the
+                                      # engine already exists — and it reads as a flat strategy, not a
+                                      # broken one. 'config_refused' in --json
 trd engine backtest [--years N] [--fill intrabar|close] [--no-blackout] [--symbols A,B]
 trd engine backtest --regime/--no-regime        # same history with the regime gate on and off —
                                       # the comparison the gate should be judged on, never assumed
