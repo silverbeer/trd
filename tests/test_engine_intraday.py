@@ -14,7 +14,7 @@ import pytest
 
 from tests.conftest import FakeProvider
 from tests.test_engine import make_bars, make_intraday_bars, seed, seed_intraday, uptrend
-from trd.engine.bars import BarSource, bucket_start
+from trd.engine.bars import BarSource, bucket_start, day_mode_on_daily_bars
 from trd.errors import TrdError
 from trd.models import IntradayBar, Quote
 from trd.repos import PriceRepo
@@ -132,6 +132,43 @@ def test_a_day_engine_needs_an_intraday_timeframe(engine, provider) -> None:
     provider.add_symbol("AAA", price="100")
     with pytest.raises(TrdError, match="needs an intraday timeframe"):
         engine.init(symbols=["AAA"], exit_params={"flat_at_minute": 1555.0})
+
+
+def test_the_refusal_is_one_function_init_and_status_share(engine, provider) -> None:
+    """The guard used to live only in init, so an engine created before it kept
+    running in the refused state and nothing said so. One function now answers
+    'is this pairing legal', and both callers append their own remedy."""
+    assert day_mode_on_daily_bars("1d", 1555) is not None
+    assert day_mode_on_daily_bars("5m", 1555) is None  # intraday day engine — fine
+    assert day_mode_on_daily_bars("1d", 0) is None  # swing engine on daily — fine
+
+
+def test_status_flags_an_engine_already_running_in_the_refused_config(
+    engine, provider, conn
+) -> None:
+    """The regression: `day-sim` ran for weeks on daily bars with --flat-at set,
+    every trade exiting on the clock, and `engine status` reported it as healthy.
+    init cannot catch this — the engine already exists."""
+    provider.add_symbol("AAA", price="100")
+    engine.init(symbols=["AAA"], exit_params={"flat_at_minute": 1555.0}, timeframe="5m")
+    assert engine.status().config_refused is None
+
+    # Exactly what an engine created before the guard looks like on disk.
+    conn.execute("UPDATE engine_config SET timeframe = '1d'")
+
+    refused = engine.status().config_refused
+    assert refused is not None
+    assert "needs an intraday timeframe" in refused
+    assert "already running that way" in refused
+    assert "5m/15m/30m/1h" in refused  # names the way out, not just the problem
+
+
+def test_a_healthy_engine_says_nothing(engine, provider) -> None:
+    """A warning that appears on sound configurations is a warning people learn
+    to skip past."""
+    provider.add_symbol("AAA", price="100")
+    engine.init(symbols=["AAA"], timeframe="1d")
+    assert engine.status().config_refused is None
 
 
 def test_a_swing_engine_still_defaults_to_daily(engine, provider) -> None:

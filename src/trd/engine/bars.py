@@ -18,28 +18,25 @@ from decimal import Decimal
 from trd.errors import TrdError
 from trd.models import Bar, DailyBar, IntradayBar, Quote
 from trd.repos import PriceRepo
+from trd.timeframes import (
+    DAILY,
+    INTRADAY_BACKFILL_DAYS,
+    INTRADAY_MINUTES,
+    TIMEFRAMES,
+    day_mode_on_daily_bars,
+    validate_timeframe,
+)
 
-DAILY = "1d"
-
-# Bar width in minutes. The keys are the timeframes an engine may be configured
-# with; anything else is refused at init rather than discovered at scan time.
-INTRADAY_MINUTES: dict[str, int] = {"5m": 5, "15m": 15, "30m": 30, "1h": 60}
-
-TIMEFRAMES: tuple[str, ...] = (DAILY, *INTRADAY_MINUTES)
-
-# How much intraday history a first sync asks for. The provider caps this anyway
-# (yfinance serves ~60 days of 5-minute bars); asking for more is not an error,
-# it just returns what exists.
-INTRADAY_BACKFILL_DAYS = 59
-
-
-def validate_timeframe(timeframe: str) -> str:
-    if timeframe not in TIMEFRAMES:
-        raise TrdError(
-            f"Unknown timeframe {timeframe!r}. Available: {', '.join(TIMEFRAMES)}. "
-            f"'{DAILY}' is a swing engine; the rest read intraday bars."
-        )
-    return timeframe
+__all__ = [
+    "DAILY",
+    "INTRADAY_BACKFILL_DAYS",
+    "INTRADAY_MINUTES",
+    "TIMEFRAMES",
+    "BarSource",
+    "bucket_start",
+    "day_mode_on_daily_bars",
+    "validate_timeframe",
+]
 
 
 def bucket_start(moment: datetime, minutes: int) -> datetime:
