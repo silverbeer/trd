@@ -303,11 +303,30 @@ def sync(
             "to run every scan, because some dates publish mid-session.",
         ),
     ] = False,
+    intraday_only: Annotated[
+        bool,
+        typer.Option(
+            "--intraday-only",
+            help="Refresh only the intraday bars an intraday engine reads — cheap "
+            "enough to run every scan, because its bars settle every few minutes.",
+        ),
+    ] = False,
 ) -> None:
     """Refresh quotes and daily price history for all tracked instruments."""
     settings = get_settings()
     conn = connect(settings.db_path)
     service = SyncService(conn, YFinanceProvider())
+    if intraday_only:
+        with _spinner("Refreshing intraday bars..."):
+            failures: list[str] = []
+            count, timeframe = service.sync_intraday(failures)
+        if timeframe is None:
+            console.print("No intraday engine configured — nothing to refresh.")
+        else:
+            console.print(f"Synced [bold]{count}[/bold] {timeframe} bars for the engine universe.")
+        if failures:
+            err_console.print(f"[yellow]warning:[/yellow] failed: {', '.join(failures)}")
+        return
     if earnings_only:
         with _spinner("Refreshing earnings dates..."):
             earnings = service.sync_earnings()

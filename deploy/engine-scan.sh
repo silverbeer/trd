@@ -62,6 +62,17 @@ if [ "$(cat "$STAMP" 2>/dev/null || true)" != "$today" ]; then
     fi
 fi
 
+# --- intraday bars, every pass ------------------------------------------------
+# The daily stamp above is right for a daily engine and starves an intraday one.
+# A 5-minute engine's bars settle every five minutes, and the live quote only
+# forms the *current* bucket — every completed bar since the morning sync exists
+# only if something wrote it. Left alone, by 15:00 the ATR sizing the stop is
+# five hours stale. Cheap: engine universe only, fetched incrementally from the
+# newest stored bar. A daily engine makes no provider call at all.
+if ! trd sync --intraday-only >> "$LOG" 2>&1; then
+    echo "intraday refresh failed (continuing with stored bars)" >> "$LOG"
+fi
+
 # --- earnings, every pass -----------------------------------------------------
 # Bars settle once a day; earnings dates do not. yfinance publishes some of them
 # mid-session, and the blackout can only protect a name whose date is already
