@@ -82,6 +82,14 @@ if ! trd sync --earnings-only >> "$LOG" 2>&1; then
     echo "earnings refresh failed (continuing with stored dates)" >> "$LOG"
 fi
 
+# --- apply commands queued from chat ------------------------------------------
+# Same step the k3s entrypoint runs, and for the same reason: the Telegram bot
+# never opens the database, so this is the only thing that drains its queue.
+# Before the scan, so a name added from chat is in the universe for this pass.
+if ! trd engine apply-queue --notify >> "$LOG" 2>&1; then
+    echo "queued-command drain failed (continuing to scan)" >> "$LOG"
+fi
+
 # --- the scan -----------------------------------------------------------------
 # A non-zero exit here is nearly always "Database is busy" (another trd process
 # holds the single writer lock). Skip this pass rather than failing the job —

@@ -124,6 +124,24 @@ trd engine backtest --regime/--no-regime        # same history with the regime g
                                       # bars (the walk is keyed on each bar's instant, so
                                       # session_close fires at the bell); day mode on 1d is refused
 trd engine scan --ndjson --notify     # one JSON event per line (log shipping) + Telegram on fills
+trd engine apply-queue [--notify]     # apply the commands the Telegram bot queued for THIS
+                                      # engine (TRD_HOME/commands). The bot never opens DuckDB —
+                                      # single writer, and it is resident while a scan is not — so
+                                      # it queues intents and this is the only thing that drains
+                                      # them. Runs before the scan, so a name added from chat is in
+                                      # the universe for the very next pass. --notify answers
+                                      # whoever typed it, in their own chat
+trd bot serve [--passes N]            # Telegram command bot: /add SYM [engines], /rm, /status,
+                                      # /book, /report, /engines. Long-polls (no public endpoint,
+                                      # no cert), opens no database, and reads answer from the
+                                      # snapshots the scan publishes. Env: TELEGRAM_BOT_TOKEN,
+                                      # TRD_BOT_ENGINES='swing=/path,day=/path',
+                                      # TRD_BOT_ALLOWED_USER_IDS (numeric ids — usernames are
+                                      # changeable and re-registerable, so they are not identity).
+                                      # Commands come from the private chat; the channel stays
+                                      # one-way. EXACTLY ONE process per bot token (Telegram 409s
+                                      # a second). No order placement by design
+trd bot check                         # validate the bot's config without taking the poll slot
 trd engine reconcile broker.json [--account NAME]
                                       # diff a broker snapshot against what trd believes it holds:
                                       # per symbol ok / QUANTITY / MISSING AT BROKER / UNTRACKED,
@@ -147,9 +165,21 @@ Unattended runs live in two places — use one, never both (DuckDB is single-wri
   `engine-backup.json` into iCloud. The publisher pairs with *either* runner because it
   only copies files and never opens the database.
 
+The Telegram command bot is a **Deployment**, not a CronJob — long polling has to stay
+resident: `k3s/trd-engine/bot-deployment.yaml`. `replicas: 1` and `strategy: Recreate`
+are correctness, not capacity: Telegram allows one `getUpdates` per bot token and answers
+a second with a permanent 409, which a RollingUpdate would cause on every deploy. It
+shares the engines' volumes but never opens a database — see the command-bot section of
+[k3s/trd-engine/README.md](k3s/trd-engine/README.md).
+
 The engine's DB (`~/.trd-engine`) is deliberately separate from the real one and never in
 iCloud: a k3s pod can't see a macOS FileProvider path, and iCloud resolves binary
 conflicts by duplicating rather than merging.
+
+One database is one engine: `EngineConfigRepo.get()` takes the most recently created
+config, so the day and swing engines are separate `TRD_HOME` directories with separate
+CronJobs (`~/.trd-engine`, `~/.trd-day`). Anything addressing "both engines" addresses
+two homes.
 
 ## Output contract
 
@@ -170,6 +200,7 @@ CSV import format (header required): `date,account,symbol,side,quantity,price[,f
 - Schema changes = new numbered file in [src/trd/db/migrations](src/trd/db/migrations). Never edit an applied migration.
 - Money/quantities are `Decimal` end to end. Never float.
 - Broker integration is **agent-side only**: an MCP session reads the brokerage and writes a snapshot file; `trd engine reconcile` does the diff. Nothing under `src/trd` imports or knows about MCP. The committed `.claude/settings.json` (never `settings.local.json`, which is gitignored and would put the gate on one machine only) names all 53 tools the server exposes: 34 reads allowed, 19 denied — the 17 that mutate broker state (order place/cancel, option exercise, watchlist and scan mutations) plus both `review_*_order` tools, which price an order without placing it and are denied anyway because trd decides from its own data. There is no mid-name wildcard, so a tool added later matches neither list and surfaces as an unlisted tool needing an explicit decision. See [docs/robinhood-mcp.md](docs/robinhood-mcp.md).
+- The Telegram command bot ([src/trd/notify/bot.py](src/trd/notify/bot.py)) **never opens the database**. DuckDB is single-writer and the bot is resident while a scan is not, so a connection held there would lock out a scan — putting a chat feature in the trading path. Reads answer from the snapshots the scan publishes (`status.json`, `report.json`, `status.txt`); writes go to a queue of JSON files under `TRD_HOME/commands/` that `trd engine apply-queue` drains inside the scan's process. Queue files are named by Telegram's `update_id` so replay order is the order typed and a redelivered update is recognised, not reapplied. Authorization is a numeric-user-id allowlist checked before anything reads the message text.
 - Static reference data (curated universe, FOMC/macro calendar) lives in [src/trd/data](src/trd/data) as plain Python — no YAML dep. `SundayPrepService` is pure (provider + data, no DuckDB); its briefing narrative is deterministic templates, leaving a seam for a future `--ai` pass.
 - Engine rules are code-registry entries, never config: entry strategies in [src/trd/engine/strategies.py](src/trd/engine/strategies.py) (`@register`, mirroring the indicator registry), exit rules in [src/trd/engine/exits.py](src/trd/engine/exits.py). Strategies never reimplement indicator math — they call the indicator registry. Every signal and exit carries a plain-English `reason`; a rule you can't explain doesn't ship.
 - The engine only ever trades a `simulation` account, and its fills are ordinary `txn` rows — so portfolio/equity/XIRR/drawdown work on it unchanged. `engine_position` stores only what a txn can't: strategy, stop/target, trail high-water mark, exit reason. The initial stop is immutable so closed-trade R-multiples stay meaningful.

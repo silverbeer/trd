@@ -83,6 +83,18 @@ if ! trd sync --earnings-only; then
     echo "earnings refresh failed — continuing with stored dates"
 fi
 
+# --- apply commands queued from chat -----------------------------------------
+# The Telegram bot is resident and this Job is not, and DuckDB has one writer —
+# so the bot never opens the database. It leaves intents in TRD_HOME/commands and
+# this is the only thing that drains them, which keeps the engine the sole writer.
+#
+# Before the scan, deliberately: a name added from chat is then in the universe
+# for the very pass that follows, rather than the one after it. --notify answers
+# whoever typed the command in their own chat.
+if ! trd engine apply-queue --notify; then
+    echo "queued-command drain failed — continuing to scan"
+fi
+
 # NDJSON because the consumer is promtail, not a human — one event per line, each
 # independently queryable in Loki. --notify pushes fills to Telegram; with no
 # token configured it degrades to a warning, so an unconfigured cluster still scans.
@@ -108,6 +120,20 @@ STATUS="${TRD_HOME}/status.txt"
     echo
     trd engine report
 } > "${STATUS}.tmp" && mv "${STATUS}.tmp" "$STATUS"
+
+# Machine-readable siblings of status.txt, for the Telegram bot: it answers reads
+# from these rather than opening the database, which is what keeps a chat command
+# out of the trading path. Both are no-network commands — status is explicitly
+# so, and the scorecard is arithmetic over closed trades — so publishing them
+# costs no extra provider calls.
+for view in status report; do
+    if trd engine "$view" --json > "${TRD_HOME}/${view}.json.tmp" 2>/dev/null; then
+        mv "${TRD_HOME}/${view}.json.tmp" "${TRD_HOME}/${view}.json"
+    else
+        rm -f "${TRD_HOME}/${view}.json.tmp"
+        echo "could not publish ${view}.json (scan itself succeeded)"
+    fi
+done
 
 # Full engine state (config, signals, positions with stops/targets/trail marks)
 # plus every transaction — restorable on another machine with `trd restore`.
