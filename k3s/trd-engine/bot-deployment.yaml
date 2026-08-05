@@ -1,0 +1,91 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: trd-engine-bot
+  namespace: trd
+  labels:
+    app: trd
+    component: bot
+spec:
+  # Exactly one poller, forever. Telegram allows a single getUpdates per bot
+  # token and answers a second one with a permanent 409 Conflict — so replicas
+  # and the update strategy are correctness, not capacity planning:
+  #   - replicas: 1   two pods would fight over the token
+  #   - Recreate      RollingUpdate briefly runs old and new together, which is
+  #                   the same collision on every deploy
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: trd
+      component: bot
+  template:
+    metadata:
+      labels:
+        app: trd
+        component: bot
+    spec:
+      restartPolicy: Always
+      containers:
+        - name: trd
+          image: trd:latest
+          imagePullPolicy: Never # locally built, imported with ctr
+          # The entrypoint runs any trd subcommand it is given, so the bot and
+          # the scan are the same image with different arguments.
+          args: ["bot", "serve"]
+          env:
+            - name: TZ
+              value: America/New_York
+            - name: NO_COLOR
+              value: "1"
+            # One database is one engine (EngineConfigRepo.get takes the most
+            # recent config), so the day and swing engines are separate homes.
+            # Name each one here — the name is what you type in chat.
+            - name: TRD_BOT_ENGINES
+              value: swing=/engines/swing,day=/engines/day
+            # Where the acked update_id is remembered. On a mounted volume on
+            # purpose: lose it and a restart replays up to 24h of Telegram's
+            # retained updates.
+            - name: TRD_BOT_STATE
+              value: /engines/swing/commands
+          envFrom:
+            # TELEGRAM_BOT_TOKEN and TRD_BOT_ALLOWED_USER_IDS. Not optional here:
+            # a bot with no token cannot start, and one with no allowlist would
+            # take commands from anyone who found it.
+            - secretRef:
+                name: trd-engine-telegram
+          resources:
+            requests:
+              memory: "128Mi"
+              cpu: "50m"
+            limits:
+              memory: "256Mi"
+              cpu: "500m"
+          securityContext:
+            runAsNonRoot: true
+            # Must match the uid that owns the engine homes — the bot writes
+            # queue files into them. See k3s/trd-engine/README.md.
+            runAsUser: 1000
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+          volumeMounts:
+            # Each engine home, mounted under the name used in TRD_BOT_ENGINES.
+            # Only these — a bot that could see the whole home directory could
+            # find the real portfolio's database.
+            - name: swing-home
+              mountPath: /engines/swing
+            - name: day-home
+              mountPath: /engines/day
+      volumes:
+        # EDIT these paths for the machine you deploy to, same as the CronJob's.
+        - name: swing-home
+          hostPath:
+            path: /Users/tomdrake/.trd-engine
+            type: DirectoryOrCreate
+        - name: day-home
+          hostPath:
+            path: /Users/tomdrake/.trd-day
+            type: DirectoryOrCreate
