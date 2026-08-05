@@ -1,4 +1,5 @@
 import math
+from collections.abc import Sequence
 from datetime import date, datetime, timedelta
 from datetime import time as dtime
 from decimal import Decimal
@@ -9,6 +10,7 @@ import pytest
 from trd.engine import EXIT_RULES
 from trd.engine import REGISTRY as STRATEGIES
 from trd.engine import exits as exit_rules
+from trd.engine.base import last_closed
 from trd.errors import TrdError
 from trd.models import (
     AccountType,
@@ -28,7 +30,7 @@ from .conftest import FakeProvider
 # ----------------------------------------------------------------- bar helpers
 
 
-def make_bars(closes: list[float], volumes: list[int] | None = None) -> list[DailyBar]:
+def make_bars(closes: list[float], volumes: Sequence[int | None] | None = None) -> list[DailyBar]:
     """Daily bars from a close series. High/low straddle the close by 0.5%."""
     start = date(2024, 1, 1)
     out: list[DailyBar] = []
@@ -791,17 +793,50 @@ def test_a_day_engine_closes_its_position_at_the_bell(engine, provider, conn):
     ]
 
 
-def test_momentum_requires_volume_it_can_actually_see():
-    """Missing volume used to fall straight through the filter, so the rule
-    dropped its volume requirement precisely when volume was unknown — intraday,
-    where the forming bar carries whatever the quote reports. Breakout already
-    treated missing volume as disqualifying; both agree now."""
+def test_volume_is_read_from_the_last_bar_that_closed():
+    """Volume is a closed-bar reading, and the rules look back exactly one bar.
+
+    This supersedes an earlier rule that refused outright on missing volume. That
+    was aimed at the same intraday problem and only ever worked because the
+    forming bar always carried *something* — the quote's whole-session volume,
+    which read as 88x-132x average and made breakout's volume filter pass on
+    everything. With that number correctly removed, refusing on a missing forming
+    bar would delete momentum and breakout from every intraday engine.
+
+    One trailing gap is the forming bar and is expected. Two in a row is the
+    provider failing, and still disqualifies — which is the protection the
+    earlier rule was reaching for.
+    """
+    assert last_closed([1.0, 2.0, 3.0]) == 3.0
+    assert last_closed([1.0, 2.0, None]) == 2.0  # the forming bar
+    assert last_closed([1.0, None, None]) is None  # a run of gaps: the provider
+    assert last_closed([]) is None
+
     bars = make_bars(uptrend())
     assert STRATEGIES["momentum"].evaluate(bars) is not None  # volume present, fires
 
-    blind = [*bars[:-1], bars[-1].model_copy(update={"volume": None})]
+    # One gap: the forming bar. Falls back to the bar that closed.
+    forming = [*bars[:-1], bars[-1].model_copy(update={"volume": None})]
+    assert STRATEGIES["momentum"].evaluate(forming) is not None
+
+    # Two gaps: the provider is not reporting volume. The rule refuses.
+    blind = [
+        *bars[:-2],
+        bars[-2].model_copy(update={"volume": None}),
+        bars[-1].model_copy(update={"volume": None}),
+    ]
     assert STRATEGIES["momentum"].evaluate(blind) is None
-    assert STRATEGIES["breakout"].evaluate(blind) is None  # unchanged, for contrast
+
+    # Breakout is the rule whose whole thesis is volume, so prove it there too:
+    # heavy volume on the bar that closed, a new high on the bar still forming,
+    # and no volume on that forming bar. Before this change the forming bar
+    # carried the quote's whole-session volume and this passed for the wrong
+    # reason; now it passes on the closed bar's 4x.
+    closes = [100.0] * 59 + [100.2, 103.0]
+    volumes = [1_000_000] * 59 + [4_000_000, None]
+    signal = STRATEGIES["breakout"].evaluate(make_bars(closes, volumes=volumes))
+    assert signal is not None, "the forming bar's missing volume must not veto the break"
+    assert "average volume" in signal.reason
 
 
 # ------------------------------------------------------------ build provenance
