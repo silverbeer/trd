@@ -12,7 +12,16 @@ for two. Read the `reason`, not the number.
 
 from collections.abc import Sequence
 
-from trd.engine.base import Strategy, StrategySignal, clamp01, indicator, last, prior, register
+from trd.engine.base import (
+    Strategy,
+    StrategySignal,
+    clamp01,
+    indicator,
+    last,
+    last_closed,
+    prior,
+    register,
+)
 from trd.models import Bar
 
 
@@ -33,13 +42,16 @@ class Momentum(Strategy):
         sma50 = last(indicator("sma", bars, period=50)["value"])
         sma200 = last(indicator("sma", bars, period=200)["value"])
         rsi = last(indicator("rsi", bars, period=14)["value"])
-        vol = last(indicator("volratio", bars, period=20)["ratio"])
+        vol = last_closed(indicator("volratio", bars, period=20)["ratio"])
         # `vol is None` used to fall through this filter, which meant the rule
-        # silently dropped its volume requirement exactly when volume was unknown
-        # — intraday, where the forming bar carries whatever the quote reports and
-        # often nothing at all. Breakout already treats missing volume as
-        # disqualifying; a filter that switches itself off on missing data is the
-        # wrong default for a rule whose thesis is "strength that is working".
+        # silently dropped its volume requirement exactly when volume was unknown.
+        # A filter that switches itself off on missing data is the wrong default
+        # for a rule whose thesis is "strength that is working".
+        #
+        # `last_closed` rather than `last` because an intraday forming bar carries
+        # no volume at all: a quote's volume covers the whole session, and a bar
+        # part-way through its five minutes has no comparable number. Volume is a
+        # closed-bar reading; price and RSI are not, and still use the forming bar.
         if sma50 is None or sma200 is None or rsi is None or vol is None:
             return None
         if not (price > sma50 > sma200):
@@ -82,7 +94,7 @@ class Breakout(Strategy):
         window = bars[-21:-1]  # prior 20 bars, today excluded
         channel_high = max(float(b.high) for b in window)
         sma50 = last(indicator("sma", bars, period=50)["value"])
-        vol = last(indicator("volratio", bars, period=20)["ratio"])
+        vol = last_closed(indicator("volratio", bars, period=20)["ratio"])
         if sma50 is None or vol is None:
             return None
         if price <= channel_high:
