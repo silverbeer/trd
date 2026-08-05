@@ -1,4 +1,5 @@
 import json as _json
+import os
 import sys
 from contextlib import nullcontext, suppress
 from datetime import date, datetime
@@ -59,6 +60,8 @@ from trd.engine.bars import DAILY
 from trd.errors import TrdError
 from trd.models import AccountType, BrokerSnapshot, Side, SizingMode
 from trd.notify import label_from_env, scan_messages
+from trd.notify.bot import POLL_TIMEOUT, BotConfigError, bot_from_env
+from trd.notify.telegram import TelegramNotifier
 from trd.notify.telegram import from_env as notify_from_env
 from trd.providers import YFinanceProvider
 from trd.repos import AccountRepo
@@ -83,6 +86,7 @@ from trd.services import (
     WatchlistService,
 )
 from trd.services.backtest import BacktestService, FillMode
+from trd.services.commands import CommandQueueService
 from trd.services.engine import (
     DEFAULT_EARNINGS_BLACKOUT_DAYS,
     DEFAULT_ENGINE_ACCOUNT,
@@ -120,6 +124,10 @@ engine_app = typer.Typer(
     no_args_is_help=True,
 )
 app.add_typer(engine_app, name="engine")
+bot_app = typer.Typer(
+    help="Telegram command bot: drive the engines from chat.", no_args_is_help=True
+)
+app.add_typer(bot_app, name="bot")
 console = Console()
 err_console = Console(stderr=True)
 
@@ -1801,6 +1809,70 @@ def _notify_scan(result: ScanResult, label: str | None = None) -> None:
             err_console.print(f"[yellow]warning:[/yellow] notification failed: {exc}")
 
 
+@engine_app.command("apply-queue")
+def engine_apply_queue(
+    notify: Annotated[
+        bool, typer.Option("--notify", help="Confirm each applied command in the chat.")
+    ] = False,
+    as_json: JsonOpt = False,
+) -> None:
+    """Apply the commands the Telegram bot queued for this engine.
+
+    The bot cannot open the database — it is resident while a scan is not, and
+    DuckDB has a single writer — so it leaves intents in TRD_HOME/commands and
+    this drains them. Run it before the scan, so a name added from chat is in the
+    universe the very pass that follows.
+    """
+    _use_json(as_json)
+    settings = get_settings()
+    try:
+        service = CommandQueueService(connect(settings.db_path), YFinanceProvider())
+        results = service.drain(settings.home)
+    except TrdError as exc:
+        _fail(exc)
+        return
+
+    if as_json:
+        _emit_json(
+            [
+                {
+                    "update_id": r.command.update_id,
+                    "kind": r.command.kind,
+                    "symbol": r.command.symbol,
+                    "ok": r.ok,
+                    "message": r.message,
+                }
+                for r in results
+            ]
+        )
+        return
+
+    if not results:
+        console.print("No queued commands.")
+        return
+    label = None
+    with suppress(TrdError):  # an engine can be unconfigured and still have a queue
+        label = label_from_env(service.engine.config().exit_params)
+    token = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip() if notify else ""
+    for result in results:
+        mark = "[green]✓[/green]" if result.ok else "[red]✗[/red]"
+        console.print(f"{mark} {result.message}")
+        if not token:
+            continue
+        # Back to whoever typed it, not to TELEGRAM_CHAT_ID: that is the fills
+        # channel, and a one-way broadcast is the wrong place to answer a
+        # question one person asked. In a private chat the chat id *is* the
+        # user id, so the queued command already carries the address.
+        try:
+            TelegramNotifier(token, str(result.command.user_id)).send(
+                f"[{label}] {'✅' if result.ok else '⚠️'} {result.message}"
+            )
+        except TrdError as exc:
+            # Same rule as the scan: the command is applied and recorded. An
+            # undelivered confirmation must not fail the run that follows it.
+            err_console.print(f"[yellow]warning:[/yellow] confirmation failed: {exc}")
+
+
 @engine_app.command("scan")
 def engine_scan(
     paper: Annotated[
@@ -2365,6 +2437,63 @@ def engine_rules() -> None:
         params = service.config().exit_params
     console.print(engine_strategies_table())
     console.print(engine_exits_table(params))
+
+
+@bot_app.command("serve")
+def bot_serve(
+    passes: Annotated[
+        int, typer.Option("--passes", help="Stop after N polls. 0 = run until killed.")
+    ] = 0,
+    timeout: Annotated[
+        int, typer.Option("--timeout", help="Seconds Telegram holds an idle poll open.")
+    ] = POLL_TIMEOUT,
+) -> None:
+    """Run the Telegram command bot: poll for messages, queue what they ask for.
+
+    Long-polls rather than serving a webhook, so it needs no public endpoint and
+    no certificate — only outbound 443. Exactly one of these may run per bot
+    token; a second gets a permanent 409 from Telegram.
+
+    Reads TELEGRAM_BOT_TOKEN, TRD_BOT_ENGINES ('swing=/path,day=/path') and
+    TRD_BOT_ALLOWED_USER_IDS (numeric Telegram user ids). Opens no database.
+    """
+    try:
+        bot = bot_from_env()
+    except BotConfigError as exc:
+        _fail(exc)
+        return
+    names = ", ".join(f"{e.name}→{e.home}" for e in bot.engines)
+    console.print(f"bot listening · engines: {names} · authorized: {len(bot.allowed_user_ids)}")
+    try:
+        bot.serve(passes=passes or None, timeout=timeout)
+    except KeyboardInterrupt:
+        console.print("stopped")
+    except TrdError as exc:
+        _fail(exc)
+
+
+@bot_app.command("check")
+def bot_check() -> None:
+    """Validate the bot's configuration without polling.
+
+    Deploy verification: it answers "is this pod going to work" without taking
+    the token's single poll slot, which a running bot already holds.
+    """
+    try:
+        bot = bot_from_env()
+    except BotConfigError as exc:
+        _fail(exc)
+        return
+    console.print(f"authorized users: {len(bot.allowed_user_ids)}")
+    console.print(f"offset file: {bot.offset_path} (at {bot.offset()})")
+    for engine in bot.engines:
+        db = engine.home / "trd.duckdb"
+        published = (engine.home / "status.json").exists()
+        state = "ok" if db.exists() else "no database at this path"
+        console.print(
+            f"  {engine.name}: {engine.home} — {state}"
+            f"{'' if published else ', no snapshot published yet'}"
+        )
 
 
 def main() -> None:

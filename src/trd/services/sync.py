@@ -1,3 +1,4 @@
+from contextlib import suppress
 from datetime import date, datetime, timedelta
 
 import duckdb
@@ -99,6 +100,55 @@ class SyncService:
             intraday_bars=intraday_count,
             intraday_timeframe=intraday_timeframe,
         )
+
+    def backfill_symbol(self, symbol: str, years: int = 2, now: datetime | None = None) -> int:
+        """Pull deep history for one symbol, and only that symbol.
+
+        `sync()` walks every tracked instrument, which is the right shape once a
+        day and the wrong shape when a single name has just been added: the new
+        one needs two years, everything else needs nothing, and re-pulling the
+        book to serve one addition turns a chat command into a minutes-long
+        provider run.
+
+        Returns bars written (daily plus, for an intraday engine, intraday).
+        Provider failures are swallowed by design — the caller reports depth from
+        what actually landed, and a name that arrives empty is a name the
+        strategies skip rather than a crash.
+        """
+        instrument = self.instruments.get_by_symbol(symbol)
+        if instrument is None:
+            instrument = self.instruments.insert(self.provider.get_info(symbol))
+
+        end = date.today() + timedelta(days=1)
+        start = end - timedelta(days=int(years * 365.25))
+        written = 0
+        try:
+            bars = self.provider.get_daily_bars(instrument.symbol, start, end)
+            written += self.prices.upsert_daily(instrument.id, bars)
+        except ProviderError:
+            return written
+
+        if instrument.type == InstrumentType.STOCK:
+            with suppress(ProviderError):
+                self.earnings.upsert(
+                    instrument.id, self.provider.get_earnings_dates(instrument.symbol)
+                )
+
+        # A day engine trades intraday bars, so on that engine the daily series
+        # alone still leaves the name untradable.
+        config = self.configs.get()
+        if config is not None and config.timeframe != DAILY:
+            source = BarSource(self.prices, config.timeframe)
+            latest = self.prices.latest_intraday_ts(instrument.id, config.timeframe)
+            window_start, window_end = source.backfill_window(latest, now or datetime.now())
+            try:
+                intraday = self.provider.get_intraday_bars(
+                    instrument.symbol, config.timeframe, window_start, window_end
+                )
+                written += self.prices.upsert_intraday(instrument.id, config.timeframe, intraday)
+            except ProviderError:
+                pass
+        return written
 
     def stale_earnings_symbols(self, today: date | None = None) -> list[str]:
         """Instruments whose earnings date is worth re-checking right now.
