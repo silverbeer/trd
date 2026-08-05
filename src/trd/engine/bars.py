@@ -153,9 +153,32 @@ class BarSource:
 
     # ------------------------------------------------------------- internals
 
+    def _quote_volume(self, volume: int | None) -> int | None:
+        """The quote's volume, but only where it is the right unit.
+
+        A quote reports volume for the whole session — and on yfinance, extended
+        hours too: MU on 2026-08-04 quoted 37,253,500 against 31,528,521 traded
+        across all 79 regular-session 5-minute bars. On a *daily* forming bar that
+        is exactly right, session-to-date against prior full sessions. Written
+        into a *5-minute* forming bar it is roughly a hundred bars of volume in a
+        one-bar slot, and `volratio` duly reported 88x-132x average, so breakout's
+        volume filter — the one its docstring calls "the whole filter" — passed on
+        every intraday candidate regardless of participation.
+
+        There is no correct number to substitute. Even the true volume of a bar
+        three minutes into its five would read thin against an average of complete
+        bars. Volume on an intraday engine is only meaningful once a bar has
+        closed, so the forming bar carries none and the rules read the last
+        completed one.
+        """
+        return None if self.is_intraday else volume
+
     def _refine(self, bar: Bar, price: Decimal, volume: int | None) -> Bar:
         high = max(bar.high, price)
         low = min(bar.low, price)
+        # A refined bar already exists in storage, so its volume is real — partial,
+        # but genuinely this bucket's. Keep it rather than overwrite it.
+        volume = self._quote_volume(volume)
         if isinstance(bar, IntradayBar):
             return bar.model_copy(
                 update={"high": high, "low": low, "close": price, "volume": volume or bar.volume}
@@ -168,7 +191,12 @@ class BarSource:
     def _open_bar(self, stamp: datetime, price: Decimal, volume: int | None) -> Bar:
         if self.is_intraday:
             return IntradayBar(
-                ts=stamp, open=price, high=price, low=price, close=price, volume=volume
+                ts=stamp,
+                open=price,
+                high=price,
+                low=price,
+                close=price,
+                volume=self._quote_volume(volume),
             )
         return DailyBar(
             date=stamp.date(), open=price, high=price, low=price, close=price, volume=volume

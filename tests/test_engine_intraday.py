@@ -66,6 +66,46 @@ def test_forming_bar_refines_the_current_bucket(conn: duckdb.DuckDBPyConnection)
     assert folded[-1].low == bars[-1].low
 
 
+def test_a_quotes_session_volume_never_reaches_an_intraday_bar(
+    conn: duckdb.DuckDBPyConnection,
+) -> None:
+    """The bug that made breakout's volume filter meaningless on 5m bars.
+
+    A quote reports volume for the whole session — on yfinance, extended hours
+    too. MU on 2026-08-04 quoted 37,253,500 against 31,528,521 traded across all
+    79 regular-session 5-minute bars. Written into a five-minute forming bar,
+    `volratio` compared roughly a hundred bars of volume against a one-bar
+    average and reported 88x-132x, so `vol >= 1.5` passed on every candidate.
+
+    A daily forming bar is the opposite case: session-to-date against prior full
+    sessions is exactly the right unit, and must keep working.
+    """
+    intraday = BarSource(PriceRepo(conn), "5m")
+    bars = make_intraday_bars([100.0, 101.0])
+
+    # New bucket: no volume at all rather than the session's.
+    opened = intraday.with_live_bar(
+        list(bars), _quote("103", volume=37_253_500), bars[-1].ts + timedelta(minutes=7)
+    )
+    assert opened[-1].volume is None
+
+    # Refined bucket: keeps the stored bar's real (partial) volume, not the quote's.
+    refined = intraday.with_live_bar(
+        list(bars), _quote("103", volume=37_253_500), bars[-1].ts + timedelta(minutes=2)
+    )
+    assert refined[-1].volume == bars[-1].volume
+
+    # A daily engine still takes it — there the unit is right.
+    daily = BarSource(PriceRepo(conn), "1d")
+    day_bars = make_bars([100.0, 101.0])
+    folded = daily.with_live_bar(
+        list(day_bars),
+        _quote("103", volume=37_253_500),
+        datetime.combine(day_bars[-1].date, time(15, 0)),
+    )
+    assert folded[-1].volume == 37_253_500
+
+
 def test_forming_bar_opens_a_new_bucket(conn: duckdb.DuckDBPyConnection) -> None:
     source = BarSource(PriceRepo(conn), "5m")
     bars = make_intraday_bars([100.0, 101.0])
