@@ -168,6 +168,114 @@ variable set falls back to `swing` or `day`, read from whether the rule set has 
 Want the two feeds separated entirely? Create a second channel and give the day
 engine its own secret — the CronJob's `envFrom` name is the only thing to change.
 
+## Command bot — driving the engines from chat
+
+The feed above is one-way. `trd bot serve` makes the same bot two-way, so
+"put PLTR in front of both rule sets" is a message rather than an ssh session:
+
+```
+/add PLTR             queue a universe add on every engine
+/add PLTR day         …or just one
+/rm PLTR swing        stop new entries in a name (an open position is left alone)
+/status               build, capacity, bar depth, realized/unrealized/net, risk
+/book                 the open book and the scorecard, as last published
+/report               per-strategy expectancy
+/engines              which engines this bot drives
+```
+
+There is deliberately no order placement. The engines trade simulation accounts
+and entries and exits stay with the rules; chat changes what is *eligible* to be
+traded, never what is traded.
+
+### Where commands are typed, and by whom
+
+**Commands go in your private chat with the bot, not the fills channel.** A
+channel post arrives as `channel_post` with no reliable sender, so there would be
+nobody to authorize — and the channel should stay a loudspeaker. One bot, one
+token, two chats: the channel gets fills, the DM takes commands and gets the
+answers.
+
+Authorization is your numeric Telegram user id, in
+`TRD_BOT_ALLOWED_USER_IDS`. Not your username: usernames are changeable by their
+owner and re-registerable by somebody else once released, so they are not an
+identity. Get yours by sending the bot `/start` and reading:
+
+```bash
+curl -s "https://api.telegram.org/bot<TOKEN>/getUpdates" \
+  | jq '.result[].message.from.id'
+```
+
+Anyone not on the list is ignored with no reply — a refusal would tell a scanner
+the bot is live and worth working on.
+
+Add it to the existing secret (recreate it; secrets are not patchable in place):
+
+```bash
+kubectl delete secret trd-engine-telegram -n trd
+kubectl create secret generic trd-engine-telegram -n trd \
+  --from-literal=TELEGRAM_BOT_TOKEN='123456789:AAH...' \
+  --from-literal=TELEGRAM_CHAT_ID='-1001234567890' \
+  --from-literal=TRD_BOT_ALLOWED_USER_IDS='123456789'
+```
+
+### How it avoids the database
+
+DuckDB has one writer, and the bot is resident while a scan is not — so a bot
+holding the file would lock out the 09:35 scan, putting Telegram in the trading
+path. It never opens the database at all:
+
+- **reads** answer from `status.json`, `report.json` and `status.txt`, which the
+  scan entrypoint publishes every pass. As fresh as the last scan;
+- **writes** append an intent to `TRD_HOME/commands/`, and `trd engine
+  apply-queue` — the first thing the entrypoint runs — applies them. The engine
+  stays the only writer, and a name added from chat is in the universe for the
+  very next pass.
+
+So a write lands within one scan interval (≤5 min during the session), and the
+ack says so. The confirmation comes back after it is really applied, and reports
+bar depth: a name with fewer bars than its rules need is in the universe and
+invisible to every strategy, which reads as a broken engine rather than one
+warming up.
+
+### Deploying it
+
+One database is one engine (`EngineConfigRepo.get` takes the most recent
+config), so day and swing are separate homes and the bot is told about both:
+
+```yaml
+- name: TRD_BOT_ENGINES
+  value: swing=/engines/swing,day=/engines/day
+```
+
+Edit the two `hostPath`s in `bot-deployment.yaml` for this machine, then:
+
+```bash
+kubectl apply -f k3s/trd-engine/bot-deployment.yaml
+kubectl logs -n trd deploy/trd-engine-bot -f
+```
+
+Verify the configuration without taking the token's poll slot:
+
+```bash
+kubectl exec -n trd deploy/trd-engine-bot -- trd bot check
+```
+
+**`replicas: 1` and `strategy: Recreate` are correctness, not capacity.**
+Telegram permits one `getUpdates` per bot token and answers a second with a
+permanent `409 Conflict` — two replicas fight over the token, and a
+`RollingUpdate` recreates that collision on every deploy. The bot crashes loudly
+on a 409 rather than looping quietly, so if the pod restarts with
+
+```
+Telegram 409 Conflict: another process is polling this bot token
+```
+
+something else is polling: a second replica, an old pod still terminating, or a
+`trd bot serve` you left running on the host.
+
+A webhook set on the bot suppresses `getUpdates` entirely — clear it with
+`deleteWebhook` (see above) if the bot sees no messages at all.
+
 ### Which build is running
 
 SB-443 was a day engine that never went flat, because the pod was executing code
