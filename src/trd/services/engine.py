@@ -540,8 +540,19 @@ class EngineService:
             for position, instrument in open_positions
             if position.id not in closed_ids
         }
+        # Exits free capacity for entries — that is the point of running them
+        # first — but the freed *symbol* must not be a candidate on the same bar.
+        # Without this the engine sold and re-bought the same name at the same
+        # price in one pass: 15 times on 2026-08-04, 7 on 2026-08-06, NVDA
+        # round-tripping 9 times in a session for a net of nothing. On paper it
+        # only inflates the trade count; with real fills it is the spread paid
+        # twice for no change in position, and every round trip books a closed
+        # trade that drags the scorecard toward zero.
+        just_closed = {
+            instrument.id for position, instrument in open_positions if position.id in closed_ids
+        }
         self._run_entries(
-            config, account, universe, quotes, today, now, paper, held, run.id, result
+            config, account, universe, quotes, today, now, paper, held, just_closed, run.id, result
         )
 
         result.open_positions = len(self.positions.list_open(account.id))
@@ -631,6 +642,7 @@ class EngineService:
         now: datetime,
         paper: bool,
         held: set[int],
+        just_closed: set[int],
         run_id: int,
         result: ScanResult,
     ) -> None:
@@ -766,6 +778,15 @@ class EngineService:
             if capacity <= 0:
                 break
             if instrument.id in taken or instrument.id in held:
+                continue
+            if instrument.id in just_closed:
+                # The signal is still recorded, unacted — an exit and an entry
+                # disagreeing about one bar is exactly the sort of thing the
+                # signal log exists to surface.
+                result.skipped.append(
+                    f"{instrument.symbol}: an exit closed it on this bar — "
+                    "not buying back the same name at the same price"
+                )
                 continue
             fill = self._open_position(
                 config, account, instrument, bars, signal_id, scan_signal, now, result
