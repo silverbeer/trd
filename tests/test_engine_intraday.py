@@ -106,6 +106,56 @@ def test_a_quotes_session_volume_never_reaches_an_intraday_bar(
     assert folded[-1].volume == 37_253_500
 
 
+def test_a_daily_forming_bar_takes_the_sessions_real_range(
+    conn: duckdb.DuckDBPyConnection,
+) -> None:
+    """A daily bar synced minutes after the open spans a minute, and refining it
+    against `last_price` alone never recovers the rest. ATR is computed from that
+    range and sizes every stop, so the sliver makes stops too tight and inflates
+    R for the life of the trade.
+
+    Measured 2026-08-05: MSFT's stored bar had low 495.71 against a session low of
+    485.68 — and the correct number was sitting in the quote the whole time.
+    """
+    daily = BarSource(PriceRepo(conn), "1d")
+    stored = make_bars([100.0, 101.0])
+    sliver = stored[-1].model_copy(update={"high": Decimal("101.2"), "low": Decimal("100.9")})
+    quote = Quote(
+        symbol="AAA",
+        price=Decimal("101"),
+        day_high=Decimal("104"),
+        day_low=Decimal("97"),
+    )
+    now = datetime.combine(sliver.date, time(15, 0))
+
+    folded = daily.with_live_bar([*stored[:-1], sliver], quote, now)
+    assert folded[-1].high == Decimal("104")
+    assert folded[-1].low == Decimal("97")
+
+    # And on a bucket the sync never wrote at all.
+    opened = daily.with_live_bar(list(stored[:-1]), quote, now)
+    assert opened[-1].high == Decimal("104")
+    assert opened[-1].low == Decimal("97")
+
+
+def test_an_intraday_forming_bar_refuses_the_session_range(
+    conn: duckdb.DuckDBPyConnection,
+) -> None:
+    """A session high is not a 5-minute bar's high. Handing these to an intraday
+    bar is the same unit error as putting a session's volume in one — see the
+    quote-volume fix."""
+    intraday = BarSource(PriceRepo(conn), "5m")
+    bars = make_intraday_bars([100.0, 101.0])
+    quote = Quote(
+        symbol="AAA", price=Decimal("101"), day_high=Decimal("104"), day_low=Decimal("97")
+    )
+
+    folded = intraday.with_live_bar(list(bars), quote, bars[-1].ts + timedelta(minutes=2))
+    assert folded[-1].high == max(bars[-1].high, Decimal("101"))
+    assert folded[-1].low == min(bars[-1].low, Decimal("101"))
+    assert folded[-1].high < Decimal("104")
+
+
 def test_forming_bar_opens_a_new_bucket(conn: duckdb.DuckDBPyConnection) -> None:
     source = BarSource(PriceRepo(conn), "5m")
     bars = make_intraday_bars([100.0, 101.0])

@@ -293,6 +293,10 @@ class EngineStatus(BaseModel):
     # and the only number that says how the risk is distributed.
     risk_at_stop: Decimal = Decimal(0)
     marks_are_stale: bool  # marked at last stored close, not a live quote
+    # The oldest session any open position is marked against. A number without
+    # its date can't be judged: `engine reconcile` already prints the date of the
+    # close it compared, for exactly this reason.
+    marked_at: date | None = None
 
     bars_total: int
     bars_first: date | None
