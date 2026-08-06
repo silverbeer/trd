@@ -958,11 +958,24 @@ class EngineService:
         unrealized = Decimal(0)
         risk = Decimal(0)
         stale = False
+        # The newest session anywhere in the database. A position marked against
+        # an older bar than that is being priced on yesterday, and saying so is
+        # the whole point of the flag — `stale` used to mean only "no close at
+        # all", so AMD on 2026-08-05 reported +17.28 off a 08-04 bar while it was
+        # actually -54.38, and the flag said the marks were fine right up until
+        # the trade closed at -63.43. No trading calendar needed: if 43 other
+        # instruments have today's bar and this one does not, this one is behind.
+        newest_session = self.prices.coverage()[2]
+        mark_dates: list[date] = []
         for position, instrument in open_pairs:
-            close = self.prices.latest_close(instrument.id)
-            if close is None:
+            dated = self.prices.latest_close_dated(instrument.id)
+            if dated is None:
                 stale = True
                 continue
+            mark_date, close = dated
+            mark_dates.append(mark_date)
+            if newest_session is not None and mark_date < newest_session:
+                stale = True
             unrealized += position.pnl_at(close) or Decimal(0)
             # Same object the positions table renders, so the total and the
             # per-position column can never disagree about what a stop is worth.
@@ -1014,6 +1027,7 @@ class EngineService:
             realized=realized,
             risk_at_stop=risk,
             marks_are_stale=stale,
+            marked_at=min(mark_dates) if mark_dates else None,
             bars_total=total,
             bars_first=first,
             bars_last=last_bar,

@@ -69,6 +69,13 @@ class Quote(BaseModel):
     prev_close: Decimal | None = None
     year_high: Decimal | None = None
     year_low: Decimal | None = None
+    # The session's range so far. Without these a forming daily bar can only
+    # widen against the last price, so a bar fetched minutes after the open keeps
+    # a one-minute range all day — and ATR, which sizes every stop, is computed
+    # from that range. Measured 2026-08-05: MSFT's stored bar had low 495.71 while
+    # the session low was 485.68, and the correct number was in the quote already.
+    day_high: Decimal | None = None
+    day_low: Decimal | None = None
     volume: int | None = None
     avg_volume: int | None = None
 
