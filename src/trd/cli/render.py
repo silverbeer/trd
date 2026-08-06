@@ -1637,11 +1637,18 @@ def engine_status_renderables(status: EngineStatus) -> list[RenderableType]:
     pnl.add_column()
     closed = f" [dim]({status.closed_trades} closed)[/dim]" if status.closed_trades else ""
     pnl.add_row("realized", fmt_signed(status.realized) + closed)
-    open_note = (
-        f" [dim]({status.open_positions} open, marked at last close, not live)[/dim]"
-        if status.open_positions
-        else ""
-    )
+    # The mark's date, always — a P&L number can only be judged next to the
+    # session it was priced on. Loud when that session is behind the newest one
+    # in the database: a stale mark reads as a healthy position right up until it
+    # closes for a loss.
+    if not status.open_positions:
+        open_note = ""
+    elif status.marks_are_stale:
+        dated = f" as of {status.marked_at}" if status.marked_at else ""
+        open_note = f" [red]({status.open_positions} open, STALE marks{dated} — run trd sync)[/red]"
+    else:
+        dated = f" {status.marked_at}" if status.marked_at else ""
+        open_note = f" [dim]({status.open_positions} open, marked at the{dated} close)[/dim]"
     pnl.add_row("unrealized", fmt_signed(status.unrealized) + open_note)
     pnl.add_row("[bold]net[/bold]", f"[bold]{fmt_signed(status.net_pnl)}[/bold]")
     out.append(pnl)

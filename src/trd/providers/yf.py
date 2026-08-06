@@ -89,6 +89,8 @@ class YFinanceProvider:
             prev_close = _dec(fast.previous_close)
             year_high = _dec(getattr(fast, "year_high", None))
             year_low = _dec(getattr(fast, "year_low", None))
+            day_high = _dec(getattr(fast, "day_high", None))
+            day_low = _dec(getattr(fast, "day_low", None))
             volume = _int(getattr(fast, "last_volume", None))
             avg_volume = _int(getattr(fast, "three_month_average_volume", None))
         except Exception as exc:
@@ -101,6 +103,8 @@ class YFinanceProvider:
             prev_close=prev_close,
             year_high=year_high,
             year_low=year_low,
+            day_high=day_high,
+            day_low=day_low,
             volume=volume,
             avg_volume=avg_volume,
         )
