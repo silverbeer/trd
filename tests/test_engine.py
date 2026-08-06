@@ -1373,6 +1373,79 @@ def test_explain_refuses_a_symbol_that_is_not_held(engine, provider):
         engine.explain("ZZZZ")
 
 
+def test_a_symbol_closed_this_bar_is_not_bought_back_on_the_same_bar(engine, provider, conn):
+    """The churn: exits run first to free capacity, and the freed *symbol* was
+    landing straight back in the candidate set.
+
+    Observed live on day-sim — 15 same-bar round trips on 2026-08-04, 7 on
+    2026-08-06, NVDA going round 9 times in one session:
+
+        14:45  buy  NVDA 0.047094 @ 212.34
+        14:45  sell NVDA 0.047252 @ 212.34
+
+    On paper it nets ~zero and inflates the trade count; with real fills it is
+    the spread paid twice for no change in position, and each round trip books a
+    closed trade that drags the scorecard toward zero.
+    """
+    bars = make_bars(uptrend())
+    price = float(bars[-1].close)
+    provider.add_symbol("AAA", price=str(price))
+    seed(conn, "AAA", bars)
+    # max_bars 1 so the time exit fires on the next bar while the entry rule,
+    # which reads the same rising series, still wants the name.
+    engine.init(
+        symbols=["AAA"],
+        strategies=["momentum"],
+        position_size=Decimal("10000"),
+        exit_params={"max_bars": 0.0},
+    )
+    engine.scan(at=datetime(2024, 9, 16, 10, 0))
+    assert len(engine.position_rows(open_only=True)) == 1
+
+    # A quote that merely repeats the last close is refused as fiction, so give
+    # the next bar a real move — still an uptrend, so momentum still wants it.
+    provider.add_symbol("AAA", price=str(price * 1.002))
+    result = engine.scan(at=datetime(2024, 9, 17, 10, 0))
+
+    assert len(result.closed) == 1, "the time exit should have fired"
+    assert result.closed[0].rule == "time"
+    assert result.opened == [], "must not re-buy the name it just sold on this bar"
+    assert any("same price" in s for s in result.skipped)
+
+    sides = [t.side for t in TransactionRepo(conn).list_chronological(engine.account().id)]
+    assert sides == ["buy", "sell"], f"expected one round trip, got {sides}"
+
+
+def test_a_different_symbol_still_takes_the_freed_slot(engine, provider, conn):
+    """The block is on the symbol, not on the capacity. An exit must still free a
+    slot for something else on the same bar — that is why exits run first."""
+    bars = make_bars(uptrend())
+    provider.add_symbol("AAA", price=str(float(bars[-1].close)))
+    provider.add_symbol("BBB", price=str(float(bars[-1].close)))
+    seed(conn, "AAA", bars)
+    seed(conn, "BBB", bars)
+    engine.init(
+        symbols=["AAA", "BBB"],
+        strategies=["momentum"],
+        position_size=Decimal("10000"),
+        max_positions=1,
+        exit_params={"max_bars": 0.0},
+    )
+    engine.scan(at=datetime(2024, 9, 16, 10, 0))
+    first = engine.position_rows(open_only=True)[0]
+    held_symbol = first.instrument.symbol
+
+    nudged = str(float(bars[-1].close) * 1.002)
+    provider.add_symbol("AAA", price=nudged)
+    provider.add_symbol("BBB", price=nudged)
+    result = engine.scan(at=datetime(2024, 9, 17, 10, 0))
+
+    assert len(result.closed) == 1
+    assert [f.symbol for f in result.opened] == ["BBB" if held_symbol == "AAA" else "AAA"], (
+        "the other name should have taken the freed slot"
+    )
+
+
 def test_status_flags_a_position_marked_on_an_older_session(engine, provider, conn):
     """The AMD case, 2026-08-05: 43 of 51 instruments had that day's bar and AMD
     did not, so it was marked on the 08-04 close and reported +17.28 while it
