@@ -141,8 +141,8 @@ class BarSource:
         price = quote.price
         current = self.current_bucket(now)
         if bars and self.stamp(bars[-1]) == current:
-            return [*bars[:-1], self._refine(bars[-1], price, quote.volume)]
-        return [*bars, self._open_bar(current, price, quote.volume)]
+            return [*bars[:-1], self._refine(bars[-1], price, quote)]
+        return [*bars, self._open_bar(current, price, quote)]
 
     def current_bucket(self, now: datetime) -> datetime:
         """The instant the bar being formed right now opened."""
@@ -173,22 +173,41 @@ class BarSource:
         """
         return None if self.is_intraday else volume
 
-    def _refine(self, bar: Bar, price: Decimal, volume: int | None) -> Bar:
-        high = max(bar.high, price)
-        low = min(bar.low, price)
+    def _session_range(self, quote: Quote, high: Decimal, low: Decimal) -> tuple[Decimal, Decimal]:
+        """Widen a forming *daily* bar to the session's real range.
+
+        A daily sync run minutes after the open stores a bar whose high and low
+        span a minute. Refining it against `last_price` alone never recovers the
+        rest, so the bar keeps a sliver range all session — and ATR is computed
+        from that range, so `stop = price - 2 x ATR` comes out too tight and the
+        R denominator with it. Measured 2026-08-05: MSFT's stored low was 495.71
+        against a 485.68 session low; its range read 0.50% where the prior two
+        sessions ran 4.11% and 3.41%.
+
+        Daily only, for the same reason the quote's volume is daily-only: a
+        session high is not a 5-minute bar's high. Handing these to an intraday
+        forming bar would be the identical unit error in a different column.
+        """
+        if self.is_intraday:
+            return high, low
+        if quote.day_high is not None:
+            high = max(high, quote.day_high)
+        if quote.day_low is not None:
+            low = min(low, quote.day_low)
+        return high, low
+
+    def _refine(self, bar: Bar, price: Decimal, quote: Quote) -> Bar:
+        high, low = self._session_range(quote, max(bar.high, price), min(bar.low, price))
         # A refined bar already exists in storage, so its volume is real — partial,
         # but genuinely this bucket's. Keep it rather than overwrite it.
-        volume = self._quote_volume(volume)
+        volume = self._quote_volume(quote.volume)
+        update = {"high": high, "low": low, "close": price, "volume": volume or bar.volume}
         if isinstance(bar, IntradayBar):
-            return bar.model_copy(
-                update={"high": high, "low": low, "close": price, "volume": volume or bar.volume}
-            )
+            return bar.model_copy(update=update)
         assert isinstance(bar, DailyBar)
-        return bar.model_copy(
-            update={"high": high, "low": low, "close": price, "volume": volume or bar.volume}
-        )
+        return bar.model_copy(update=update)
 
-    def _open_bar(self, stamp: datetime, price: Decimal, volume: int | None) -> Bar:
+    def _open_bar(self, stamp: datetime, price: Decimal, quote: Quote) -> Bar:
         if self.is_intraday:
             return IntradayBar(
                 ts=stamp,
@@ -196,10 +215,11 @@ class BarSource:
                 high=price,
                 low=price,
                 close=price,
-                volume=self._quote_volume(volume),
+                volume=self._quote_volume(quote.volume),
             )
+        high, low = self._session_range(quote, price, price)
         return DailyBar(
-            date=stamp.date(), open=price, high=price, low=price, close=price, volume=volume
+            date=stamp.date(), open=price, high=high, low=low, close=price, volume=quote.volume
         )
 
     def backfill_window(self, latest: datetime | None, now: datetime) -> tuple[date, date]:

@@ -1444,3 +1444,71 @@ def test_a_different_symbol_still_takes_the_freed_slot(engine, provider, conn):
     assert [f.symbol for f in result.opened] == ["BBB" if held_symbol == "AAA" else "AAA"], (
         "the other name should have taken the freed slot"
     )
+
+
+def test_status_flags_a_position_marked_on_an_older_session(engine, provider, conn):
+    """The AMD case, 2026-08-05: 43 of 51 instruments had that day's bar and AMD
+    did not, so it was marked on the 08-04 close and reported +17.28 while it
+    actually stood at -54.38. `marks_are_stale` said False the whole time,
+    because a close existed — it was merely a day old — and the trade closed the
+    next morning at -63.43.
+
+    No trading calendar is needed to catch it: if another instrument has a newer
+    session than this one, this one is behind.
+    """
+    provider.add_symbol("AAA", price="100")
+    provider.add_symbol("BBB", price="100")
+    engine.init(symbols=["AAA", "BBB"], strategies=["breakout"], max_positions=2)
+    account = engine.account()
+    stale = InstrumentRepo(conn).get_by_symbol("AAA")
+    fresh = InstrumentRepo(conn).get_by_symbol("BBB")
+    assert stale is not None and fresh is not None
+
+    prices = PriceRepo(conn)
+    prices.upsert_daily(stale.id, make_bars([100.0, 110.0]))  # ends 2024-01-02
+    prices.upsert_daily(fresh.id, make_bars([100.0, 110.0, 120.0]))  # ends 2024-01-03
+
+    engine.positions.open(
+        account_id=account.id,
+        instrument_id=stale.id,
+        signal_id=None,
+        strategy="breakout",
+        opened_at=datetime(2024, 1, 1, 9, 30),
+        entry_price=Decimal("100"),
+        quantity=Decimal("2"),
+        stop_price=Decimal("95"),
+        target_price=Decimal("110"),
+        atr_at_entry=Decimal("2.5"),
+        last_bar_date=date(2024, 1, 1),
+    )
+
+    status = engine.status()
+    assert status.marks_are_stale is True
+    assert status.marked_at == date(2024, 1, 2)  # the session it was priced on
+    assert status.unrealized == Decimal("20")  # still marked, just honestly labelled
+
+
+def test_status_is_not_stale_when_every_mark_is_current(engine, provider, conn):
+    """A warning that fires on healthy data is one people learn to ignore."""
+    provider.add_symbol("AAA", price="100")
+    engine.init(symbols=["AAA"], strategies=["breakout"], max_positions=2)
+    account = engine.account()
+    instrument = InstrumentRepo(conn).get_by_symbol("AAA")
+    assert instrument is not None
+    PriceRepo(conn).upsert_daily(instrument.id, make_bars([100.0, 110.0]))
+    engine.positions.open(
+        account_id=account.id,
+        instrument_id=instrument.id,
+        signal_id=None,
+        strategy="breakout",
+        opened_at=datetime(2024, 1, 1, 9, 30),
+        entry_price=Decimal("100"),
+        quantity=Decimal("2"),
+        stop_price=Decimal("95"),
+        target_price=Decimal("110"),
+        atr_at_entry=Decimal("2.5"),
+        last_bar_date=date(2024, 1, 1),
+    )
+    status = engine.status()
+    assert status.marks_are_stale is False
+    assert status.marked_at == date(2024, 1, 2)
