@@ -1685,6 +1685,16 @@ def engine_init(
             help="Bar width the rules run on: 1d (swing) or 5m/15m/30m/1h (day).",
         ),
     ] = DAILY,
+    max_entries_per_day: Annotated[
+        int,
+        typer.Option(
+            "--max-entries-per-day",
+            help=(
+                "Most new entries in one session. 0 = unlimited. Caps the flow of "
+                "trades, where --max caps how many are open at once."
+            ),
+        ),
+    ] = 0,
     regime_sma: Annotated[
         int,
         typer.Option(
@@ -1731,6 +1741,7 @@ def engine_init(
             or None,
             sizing_mode=mode,
             timeframe=timeframe,
+            max_entries_per_day=max_entries_per_day,
         )
         # SPY and ^VIX become tracked instruments so `trd sync` pulls their bars.
         # Registered unconditionally: the backtest needs them to answer "what

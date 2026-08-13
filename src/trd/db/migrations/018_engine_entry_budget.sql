@@ -1,0 +1,24 @@
+-- A ceiling on new entries per session.
+--
+-- `max_positions` caps how many trades are open at once; nothing capped how many
+-- were opened. A day engine recycles its slots as fast as exits fire, so the live
+-- day engine opened 58 trades a day against 5 slots — 407 over 7 sessions —
+-- while never holding more than 5 at a time.
+--
+-- This is an invariant, not a consequence. SB-600 fixed the rules that were
+-- recycling the slots, and that alone cuts the count a long way; a budget is the
+-- thing that makes a per-session statement *true* regardless of what the rules
+-- later do. The two are complementary, and neither replaces the other.
+--
+-- 0 disables it, which is every engine that predates this column — an engine
+-- silently acquiring a trade budget it was never configured with would be the
+-- same class of surprise as the earnings blackout arriving unasked.
+--
+-- Its own column rather than exit_params, for the reason 012 gave: that JSON is
+-- named for the exit rules and validated against their key set, and this is an
+-- entry-side parameter.
+--
+-- Added bare, then backfilled: DuckDB rejects ALTER TABLE ... ADD COLUMN with a
+-- constraint ("Adding columns with constraints not yet supported").
+ALTER TABLE engine_config ADD COLUMN max_entries_per_day INTEGER;
+UPDATE engine_config SET max_entries_per_day = 0 WHERE max_entries_per_day IS NULL;

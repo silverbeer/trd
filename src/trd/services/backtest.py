@@ -257,6 +257,7 @@ def simulate(
     strategies: list[str],
     position_size: Decimal,
     max_positions: int,
+    max_entries_per_day: int = 0,
     exit_params: dict[str, float],
     earnings_by_symbol: dict[str, list[date]] | None = None,
     earnings_blackout_days: int = 0,
@@ -340,6 +341,10 @@ def simulate(
     equity: list[EquityPoint] = []
     last_close: dict[str, Decimal] = {}
     blackout_blocked = 0
+    # Entries taken in the session currently being walked. Reset when the date
+    # rolls, which on an intraday walk is many bars apart — hence keyed on the
+    # date rather than counted per bar.
+    entries_today, budget_session = 0, None
     regime_blocked = 0
     regime_series = {k.upper(): list(v) for k, v in (regime_bars or {}).items()}
     regime_on = regime.is_configured(exit_params)
@@ -401,6 +406,12 @@ def simulate(
         # Entries: every enabled strategy over every eligible symbol, ranked the
         # way _run_entries ranks, filled while capacity lasts.
         capacity = max_positions - len(open_positions)
+        # Same budget the live scanner applies, and applied the same way: it caps
+        # what may be taken, it does not stop the strategies from being evaluated.
+        if max_entries_per_day > 0:
+            if budget_session != today:
+                entries_today, budget_session = 0, today
+            capacity = min(capacity, max(0, max_entries_per_day - entries_today))
         too_late = entry_cutoff is not None and (stamp.hour * 60 + stamp.minute) >= entry_cutoff
         # Same gate the live scanner runs, over the prefix up to today — the
         # slice is the lookahead guarantee. Shared code, so the two cannot drift.
@@ -463,6 +474,7 @@ def simulate(
                 open_positions[symbol] = position
                 cash -= price * plan.quantity
                 capacity -= 1
+                entries_today += 1
 
         for symbol, positions_index in index.items():
             i = positions_index.get(stamp)
@@ -602,6 +614,7 @@ class BacktestService:
             strategies=config.strategies,
             position_size=position_size or config.position_size,
             max_positions=config.max_positions,
+            max_entries_per_day=config.max_entries_per_day,
             exit_params=params,
             earnings_by_symbol=earnings_by_symbol,
             earnings_blackout_days=config.earnings_blackout_days if blackout else 0,

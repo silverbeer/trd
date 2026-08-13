@@ -43,6 +43,10 @@ class EngineConfig(BaseModel):
     # The bar width the rules run on. '1d' reads price_daily; an intraday value
     # reads price_intraday, which is what makes a stop reachable inside a session.
     timeframe: str = "1d"
+    # Most new entries the engine may open in one session. 0 is off. Caps the
+    # *flow* of trades, where max_positions caps the stock of them — a day engine
+    # recycles its slots as exits fire, so the two are different limits.
+    max_entries_per_day: int = 0
 
     @computed_field  # type: ignore[prop-decorator]
     @property
@@ -277,6 +281,11 @@ class EngineStatus(BaseModel):
     earnings_blackout_days: int
     flat_at_minute: int
     timeframe: str = "1d"
+    # Per-session entry budget. 0 = off, which is every engine that predates it.
+    max_entries_per_day: int = 0
+    # How much of that budget today has already used. Meaningless when the budget
+    # is off, and rendered only when it is on.
+    entries_today: int = 0
     # Market-regime gate on new entries. 0 = off, which is the default.
     regime_sma: int = 0
     regime_vix_max: float = 0.0
