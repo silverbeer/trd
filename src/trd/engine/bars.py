@@ -23,7 +23,9 @@ from trd.timeframes import (
     INTRADAY_BACKFILL_DAYS,
     INTRADAY_MINUTES,
     TIMEFRAMES,
+    bars_per_session,
     day_mode_on_daily_bars,
+    sessions_to_bars,
     validate_timeframe,
 )
 
@@ -33,8 +35,10 @@ __all__ = [
     "INTRADAY_MINUTES",
     "TIMEFRAMES",
     "BarSource",
+    "bars_per_session",
     "bucket_start",
     "day_mode_on_daily_bars",
+    "sessions_to_bars",
     "validate_timeframe",
 ]
 
@@ -106,9 +110,17 @@ class BarSource:
     def bars_since(self, bars: list[Bar], opened_at: datetime) -> int:
         """How many completed bars the trade has lived through.
 
-        Bar units, not calendar units — `max_bars` and `indicator_grace_bars` are
-        counts of bars, so on a 5-minute engine a 10-bar time stop is 50 minutes.
-        That is the honest reading: the rules measure what they can see.
+        Bar units, deliberately: a trade's age is measured in what the engine can
+        actually see. The *thresholds* it gets compared against are durations —
+        `max_sessions` and `indicator_grace_sessions` are session counts that
+        `sessions_to_bars` resolves against this timeframe.
+
+        That split is the fix for SB-600. This method used to be paired with
+        thresholds that were also bar counts, which read identically on a swing
+        engine and meant something else entirely on an intraday one: a 10-bar time
+        stop became 50 minutes, a 3-bar grace period 15, and a "20-day" moving
+        average 100. The live day engine opened 407 trades under that reading and
+        not one of them survived an hour.
         """
         if not self.is_intraday:
             return sum(1 for bar in bars if self.session(bar) > opened_at.date())
