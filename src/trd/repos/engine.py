@@ -20,7 +20,7 @@ DEFAULT_EARNINGS_BLACKOUT_DAYS = 3
 
 _CONFIG_COLS = (
     "id, account_id, watchlist, position_size, max_positions, strategies, exit_params, "
-    "earnings_blackout_days, sizing_mode, timeframe"
+    "earnings_blackout_days, sizing_mode, timeframe, max_entries_per_day"
 )
 _SIGNAL_COLS = "id, run_id, instrument_id, strategy, bar_ts, fired_at, price, score, reason, acted"
 _POSITION_COLS = (
@@ -49,6 +49,11 @@ def _row_to_config(row: tuple) -> EngineConfig:
         # Nullable for the same reason again: an engine created before migration
         # 015 has always run on daily bars, and must keep doing so.
         timeframe=row[9] if row[9] is not None else "1d",
+        # Nullable for the same reason again: an engine created before migration
+        # 018 ran with no entry budget, and must keep running with none. An engine
+        # that silently acquired a trade cap it was never configured with would be
+        # the same unasked-for surprise the earnings blackout was.
+        max_entries_per_day=row[10] if row[10] is not None else 0,
     )
 
 
@@ -129,14 +134,15 @@ class EngineConfigRepo:
         earnings_blackout_days: int = DEFAULT_EARNINGS_BLACKOUT_DAYS,
         sizing_mode: SizingMode = SizingMode.EXPOSURE,
         timeframe: str = "1d",
+        max_entries_per_day: int = 0,
     ) -> EngineConfig:
         self.conn.execute("DELETE FROM engine_config WHERE account_id = ?", [account_id])
         row = self.conn.execute(
             f"""
             INSERT INTO engine_config
                 (account_id, watchlist, position_size, max_positions, strategies, exit_params,
-                 earnings_blackout_days, sizing_mode, timeframe)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 earnings_blackout_days, sizing_mode, timeframe, max_entries_per_day)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             RETURNING {_CONFIG_COLS}
             """,
             [
@@ -149,6 +155,7 @@ class EngineConfigRepo:
                 earnings_blackout_days,
                 sizing_mode.value,
                 timeframe,
+                max_entries_per_day,
             ],
         ).fetchone()
         assert row is not None
@@ -343,6 +350,23 @@ class EnginePositionRepo:
 
     def list_all(self, account_id: int) -> list[tuple[EnginePosition, Instrument]]:
         return self._list("WHERE p.account_id = ?", [account_id])
+
+    def count_opened_on(self, account_id: int, session: date) -> int:
+        """Entries opened during one session, open or already closed.
+
+        Closed ones must count: a day engine's whole pattern is open-and-close
+        inside the session, so counting only what is still open would let the
+        budget refill every time an exit fired — which is exactly the recycling
+        the budget exists to bound.
+        """
+        row = self.conn.execute(
+            """
+            SELECT count(*) FROM engine_position
+            WHERE account_id = ? AND CAST(opened_at AS DATE) = ?
+            """,
+            [account_id, session],
+        ).fetchone()
+        return int(row[0]) if row else 0
 
     def has_open(self, account_id: int, instrument_id: int) -> bool:
         row = self.conn.execute(

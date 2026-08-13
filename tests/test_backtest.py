@@ -544,3 +544,41 @@ def test_trade_json_keeps_both_the_date_and_the_instant():
     trade = json.loads(result.model_dump_json())["trades"][0]
     assert trade["entry_date"] == trade["entry_at"][:10]
     assert trade["exit_date"] == trade["exit_at"][:10]
+
+
+def test_the_entry_budget_caps_entries_per_session():
+    """The backtest has to honour the budget too, or a replay describes an engine
+    that is not the one running. Three names break out on the same bar and two
+    slots are free, but only one entry a session is allowed."""
+    series = {sym: breakout_series() for sym in ("AAA", "BBB", "CCC")}
+    unlimited = run(series, max_positions=3)
+    budgeted = run(series, max_positions=3, max_entries_per_day=1)
+
+    assert unlimited.open_at_end == 3
+    assert budgeted.open_at_end == 1
+
+
+def test_the_budget_resets_each_session():
+    """Per session, not per run: with one entry a day, names that all qualify get
+    taken across consecutive sessions rather than only ever one in total."""
+    base = breakout_series()
+    last = base[-1]
+    # Hold the breakout condition for two more bars so the later sessions still
+    # have a signal to act on.
+    extended = [
+        *base,
+        bar(last.date + timedelta(days=1), 101.0, 101.5, 100.5, 101.2, volume=3_000_000),
+        bar(last.date + timedelta(days=2), 101.2, 102.0, 101.0, 101.8, volume=3_000_000),
+    ]
+    series = {sym: extended for sym in ("AAA", "BBB", "CCC")}
+    budgeted = run(series, max_positions=3, max_entries_per_day=1)
+
+    opened = [(t.symbol, t.entry_date) for t in budgeted.trades]
+    total_entries = budgeted.open_at_end + len(budgeted.trades)
+    # More than one entry overall proves the budget refilled; the per-session
+    # count proves it never refilled *within* a session.
+    assert total_entries > 1, opened
+    per_session: dict[object, int] = {}
+    for _symbol, entry_date in opened:
+        per_session[entry_date] = per_session.get(entry_date, 0) + 1
+    assert all(count <= 1 for count in per_session.values()), per_session
