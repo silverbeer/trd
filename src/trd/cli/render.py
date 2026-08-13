@@ -1630,6 +1630,19 @@ def engine_status_renderables(status: EngineStatus) -> list[RenderableType]:
         else f"room for {status.capacity}"
     )
     book.add_row("positions", f"{status.open_positions} of {status.max_positions}  ·  {room}")
+    # Two different limits, so both are shown when both are on: max_positions caps
+    # how many trades are open, the budget caps how many may be opened. A day
+    # engine recycles its slots as exits fire, so the book can read "room for 2"
+    # while the engine is done trading for the session.
+    if status.max_entries_per_day > 0:
+        left = max(0, status.max_entries_per_day - status.entries_today)
+        budget = f"{status.entries_today} of {status.max_entries_per_day} taken today"
+        budget += (
+            "  ·  [yellow]spent — no more entries this session[/yellow]"
+            if left == 0
+            else f"  ·  {left} left"
+        )
+        book.add_row("entry budget", budget)
     book.add_row("committed", fmt_money(status.committed))
     # Committed capital reads as the exposure, and it is not: every position has
     # a stop under it. The share says how much of the committed money is actually

@@ -283,6 +283,7 @@ class EngineService:
         earnings_blackout_days: int = DEFAULT_EARNINGS_BLACKOUT_DAYS,
         sizing_mode: SizingMode = SizingMode.EXPOSURE,
         timeframe: str = DAILY,
+        max_entries_per_day: int = 0,
     ) -> tuple[EngineConfig, Account, list[str]]:
         """Create (or re-point) the engine: a simulation account, a watchlist
         universe, and the rule set. Returns the symbols now in the universe."""
@@ -290,6 +291,8 @@ class EngineService:
             raise TrdError("Position size must be positive.")
         if earnings_blackout_days < 0:
             raise TrdError("Earnings blackout days cannot be negative.")
+        if max_entries_per_day < 0:
+            raise TrdError("Max entries per day cannot be negative (0 disables the budget).")
         if max_positions < 1:
             raise TrdError("Max positions must be at least 1.")
 
@@ -342,6 +345,7 @@ class EngineService:
             earnings_blackout_days,
             sizing_mode,
             timeframe,
+            max_entries_per_day,
         )
         universe = [i.symbol for _, i in self.watchlists.items(board.id)]
         return config, account, universe
@@ -769,6 +773,32 @@ class EngineService:
                 )
 
         capacity = config.max_positions - len(held)
+
+        # The per-session entry budget. Applied *after* the strategies have run and
+        # their signals been stored, deliberately: a signal blocked by the budget
+        # is a real signal on good data, exactly like an earnings-blocked one, and
+        # the passed-over signals are half the learning. An early return here would
+        # make a spent budget look like a quiet tape.
+        if config.max_entries_per_day > 0:
+            spent = self.positions.count_opened_on(account.id, now.date())
+            remaining = max(0, config.max_entries_per_day - spent)
+            # Reported only when the budget actually *binds* — when it turns away a
+            # name the slots would otherwise have taken. Counted over distinct
+            # symbols, since one symbol can raise a candidate per strategy and
+            # only ever becomes one position.
+            wanted = len({instrument.id for _, instrument, _, _, _ in candidates})
+            if remaining < wanted:
+                result.skipped.append(
+                    f"entry budget spent: {spent} of {config.max_entries_per_day} taken "
+                    f"today, {wanted} name(s) passed over"
+                    if remaining == 0
+                    else (
+                        f"entry budget: {spent} of {config.max_entries_per_day} taken today, "
+                        f"room for {remaining} of the {wanted} names that qualified"
+                    )
+                )
+            capacity = min(capacity, remaining)
+
         result.capacity = max(0, capacity)
         if capacity <= 0 or not paper:
             return
@@ -1040,6 +1070,8 @@ class EngineService:
             earnings_blackout_days=config.earnings_blackout_days,
             flat_at_minute=int(config.exit_params.get("flat_at_minute", 0)),
             timeframe=config.timeframe,
+            max_entries_per_day=config.max_entries_per_day,
+            entries_today=self.positions.count_opened_on(account.id, date.today()),
             regime_sma=int(config.exit_params.get("regime_sma", 0)),
             regime_vix_max=float(config.exit_params.get("regime_vix_max", 0)),
             open_positions=len(open_pairs),

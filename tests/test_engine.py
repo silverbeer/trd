@@ -1533,3 +1533,107 @@ def test_status_is_not_stale_when_every_mark_is_current(engine, provider, conn):
     status = engine.status()
     assert status.marks_are_stale is False
     assert status.marked_at == date(2024, 1, 2)
+
+
+# --------------------------------------------------- per-session entry budget
+
+
+def test_the_entry_budget_caps_trades_taken_in_one_session(engine, provider, conn):
+    """`max_positions` caps the stock of open trades; the budget caps the flow.
+    Three names fire, two slots are free, but the budget only allows one."""
+    for symbol in ("AAA", "BBB", "CCC"):
+        bars = make_bars(uptrend())
+        provider.add_symbol(symbol, price=str(float(bars[-1].close)))
+        seed(conn, symbol, bars)
+    engine.init(
+        symbols=["AAA", "BBB", "CCC"],
+        strategies=["momentum"],
+        position_size=Decimal("10000"),
+        max_positions=3,
+        max_entries_per_day=1,
+    )
+    result = engine.scan(at=datetime(2024, 9, 16, 10, 0))
+    assert len(result.opened) == 1
+    # Every signal is still recorded. A budget-blocked signal is a real signal on
+    # good data, exactly like an earnings-blocked one.
+    assert len(result.signals) == 3
+    assert result.capacity == 0
+    assert any("entry budget" in s for s in result.skipped)
+
+
+def test_the_budget_is_not_refilled_by_an_exit(engine, provider, conn):
+    """The recycling this exists to bound: a day engine opens and closes inside
+    one session, and a budget that counted only *open* positions would top itself
+    up every time an exit fired. Entry, exit and retry all sit on one day here —
+    that is the case the counter has to get right.
+
+    Two symbols, because a symbol whose signal was already acted on this bar is
+    skipped before the budget is ever consulted. BBB is the name still asking.
+    """
+    for symbol in ("AAA", "BBB"):
+        bars = make_bars(uptrend())
+        provider.add_symbol(symbol, price=str(float(bars[-1].close)))
+        seed(conn, symbol, bars)
+    engine.init(
+        symbols=["AAA", "BBB"],
+        strategies=["momentum"],
+        position_size=Decimal("10000"),
+        max_positions=2,
+        max_entries_per_day=1,
+    )
+    account_id = engine.account().id
+
+    opened = engine.scan(at=datetime(2024, 9, 16, 10, 0))
+    assert len(opened.opened) == 1  # two qualified, the budget allowed one
+    assert engine.positions.count_opened_on(account_id, date(2024, 9, 16)) == 1
+    held = opened.opened[0].symbol
+
+    # Drive price through the stop so the trade closes and the slot frees. Done
+    # with the stop rather than a time-exit parameter so this test does not depend
+    # on how the time rule happens to be configured.
+    position = engine.position_rows(open_only=True)[0].position
+    provider.add_symbol(held, price=str(float(position.stop_price) * 0.99))
+    closed = engine.scan(at=datetime(2024, 9, 16, 14, 0))
+    assert len(closed.closed) == 1
+
+    # Same session: both slots free, the other name still qualifies, budget spent.
+    again = engine.scan(at=datetime(2024, 9, 16, 15, 0))
+    assert again.opened == []
+    assert any("entry budget spent" in msg for msg in again.skipped)
+    assert engine.positions.count_opened_on(account_id, date(2024, 9, 16)) == 1
+
+    # Per session, not cumulative: the next day starts whole. Both quotes are
+    # nudged off the last stored close first — a quote that merely repeats it is
+    # the "has not printed yet" case, which the scanner refuses to fill on.
+    for symbol in ("AAA", "BBB"):
+        provider.add_symbol(symbol, price=str(float(bars[-1].close) * 1.002))
+    fresh = engine.scan(at=datetime(2024, 9, 17, 10, 0))
+    assert len(fresh.opened) == 1
+    # Binding, not spent: a fresh session has room, just less than the two names
+    # that qualified. The two messages are deliberately different.
+    assert any("room for 1 of the 2 names" in msg for msg in fresh.skipped)
+
+
+def test_the_budget_is_off_by_default(engine, provider, conn):
+    """Every engine that predates the column runs with none. An engine silently
+    acquiring a trade cap it was never configured with would be the same unasked
+    surprise the earnings blackout was."""
+    for symbol in ("AAA", "BBB", "CCC"):
+        bars = make_bars(uptrend())
+        provider.add_symbol(symbol, price=str(float(bars[-1].close)))
+        seed(conn, symbol, bars)
+    engine.init(
+        symbols=["AAA", "BBB", "CCC"],
+        strategies=["momentum"],
+        position_size=Decimal("10000"),
+        max_positions=3,
+    )
+    assert engine.config().max_entries_per_day == 0
+    result = engine.scan(at=datetime(2024, 9, 16, 10, 0))
+    assert len(result.opened) == 3
+    assert not any("entry budget" in s for s in result.skipped)
+
+
+def test_a_negative_budget_is_refused(engine):
+    with pytest.raises(TrdError, match="Max entries per day"):
+        engine.init(symbols=["AAA"], max_entries_per_day=-1)
