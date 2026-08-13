@@ -157,13 +157,14 @@ def _level_decision(
     price: Decimal,
     params: dict[str, float],
     now: datetime,
+    timeframe: str,
 ) -> ExitDecision | None:
     """First price-level rule to fire at a probe price, in the live order
     (stop before trail before target), skipping the path-dependent rules."""
     for rule in RULES:
         if rule.key not in _LEVEL_RULES:
             continue
-        decision = rule.check(position, bars, price, params, now)
+        decision = rule.check(position, bars, price, params, now, timeframe)
         if decision is not None:
             return decision
     return None
@@ -188,6 +189,7 @@ def _check_exit(
     params: dict[str, float],
     now: datetime,
     fill: FillMode,
+    timeframe: str,
 ) -> tuple[Decimal, ExitDecision] | None:
     """Run one bar through the exit rules; return (fill price, decision) or None.
 
@@ -201,7 +203,7 @@ def _check_exit(
     if fill == FillMode.INTRABAR:
         prior = bars[:i]
         for probe_price in (bar.open, bar.low, bar.high):
-            decision = _level_decision(position, prior, probe_price, params, now)
+            decision = _level_decision(position, prior, probe_price, params, now, timeframe)
             if decision is not None:
                 price = (
                     bar.open
@@ -212,7 +214,7 @@ def _check_exit(
     # The close probe mirrors a live end-of-day scan: today's bar is settled and
     # the trail high has absorbed today's close before the rules read it.
     probe = position.model_copy(update={"trail_high": max(position.trail_high, bar.close)})
-    decision = evaluate_exits(probe, bars[: i + 1], bar.close, params, now)
+    decision = evaluate_exits(probe, bars[: i + 1], bar.close, params, now, timeframe)
     if decision is not None:
         return bar.close, decision
     return None
@@ -361,7 +363,7 @@ def simulate(
             bar = bars[i]
             position.bars_held += 1
             position.last_bar_date = today
-            hit = _check_exit(position, bars, i, exit_params, now, fill)
+            hit = _check_exit(position, bars, i, exit_params, now, fill, timeframe)
             if hit is None:
                 position.trail_high = max(position.trail_high, bar.close)
                 continue

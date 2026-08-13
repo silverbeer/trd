@@ -13,8 +13,24 @@ import duckdb
 import pytest
 
 from tests.conftest import FakeProvider
-from tests.test_engine import make_bars, make_intraday_bars, seed, seed_intraday, uptrend
-from trd.engine.bars import BarSource, bucket_start, day_mode_on_daily_bars
+from tests.test_engine import (
+    _position,
+    make_bars,
+    make_intraday_bars,
+    seed,
+    seed_intraday,
+    uptrend,
+)
+from trd.engine import exits as exit_rules
+from trd.engine.bars import (
+    DAILY,
+    BarSource,
+    bars_per_session,
+    bucket_start,
+    day_mode_on_daily_bars,
+    sessions_to_bars,
+)
+from trd.engine.exits import DEFAULT_EXIT_PARAMS
 from trd.errors import TrdError
 from trd.models import IntradayBar, Quote
 from trd.repos import PriceRepo
@@ -185,8 +201,9 @@ def test_a_quote_that_only_repeats_the_last_close_is_stale(
 
 
 def test_bars_held_counts_bars_not_days(conn: duckdb.DuckDBPyConnection) -> None:
-    """`max_bars` and `indicator_grace_bars` are counts of bars. On a 5-minute
-    engine a 10-bar time stop is 50 minutes, and that is the honest reading."""
+    """A trade's age is counted in bars — what the engine can see. The thresholds
+    it is measured against are sessions (`max_sessions`, `indicator_grace_sessions`),
+    resolved to bars by `sessions_to_bars`; see SB-600."""
     intraday = BarSource(PriceRepo(conn), "5m")
     bars = make_intraday_bars([100.0] * 12)
     opened = bars[4].ts
@@ -386,3 +403,94 @@ def test_status_reports_the_timeframe_and_intraday_depth(engine, provider, conn)
     assert status.day_mode is True
     assert status.bars_total == 260  # counted from price_intraday, not price_daily
     assert status.bar_unit == "5m"
+
+
+# ------------------------------------------- session-scaled lookbacks (SB-600)
+
+
+@pytest.mark.parametrize(
+    ("timeframe", "per_session"),
+    [("1d", 1), ("5m", 78), ("15m", 26), ("30m", 13), ("1h", 7)],
+)
+def test_a_session_resolves_to_the_right_number_of_bars(timeframe, per_session) -> None:
+    """390 minutes of regular session, divided by the bar width. 1h rounds up to
+    seven because the provider emits a short final bar, and flooring to six would
+    quietly shorten every 1h lookback."""
+    assert bars_per_session(timeframe) == per_session
+    assert sessions_to_bars(timeframe, 20) == 20 * per_session
+
+
+def test_scaling_is_the_identity_on_a_swing_engine() -> None:
+    """The whole safety property of SB-600: daily engines are untouched, because
+    on daily bars a session *is* a bar."""
+    for sessions in (0, 1, 3, 10, 20, 200):
+        assert sessions_to_bars(DAILY, sessions) == sessions
+
+
+def test_zero_sessions_stays_zero() -> None:
+    """`max_sessions: 0` means close on the next bar. Rounding it up to one bar
+    would silently disable the tests that use it to force a same-bar exit."""
+    assert sessions_to_bars("5m", 0) == 0
+    assert sessions_to_bars(DAILY, 0) == 0
+
+
+def test_the_indicator_exit_no_longer_sells_a_five_minute_trade_in_fifteen_minutes() -> None:
+    """The bug this ticket exists for.
+
+    `indicator_grace_sessions` is 3. Read as bars that was 15 minutes on a 5m
+    engine, so a fresh entry was eligible to be sold three bars in — and 228 of
+    the live day engine's 407 trades were, against a "20-day" average that was
+    really 100 minutes. Three sessions is 234 bars, so the rule stays dormant.
+    """
+    # Long enough for a 20-session average (1,560 bars) to exist at all. Below
+    # that the indicator returns None and the rule declines — the safe direction,
+    # and the reason a freshly-added symbol simply produces no indicator exit
+    # until it has the history.
+    bars = make_intraday_bars(uptrend(n=2200))
+    params = dict(DEFAULT_EXIT_PARAMS)
+    rule = exit_rules.IndicatorExit()
+    window = sessions_to_bars("5m", 20)
+    sma20 = sum(float(b.close) for b in bars[-window:]) / window
+    below = Decimal(str(sma20 * 0.9))
+    now = bars[-1].ts
+
+    # three bars in — what used to be enough to arm the rule
+    assert rule.check(_position(bars_held=3), bars, below, params, now, "5m") is None
+    # three *sessions* in, the threshold it was always meant to be
+    armed = rule.check(_position(bars_held=234), bars, below, params, now, "5m")
+    assert armed is not None and armed.rule == "indicator"
+    assert "20-session" in armed.reason
+    assert "20-day" not in armed.reason  # the string that lied in 228 trade records
+
+
+def test_the_time_exit_no_longer_fires_after_fifty_minutes() -> None:
+    """`max_sessions` is 10. As bars that was 50 minutes on a 5m engine, and 84 of
+    the live day engine's trades closed at exactly that. Ten sessions is 780."""
+    bars = make_intraday_bars(uptrend(n=400))
+    params = dict(DEFAULT_EXIT_PARAMS)
+    rule = exit_rules.TimeExit()
+    now = bars[-1].ts
+
+    assert rule.check(_position(bars_held=10), bars, Decimal("101"), params, now, "5m") is None
+    hit = rule.check(_position(bars_held=780), bars, Decimal("101"), params, now, "5m")
+    assert hit is not None and hit.rule == "time"
+    assert "10 sessions" in hit.reason
+
+
+def test_the_same_thresholds_still_fire_on_schedule_for_a_swing_engine() -> None:
+    """The regression guard in the other direction: a daily engine must behave
+    exactly as it did before the rename."""
+    bars = make_bars(uptrend())
+    params = dict(DEFAULT_EXIT_PARAMS)
+    now = datetime(2024, 9, 16, 12, 0)
+
+    assert (
+        exit_rules.TimeExit().check(
+            _position(bars_held=9), bars, Decimal("101"), params, now, DAILY
+        )
+        is None
+    )
+    hit = exit_rules.TimeExit().check(
+        _position(bars_held=10), bars, Decimal("101"), params, now, DAILY
+    )
+    assert hit is not None and hit.rule == "time"

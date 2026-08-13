@@ -22,6 +22,43 @@ TIMEFRAMES: tuple[str, ...] = (DAILY, *INTRADAY_MINUTES)
 # it just returns what exists.
 INTRADAY_BACKFILL_DAYS = 59
 
+# One regular session, 09:30-16:00. The unit every rule lookback is denominated
+# in, so "20" means twenty sessions on every timeframe rather than twenty bars of
+# whatever width the engine happens to run.
+SESSION_MINUTES = 390
+
+
+def bars_per_session(timeframe: str) -> int:
+    """How many bars of this width make one session. Daily bars: one, by
+    definition — which is what makes the scaling identity on a swing engine."""
+    minutes = INTRADAY_MINUTES.get(validate_timeframe(timeframe))
+    if minutes is None:
+        return 1
+    # Rounded, not floored: 1h bars are 6.5 to a session and the provider emits
+    # seven (the last one short). Flooring would quietly shorten every 1h lookback.
+    return max(1, (SESSION_MINUTES + minutes // 2) // minutes)
+
+
+def sessions_to_bars(timeframe: str, sessions: float) -> int:
+    """A lookback in sessions, resolved to bars of this timeframe.
+
+    Rule periods used to be bar counts, which read the same on a swing engine and
+    meant something else entirely on an intraday one: a "20-day" moving average
+    became twenty 5-minute bars, or 100 minutes. The live day engine exited 228
+    trades against that average and told each one it had "closed below the
+    20-day". No trade it ever opened survived an hour.
+
+    Sessions are the honest unit because they are the one the rules were tuned
+    in. `bars_since` still counts bars — a trade's age is measured in what the
+    engine can see — but the *threshold* it is compared against is a duration.
+
+    Not floored at one bar: zero sessions has to stay zero. `max_sessions: 0`
+    means "close it on the next bar", which is how the entry/exit interaction
+    tests force a same-bar close, and rounding that up to one bar silently
+    disables them.
+    """
+    return max(0, round(sessions * bars_per_session(timeframe)))
+
 
 def day_mode_on_daily_bars(timeframe: str, flat_at_minute: int) -> str | None:
     """The diagnosis for the one configuration an engine must never run in.
