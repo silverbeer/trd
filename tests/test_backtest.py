@@ -443,6 +443,21 @@ def _intraday_series(n: int = 800):
     return make_intraday_bars(uptrend(n=n))
 
 
+def _slow_intraday_series(n: int = 800):
+    """The same shape, drifting slowly enough that a trade is still open at 15:55.
+
+    `_intraday_series` climbs 0.4% a bar — over the 78 bars of a session that is
+    +31%, so a 2R target roughly 4% above entry is reached within the hour and
+    nothing ever survives to the bell. That was fine while the indicator exit was
+    chopping trades every few bars; once exit lookbacks became session-scaled
+    (SB-600) the target became the only rule fast enough to fire, and a test about
+    the bell stopped exercising the bell.
+    """
+    from tests.test_engine import make_intraday_bars, uptrend
+
+    return make_intraday_bars(uptrend(n=n, drift=0.0002, wobble=0.6))
+
+
 def _day_params(**overrides):
     return dict(DEFAULT_EXIT_PARAMS, flat_at_minute=1555.0, **overrides)
 
@@ -463,7 +478,7 @@ def test_a_day_mode_backtest_runs_on_intraday_bars():
 def test_day_mode_flattens_at_the_bell():
     """The point of day mode: nothing is carried overnight."""
     result = run(
-        {"AAA": _intraday_series()},
+        {"AAA": _slow_intraday_series()},
         strategies=["momentum"],
         exit_params=_day_params(),
         timeframe="5m",

@@ -30,6 +30,7 @@ from trd.engine.bars import (
     INTRADAY_MINUTES,
     BarSource,
     day_mode_on_daily_bars,
+    sessions_to_bars,
     validate_timeframe,
 )
 from trd.engine.base import indicator, last
@@ -594,7 +595,7 @@ class EngineService:
                     "bars_held": source.bars_since(stored, position.opened_at),
                 }
             )
-            decision = evaluate_exits(live, bars, price, config.exit_params, now)
+            decision = evaluate_exits(live, bars, price, config.exit_params, now, config.timeframe)
             if decision is None:
                 self.positions.touch(
                     position.id, live.trail_high, live.bars_held, source.session(bars[-1])
@@ -1114,19 +1115,27 @@ class EngineService:
             bars_held=position.bars_held,
             risk_per_share=position.risk_per_share,
             glossary=glossary,
-            exits=self._exit_outlook(position, config.exit_params, price),
+            exits=self._exit_outlook(position, config.exit_params, price, config.timeframe),
         )
 
     @staticmethod
     def _exit_outlook(
-        position: EnginePosition, params: dict[str, float], price: Decimal | None
+        position: EnginePosition,
+        params: dict[str, float],
+        price: Decimal | None,
+        timeframe: str,
     ) -> list[ExitOutlook]:
         """Where each exit rule currently stands for one trade."""
         trail_mult = Decimal(str(params.get("trail_atr_mult", 3.0)))
         trail = position.trail_high - position.atr_at_entry * trail_mult
         trail_live = trail > position.stop_price
-        grace = int(params.get("indicator_grace_bars", 3))
-        max_bars = int(params.get("max_bars", 10))
+        # Resolved to this engine's bars, so the countdown a trader reads matches
+        # the one the rule actually applies.
+        grace_sessions = params.get("indicator_grace_sessions", 3)
+        max_session_count = params.get("max_sessions", 10)
+        grace = sessions_to_bars(timeframe, grace_sessions)
+        max_bars = sessions_to_bars(timeframe, max_session_count)
+        unit = "bar" if timeframe != DAILY else "session"
         engages_at = position.entry_price + position.atr_at_entry
 
         out = [
@@ -1163,18 +1172,20 @@ class EngineService:
                 rule="indicator",
                 name="Indicator Exit",
                 detail=(
-                    f"armed — sells if price loses the 20-day, MACD turns negative, "
-                    f"or RSI tops {params.get('rsi_exit', 80.0):.0f} and rolls over"
+                    f"armed — sells if price loses the 20-session average, MACD "
+                    f"turns negative, or RSI tops {params.get('rsi_exit', 80.0):.0f} "
+                    "and rolls over"
                     if position.bars_held >= grace
-                    else f"not armed yet: held {position.bars_held} of the {grace} bars "
-                    "a new entry gets to breathe"
+                    else f"not armed yet: held {position.bars_held} of the {grace} "
+                    f"{unit}s ({grace_sessions:g} sessions) a new entry gets to breathe"
                 ),
             ),
             ExitOutlook(
                 rule="time",
                 name="Time Exit",
                 detail=(
-                    f"gives up after {max_bars} bars; {max(0, max_bars - position.bars_held)} left"
+                    f"gives up after {max_session_count:g} sessions ({max_bars} "
+                    f"{unit}s); {max(0, max_bars - position.bars_held)} left"
                 ),
             ),
         ]

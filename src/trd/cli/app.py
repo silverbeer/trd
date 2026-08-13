@@ -2432,11 +2432,12 @@ def engine_trim(
 def engine_rules() -> None:
     """What every entry strategy looks for and how each exit rule works."""
     service = _engine_service()
-    params = None
+    params, timeframe = None, DAILY
     with suppress(TrdError):  # rules are readable before the engine is configured
-        params = service.config().exit_params
+        config = service.config()
+        params, timeframe = config.exit_params, config.timeframe
     console.print(engine_strategies_table())
-    console.print(engine_exits_table(params))
+    console.print(engine_exits_table(params, timeframe))
 
 
 @bot_app.command("serve")

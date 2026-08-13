@@ -37,6 +37,7 @@ from trd.services.history import HistoryResult
 from trd.services.movers import MoverRow
 from trd.services.plan import PlanStatus
 from trd.services.sunday_prep import SundayPrepBriefing
+from trd.timeframes import DAILY, sessions_to_bars
 
 MONEY = "{:,.2f}"
 
@@ -1461,8 +1462,15 @@ def engine_strategies_table() -> Table:
     return table
 
 
-def engine_exits_table(params: dict[str, float] | None = None) -> Table:
-    """Exit rules in the order they are checked, with the live parameters."""
+def engine_exits_table(params: dict[str, float] | None = None, timeframe: str = DAILY) -> Table:
+    """Exit rules in the order they are checked, with the live parameters.
+
+    Session-denominated params are shown resolved to this engine's bars as well as
+    in sessions. On a swing engine the two are the same number and the suffix is
+    omitted; on a 5-minute engine "10 sessions" is 780 bars, and a reader who
+    cannot see that has no way to tell whether the rule can ever fire before the
+    bell does.
+    """
     table = Table(title="Exit rules (checked in this order)", title_justify="left")
     table.add_column("#", justify="right", style="dim")
     table.add_column("Key", style="bold")
@@ -1471,7 +1479,13 @@ def engine_exits_table(params: dict[str, float] | None = None) -> Table:
     for i, rule in enumerate(EXIT_RULES, start=1):
         table.add_row(str(i), rule.key, rule.name, rule.description)
     if params:
-        table.caption = "  ".join(f"{k}={v:g}" for k, v in sorted(params.items()))
+        parts = []
+        for key, value in sorted(params.items()):
+            if key.endswith("_sessions") and timeframe != DAILY:
+                parts.append(f"{key}={value:g} ({sessions_to_bars(timeframe, value)} bars)")
+            else:
+                parts.append(f"{key}={value:g}")
+        table.caption = "  ".join(parts)
         table.caption_justify = "left"
     return table
 

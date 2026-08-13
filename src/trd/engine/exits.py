@@ -22,14 +22,23 @@ from pydantic import BaseModel
 
 from trd.engine.base import indicator, last, prior
 from trd.models import Bar, EnginePosition
+from trd.timeframes import sessions_to_bars
+
+# Every lookback below is denominated in *sessions*, resolved to bars of the
+# engine's timeframe by `sessions_to_bars`. On a swing engine that resolution is
+# the identity; on a 5-minute engine it is what stops a "20-day" average from
+# silently meaning 100 minutes. See `trd.timeframes.sessions_to_bars`.
+INDICATOR_SMA_SESSIONS = 20
+INDICATOR_MACD_SESSIONS = (12, 26, 9)
+INDICATOR_RSI_SESSIONS = 14
 
 DEFAULT_EXIT_PARAMS: dict[str, float] = {
     "stop_atr_mult": 2.0,  # initial stop = entry - N x ATR(14)
     "target_r": 2.0,  # profit target = entry + N x initial risk
     "trail_atr_mult": 3.0,  # chandelier stop = highest close since entry - N x ATR
-    "max_bars": 10.0,  # give up on a trade that has gone nowhere in N bars
+    "max_sessions": 10.0,  # give up on a trade that has gone nowhere in N sessions
     "rsi_exit": 80.0,  # blow-off exit when RSI runs this hot and rolls over
-    "indicator_grace_bars": 3.0,  # let a new entry breathe before indicator exits apply
+    "indicator_grace_sessions": 3.0,  # let a new entry breathe before indicator exits apply
     # Flat-by-the-bell, as HHMM in the engine's local time. 0 disables it, which is
     # what a swing engine wants: its whole design is to carry positions overnight.
     "flat_at_minute": 0.0,
@@ -60,8 +69,14 @@ class ExitRule(ABC):
         price: Decimal,
         params: dict[str, float],
         now: datetime,
+        timeframe: str,
     ) -> ExitDecision | None:
-        """Return a decision if this rule says get out, else None."""
+        """Return a decision if this rule says get out, else None.
+
+        `timeframe` is required rather than defaulted: a rule that quietly assumed
+        daily bars is precisely how a 20-session average became a 100-minute one,
+        and a default would let the next caller reintroduce it silently.
+        """
 
 
 class StopLoss(ExitRule):
@@ -79,6 +94,7 @@ class StopLoss(ExitRule):
         price: Decimal,
         params: dict[str, float],
         now: datetime,
+        timeframe: str,
     ) -> ExitDecision | None:
         if price > position.stop_price:
             return None
@@ -107,6 +123,7 @@ class TrailingStop(ExitRule):
         price: Decimal,
         params: dict[str, float],
         now: datetime,
+        timeframe: str,
     ) -> ExitDecision | None:
         mult = Decimal(str(params.get("trail_atr_mult", 3.0)))
         trail_stop = position.trail_high - position.atr_at_entry * mult
@@ -139,6 +156,7 @@ class ProfitTarget(ExitRule):
         price: Decimal,
         params: dict[str, float],
         now: datetime,
+        timeframe: str,
     ) -> ExitDecision | None:
         if price < position.target_price:
             return None
@@ -154,9 +172,11 @@ class IndicatorExit(ExitRule):
     name = "Indicator Exit"
     description = (
         "Leave when the reason for owning it stops being true: price loses the "
-        "20-day, MACD momentum flips negative, or RSI runs above the blow-off "
-        "level and rolls over. Held off for the first few bars so a pullback entry "
-        "is not sold by the very dip it was bought on."
+        "20-session average, MACD momentum flips negative, or RSI runs above the "
+        "blow-off level and rolls over. Every lookback is in sessions, so it means "
+        "the same span on a 5-minute engine as on a daily one. Held off for the "
+        "first few sessions so a pullback entry is not sold by the very dip it was "
+        "bought on."
     )
 
     def check(
@@ -166,21 +186,29 @@ class IndicatorExit(ExitRule):
         price: Decimal,
         params: dict[str, float],
         now: datetime,
+        timeframe: str,
     ) -> ExitDecision | None:
-        # A pullback entry is, by construction, below its 20-day. Without a grace
-        # period this rule sells it on the next scan for a zero-P&L round trip.
-        # The stop still runs first, so capital is protected the whole time.
-        if position.bars_held < int(params.get("indicator_grace_bars", 3)):
+        # A pullback entry is, by construction, below its 20-session average.
+        # Without a grace period this rule sells it on the next scan for a
+        # zero-P&L round trip. The stop still runs first, so capital is protected
+        # the whole time.
+        grace = params.get("indicator_grace_sessions", 3)
+        if position.bars_held < sessions_to_bars(timeframe, grace):
             return None
         value = float(price)
-        sma20 = last(indicator("sma", bars, period=20)["value"])
+        sma_period = sessions_to_bars(timeframe, INDICATOR_SMA_SESSIONS)
+        sma20 = last(indicator("sma", bars, period=sma_period)["value"])
         if sma20 is not None and value < sma20:
             return ExitDecision(
                 rule=self.key,
-                reason=f"closed below the 20-day ({sma20:.2f}) — short-term trend lost",
+                reason=(
+                    f"closed below the {INDICATOR_SMA_SESSIONS}-session average "
+                    f"({sma20:.2f}) — short-term trend lost"
+                ),
             )
 
-        hist_series = indicator("macd", bars, fast=12, slow=26, signal=9)["hist"]
+        fast, slow, signal = (sessions_to_bars(timeframe, n) for n in INDICATOR_MACD_SESSIONS)
+        hist_series = indicator("macd", bars, fast=fast, slow=slow, signal=signal)["hist"]
         hist, hist_prev = last(hist_series), prior(hist_series, 1)
         if hist is not None and hist_prev is not None and hist < 0 <= hist_prev:
             return ExitDecision(
@@ -188,7 +216,9 @@ class IndicatorExit(ExitRule):
                 reason=f"MACD histogram flipped negative ({hist:+.2f}) — momentum rolled over",
             )
 
-        rsi_series = indicator("rsi", bars, period=14)["value"]
+        rsi_series = indicator(
+            "rsi", bars, period=sessions_to_bars(timeframe, INDICATOR_RSI_SESSIONS)
+        )["value"]
         rsi, rsi_prev = last(rsi_series), prior(rsi_series, 1)
         hot = params.get("rsi_exit", 80.0)
         if rsi is not None and rsi_prev is not None and rsi_prev >= hot and rsi < rsi_prev:
@@ -203,8 +233,10 @@ class TimeExit(ExitRule):
     key = "time"
     name = "Time Exit"
     description = (
-        "Close a trade that has gone nowhere for N bars. Dead money is still money: "
-        "capital parked in a stalled name is capital not in the next setup."
+        "Close a trade that has gone nowhere for N sessions. Dead money is still "
+        "money: capital parked in a stalled name is capital not in the next setup. "
+        "On a day engine the bell usually gets there first, which is correct — "
+        "session_close is that engine's time exit."
     )
 
     def check(
@@ -214,15 +246,16 @@ class TimeExit(ExitRule):
         price: Decimal,
         params: dict[str, float],
         now: datetime,
+        timeframe: str,
     ) -> ExitDecision | None:
-        max_bars = int(params.get("max_bars", 10))
-        if position.bars_held < max_bars:
+        sessions = params.get("max_sessions", 10)
+        if position.bars_held < sessions_to_bars(timeframe, sessions):
             return None
         move = position.pnl_pct_at(price)
         drift = f"{move:+.1f}%" if move is not None else "flat"
         return ExitDecision(
             rule=self.key,
-            reason=f"held {position.bars_held} bars and only moved {drift} — freeing the capital",
+            reason=(f"held {sessions:.0f} sessions and only moved {drift} — freeing the capital"),
         )
 
 
@@ -242,6 +275,7 @@ class SessionClose(ExitRule):
         price: Decimal,
         params: dict[str, float],
         now: datetime,
+        timeframe: str,
     ) -> ExitDecision | None:
         flat_at = int(params.get("flat_at_minute", 0))
         if flat_at <= 0:
@@ -296,10 +330,11 @@ def evaluate(
     price: Decimal,
     params: dict[str, float],
     now: datetime,
+    timeframe: str,
 ) -> ExitDecision | None:
     """First rule to fire wins."""
     for rule in RULES:
-        decision = rule.check(position, bars, price, params, now)
+        decision = rule.check(position, bars, price, params, now, timeframe)
         if decision is not None:
             return decision
     return None
