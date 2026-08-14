@@ -135,6 +135,10 @@ class BacktestResult(BaseModel):
     blackout_blocked: int
     # Bars on which the regime gate refused new entries. 0 when the gate is off.
     regime_blocked: int = 0
+    # Ranked signals passed over because an exit closed that name on the same
+    # bar. Counted rather than silently dropped: a non-zero number here is the
+    # rules arguing with themselves, which is worth seeing.
+    reentry_blocked: int = 0
     equity: list[EquityPoint]
     start_value: Decimal
     end_value: Decimal
@@ -341,6 +345,7 @@ def simulate(
     equity: list[EquityPoint] = []
     last_close: dict[str, Decimal] = {}
     blackout_blocked = 0
+    reentry_blocked = 0
     # Entries taken in the session currently being walked. Reset when the date
     # rolls, which on an intraday walk is many bars apart — hence keyed on the
     # date rather than counted per bar.
@@ -359,6 +364,15 @@ def simulate(
 
         # Exits first, freeing capacity — the same order scan() uses. A position
         # whose symbol has no bar today simply rides.
+        #
+        # Exits free capacity for entries, but the freed *symbol* must not be a
+        # candidate on the same bar. `del open_positions[symbol]` below is what
+        # makes that possible: membership in the book is the entry pass's only
+        # filter, so a name closed on this stamp would look untouched. The live
+        # scanner carries the same guard (`just_closed` in EngineService.scan) —
+        # without it here the two disagree about which trades exist, and the
+        # backtest books round trips the engine would never take.
+        just_closed: set[str] = set()
         for symbol in sorted(open_positions):
             position = open_positions[symbol]
             i = index[symbol].get(stamp)
@@ -386,6 +400,7 @@ def simulate(
             cash += exit_price * sold
             closed.append(position)
             del open_positions[symbol]
+            just_closed.add(symbol)
             trades.append(
                 BacktestTrade(
                     symbol=symbol,
@@ -450,6 +465,11 @@ def simulate(
                 if capacity <= 0:
                     break
                 if symbol in open_positions:
+                    continue
+                if symbol in just_closed:
+                    # Mirrors the live scanner, down to where the check sits: the
+                    # signal still counts as fired, it just isn't acted on.
+                    reentry_blocked += 1
                     continue
                 plan, _skip = plan_entry(prefix, position_size, exit_params, sizing_mode)
                 if plan is None:
@@ -516,6 +536,7 @@ def simulate(
         trades=trades,
         open_at_end=len(open_positions),
         blackout_blocked=blackout_blocked,
+        reentry_blocked=reentry_blocked,
         regime_blocked=regime_blocked,
         equity=equity,
         start_value=start_value,
