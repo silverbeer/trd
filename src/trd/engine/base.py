@@ -1,11 +1,56 @@
 from abc import ABC, abstractmethod
 from collections.abc import Sequence
+from dataclasses import dataclass, field
 from typing import Any, ClassVar
 
 from pydantic import BaseModel
 
 from trd.indicators import REGISTRY as INDICATORS
 from trd.models import Bar
+from trd.timeframes import DAILY, sessions_to_bars
+
+
+@dataclass(frozen=True)
+class StrategyContext:
+    """What an entry rule is allowed to look at.
+
+    Two series, deliberately.
+
+    `bars` is the engine's own timeframe. The *trigger* lives here — reacting
+    inside the bar is the whole point of an intraday engine, so a breakout, an
+    RSI turn or a MACD cross is read at the width the engine runs on.
+
+    `daily` is settled daily bars. The *trend* lives here, and it has to, because
+    a 200-session filter is a statement about months: 200 sessions of 5-minute
+    bars is 15,600 of them, and the provider serves about 4,600. Resolving the
+    trend filter against the engine's own bars would either make it uncomputable
+    or — the bug this fixes — quietly reduce "above the 200-day" to 2.6 sessions.
+    Reading it off daily bars keeps the phrase meaning exactly what it says on
+    every timeframe. The regime gate already reasons this way, gating an intraday
+    engine on SPY's *daily* trend.
+
+    `daily` never includes the session in progress. Live, that bar is still
+    forming; in a backtest it is the bar the signal is about. Excluding it is
+    what makes a trend filter a statement about the past rather than about the
+    number it is being compared to, and it is what breakout's channel already
+    did by hand ("today excluded").
+
+    On a swing engine the two series are the same bars — `daily` is simply
+    `bars` without its last entry — so every scaling below is the identity and a
+    1d engine reads exactly as it always has.
+    """
+
+    bars: Sequence[Bar]
+    daily: Sequence[Bar] = field(default_factory=list)
+    timeframe: str = DAILY
+
+    def periods(self, sessions: float) -> int:
+        """A lookback in sessions, resolved to bars of the engine's timeframe.
+
+        For indicators run over `bars`. Anything run over `daily` takes the
+        session count unchanged — a daily bar is one session by definition.
+        """
+        return max(1, sessions_to_bars(self.timeframe, sessions))
 
 
 class StrategySignal(BaseModel):
@@ -23,15 +68,44 @@ class StrategySignal(BaseModel):
 
 class Strategy(ABC):
     """One entry rule in the code registry. Mirrors the Indicator contract:
-    the math lives in evaluate(), the teaching read rides along in the signal."""
+    the math lives in evaluate(), the teaching read rides along in the signal.
+
+    Both warmup figures are denominated in **sessions**, never bars — the same
+    unit the exit rules were moved to. A rule tuned on "200 days" means 200
+    sessions on every timeframe, and `StrategyContext` is what resolves that to
+    the right number of bars for each of its two series.
+    """
 
     key: ClassVar[str]
     name: ClassVar[str]
     description: ClassVar[str]
-    min_bars: ClassVar[int] = 200
+    # Daily-bar history the trend filter needs, in sessions.
+    trend_sessions: ClassVar[int] = 200
+    # Engine-timeframe history the trigger needs, in sessions.
+    signal_sessions: ClassVar[int] = 20
+
+    def warmup_bars(self, timeframe: str = DAILY) -> int:
+        """Bars of the engine's timeframe needed before the rule can fire.
+
+        On a swing engine the trend series *is* this series, so the requirement
+        is whichever lookback is longer. On an intraday engine the two are
+        supplied separately and only the trigger has to fit in these bars.
+        """
+        sessions = (
+            max(self.trend_sessions, self.signal_sessions)
+            if timeframe == DAILY
+            else self.signal_sessions
+        )
+        # +1 because the current bar is the one being judged, not warmup for it.
+        return sessions_to_bars(timeframe, sessions) + 1
+
+    def warmup_daily(self, timeframe: str = DAILY) -> int:
+        """Settled daily bars the trend filter needs. Zero on a swing engine,
+        where `warmup_bars` already covers it and there is no second series."""
+        return 0 if timeframe == DAILY else self.trend_sessions + 1
 
     @abstractmethod
-    def evaluate(self, bars: Sequence[Bar]) -> StrategySignal | None:
+    def evaluate(self, ctx: StrategyContext) -> StrategySignal | None:
         """Return a signal if the rule fires on the last bar, else None."""
 
 
