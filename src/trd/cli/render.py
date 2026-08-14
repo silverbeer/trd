@@ -1511,6 +1511,14 @@ def engine_backtest_renderables(
         + f"\nequity {fmt_money(result.start_value)} → {fmt_money(result.end_value)}"
         + (f" ({ret:+.1f}%)" if ret is not None else "")
         + f"  ·  max drawdown {result.max_drawdown_pct:.1f}%"
+        # Only when it happened. Silence means the rules never argued with
+        # themselves, and a permanent "0 passed over" would be noise.
+        + (
+            f"\n{result.reentry_blocked} signal(s) passed over: an exit had closed "
+            "that name on the same bar"
+            if result.reentry_blocked
+            else ""
+        )
     )
     out.append(Panel(header, expand=False, border_style="cyan"))
     if result.equity:
