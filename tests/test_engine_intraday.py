@@ -19,9 +19,12 @@ from tests.test_engine import (
     make_intraday_bars,
     seed,
     seed_intraday,
+    trend_daily,
     uptrend,
 )
+from trd.engine import REGISTRY as STRATEGIES
 from trd.engine import exits as exit_rules
+from trd.engine import strategies as strategies_mod
 from trd.engine.bars import (
     DAILY,
     BarSource,
@@ -30,6 +33,7 @@ from trd.engine.bars import (
     day_mode_on_daily_bars,
     sessions_to_bars,
 )
+from trd.engine.base import StrategyContext
 from trd.engine.exits import DEFAULT_EXIT_PARAMS
 from trd.errors import TrdError
 from trd.models import IntradayBar, Quote
@@ -217,6 +221,14 @@ def test_bars_held_counts_bars_not_days(conn: duckdb.DuckDBPyConnection) -> None
 # -------------------------------------------------------------------- rules
 
 
+def _day_closes(n: int = 1700) -> list[float]:
+    """A 5-minute close series long enough to satisfy a session-denominated
+    warmup: momentum's 20-session trigger lookback is 1,561 bars at this width.
+    The drift is intraday-scale — the daily-bar default compounds to +640% over
+    the same span and pins RSI at the top of its range."""
+    return uptrend(n=n, drift=0.0002, wobble=0.6)
+
+
 def _day_engine(engine: EngineService, provider: FakeProvider, conn, closes) -> None:
     bars = make_intraday_bars(closes)
     seed_intraday(conn, "AAA", bars)
@@ -286,12 +298,24 @@ def test_a_swing_engine_still_defaults_to_daily(engine, provider) -> None:
 
 
 def test_the_stop_is_sized_from_the_intraday_series(engine, provider, conn) -> None:
-    """Which table the ATR came from, proved by making the two disagree: the same
-    symbol carries daily bars at ten times the scale, so an engine reading the
-    wrong source would size a stop roughly ten times too wide."""
-    closes = uptrend()
+    """Which table the ATR came from, proved by making the two disagree.
+
+    The daily bars trace the same trend at the same price level — they have to,
+    because the trend filter reads them, and an instrument priced ten times
+    higher on one table than the other is not a disagreement about ATR, it is
+    two different companies. What differs is the *range*: each daily bar spans
+    20%, so daily ATR is an order of magnitude wider than the 5-minute one. An
+    engine sizing its stop off the wrong table would set it far outside the
+    ceiling asserted below.
+    """
+    closes = _day_closes()
     _day_engine(engine, provider, conn, closes)
-    seed(conn, "AAA", make_bars([c * 10 for c in closes]))
+    first_session = make_intraday_bars(closes)[0].ts.date()
+    wide = [
+        b.model_copy(update={"high": b.close * Decimal("1.1"), "low": b.close * Decimal("0.9")})
+        for b in trend_daily(closes[0], last_session=first_session)
+    ]
+    seed(conn, "AAA", wide)
 
     result = engine.scan(at=datetime(2024, 9, 16, 10, 0))
     assert len(result.opened) == 1
@@ -307,7 +331,7 @@ def test_the_stop_is_sized_from_the_intraday_series(engine, provider, conn) -> N
 def test_a_stop_can_actually_be_hit_intraday(engine, provider, conn) -> None:
     """The whole point. Open a trade, drop the quote below the stop, and the exit
     comes from `stop` — not from `session_close` hours later."""
-    _day_engine(engine, provider, conn, uptrend())
+    _day_engine(engine, provider, conn, _day_closes())
     opened = engine.scan(at=datetime(2024, 9, 16, 10, 0))
     assert len(opened.opened) == 1
     position = engine.position_rows(open_only=True)[0].position
@@ -321,7 +345,7 @@ def test_a_stop_can_actually_be_hit_intraday(engine, provider, conn) -> None:
 
 
 def test_a_target_can_actually_be_hit_intraday(engine, provider, conn) -> None:
-    _day_engine(engine, provider, conn, uptrend())
+    _day_engine(engine, provider, conn, _day_closes())
     opened = engine.scan(at=datetime(2024, 9, 16, 10, 0))
     assert len(opened.opened) == 1
     position = engine.position_rows(open_only=True)[0].position
@@ -335,7 +359,7 @@ def test_a_target_can_actually_be_hit_intraday(engine, provider, conn) -> None:
 def test_signals_are_recorded_per_bucket_not_per_session(engine, provider, conn) -> None:
     """A 5-minute session is 78 buckets. Recording one signal a day would throw
     away the audit trail `trd engine signals` exists to keep."""
-    _day_engine(engine, provider, conn, uptrend())
+    _day_engine(engine, provider, conn, _day_closes())
     engine.scan(at=datetime(2024, 9, 16, 10, 0))
     engine.scan(at=datetime(2024, 9, 16, 10, 20))
 
@@ -346,7 +370,7 @@ def test_signals_are_recorded_per_bucket_not_per_session(engine, provider, conn)
 
 def test_the_same_bucket_rescanned_records_one_signal(engine, provider, conn) -> None:
     """A monitor loop re-derives the same signal every pass; it is stored once."""
-    _day_engine(engine, provider, conn, uptrend())
+    _day_engine(engine, provider, conn, _day_closes())
     engine.scan(at=datetime(2024, 9, 16, 10, 0))
     engine.scan(at=datetime(2024, 9, 16, 10, 3))  # same 10:00 bucket
 
@@ -359,7 +383,7 @@ def test_the_same_bucket_rescanned_records_one_signal(engine, provider, conn) ->
 def test_sync_pulls_intraday_for_an_intraday_engine(engine, provider, conn) -> None:
     """Driven by the engine config, not a flag: a day engine with no intraday
     series takes no trades at all, and a flag makes that a thing you can forget."""
-    _day_engine(engine, provider, conn, uptrend())
+    _day_engine(engine, provider, conn, _day_closes())
     fetched = make_intraday_bars([100.0, 101.0, 102.0])
     provider.add_intraday("AAA", "5m", fetched)
 
@@ -397,11 +421,11 @@ def test_intraday_backfill_resumes_from_the_newest_bar(conn: duckdb.DuckDBPyConn
 
 
 def test_status_reports_the_timeframe_and_intraday_depth(engine, provider, conn) -> None:
-    _day_engine(engine, provider, conn, uptrend())
+    _day_engine(engine, provider, conn, _day_closes())
     status = engine.status()
     assert status.timeframe == "5m"
     assert status.day_mode is True
-    assert status.bars_total == 260  # counted from price_intraday, not price_daily
+    assert status.bars_total == 1700  # counted from price_intraday, not price_daily
     assert status.bar_unit == "5m"
 
 
@@ -494,3 +518,93 @@ def test_the_same_thresholds_still_fire_on_schedule_for_a_swing_engine() -> None
         _position(bars_held=10), bars, Decimal("101"), params, now, DAILY
     )
     assert hit is not None and hit.rule == "time"
+
+
+# --------------------------------------- session-scaled entry rules (SB-607)
+
+
+@pytest.mark.parametrize(
+    ("timeframe", "per_session"),
+    [("1d", 1), ("5m", 78), ("15m", 26), ("30m", 13), ("1h", 7)],
+)
+def test_entry_indicator_periods_are_denominated_in_sessions(
+    monkeypatch, timeframe, per_session
+) -> None:
+    """The entry-side twin of SB-600.
+
+    Exits were moved to session lookbacks; entries were left as raw bar counts,
+    so a 5-minute engine's "200-day trend filter" was 200 bars — 2.6 sessions —
+    and every description the rules print was wrong about what had been checked.
+    This asserts the periods the strategies actually *ask* for, because the
+    number is otherwise invisible: a rule that reads 14 bars and one that reads
+    14 sessions both return a signal, and only one of them means what it says.
+    """
+    asked: list[tuple[str, dict, int]] = []
+    real = strategies_mod.indicator
+
+    def spy(key, bars, **params):
+        asked.append((key, params, len(bars)))
+        return real(key, bars, **params)
+
+    monkeypatch.setattr(strategies_mod, "indicator", spy)
+
+    bars = (
+        make_intraday_bars(_day_closes(), minutes=5)
+        if timeframe != DAILY
+        else make_bars(uptrend(400))
+    )
+    daily = make_bars(uptrend(400))
+    STRATEGIES["momentum"].evaluate(StrategyContext(bars=bars, daily=daily, timeframe=timeframe))
+
+    periods = {key: params for key, params, _ in asked}
+    assert periods["rsi"]["period"] == 14 * per_session
+    assert periods["volratio"]["period"] == 20 * per_session
+    # The trend filter is the exception that makes the rest possible: it reads
+    # the daily series, so its period stays in sessions whatever the engine runs.
+    trend_lengths = {length for key, params, length in asked if key == "sma"}
+    assert trend_lengths == {len(daily)}
+    assert {params["period"] for key, params, _ in asked if key == "sma"} == {50, 200}
+
+
+def test_the_trend_filter_reads_daily_bars_not_the_engines_own() -> None:
+    """Which series the trend came from, proved by making the two disagree.
+
+    A 200-session trend filter cannot be computed from a 5-minute engine's own
+    bars at all — 200 sessions is 15,600 of them and the provider serves about
+    4,600 — so it reads daily history. Here the intraday series is climbing hard
+    while the daily history is in a downtrend: momentum must decline, because the
+    trend it filters on is the daily one.
+    """
+    bars = make_intraday_bars(_day_closes())
+    # Both daily histories arrive at the level the intraday series starts from —
+    # same instrument, same price — so the only thing that differs is the trend.
+    level, session = float(bars[0].close), bars[0].ts.date()
+    rising = StrategyContext(
+        bars=bars, daily=trend_daily(level, last_session=session), timeframe="5m"
+    )
+    falling = StrategyContext(
+        bars=bars,
+        daily=trend_daily(level, last_session=session, rising=False),
+        timeframe="5m",
+    )
+
+    assert STRATEGIES["momentum"].evaluate(rising) is not None
+    assert STRATEGIES["momentum"].evaluate(falling) is None
+
+
+@pytest.mark.parametrize("timeframe", ["1d", "5m", "15m", "30m", "1h"])
+def test_every_strategy_warms_up_in_sessions_on_every_timeframe(timeframe) -> None:
+    """Warmup has to scale with the rules, or a correctly-scaled rule sits behind
+    a bar count that lets it fire before its own lookback exists."""
+    for key, strategy in STRATEGIES.items():
+        bars = strategy.warmup_bars(timeframe)
+        assert bars == sessions_to_bars(timeframe, strategy.signal_sessions) + 1 or (
+            timeframe == DAILY
+        ), key
+        if timeframe == DAILY:
+            # One series on a swing engine, so warmup is whichever lookback is
+            # longer — there is no second place for the trend to come from.
+            assert strategy.warmup_daily(timeframe) == 0, key
+            assert bars == max(strategy.trend_sessions, strategy.signal_sessions) + 1, key
+        else:
+            assert strategy.warmup_daily(timeframe) == strategy.trend_sessions + 1, key

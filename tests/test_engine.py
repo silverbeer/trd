@@ -10,7 +10,7 @@ import pytest
 from trd.engine import EXIT_RULES
 from trd.engine import REGISTRY as STRATEGIES
 from trd.engine import exits as exit_rules
-from trd.engine.base import last_closed
+from trd.engine.base import StrategyContext, last_closed
 from trd.errors import TrdError
 from trd.models import (
     AccountType,
@@ -84,8 +84,18 @@ def test_every_strategy_explains_itself():
 # ------------------------------------------------------------------ strategies
 
 
+def ctx(bars: Sequence[DailyBar], timeframe: str = DAILY) -> StrategyContext:
+    """A swing-engine context over one daily series.
+
+    The trend series is the same bars minus the last one, which is what the
+    scanner builds for a 1d engine: a rule is never shown the session it is
+    deciding about as part of its own trend filter.
+    """
+    return StrategyContext(bars=bars, daily=bars[:-1], timeframe=timeframe)
+
+
 def test_momentum_fires_in_an_uptrend():
-    signal = STRATEGIES["momentum"].evaluate(make_bars(uptrend()))
+    signal = STRATEGIES["momentum"].evaluate(ctx(make_bars(uptrend())))
     assert signal is not None
     assert signal.strategy == "momentum"
     assert 0 <= signal.score <= 1
@@ -93,22 +103,22 @@ def test_momentum_fires_in_an_uptrend():
 
 
 def test_momentum_silent_in_a_downtrend():
-    assert STRATEGIES["momentum"].evaluate(make_bars(downtrend())) is None
+    assert STRATEGIES["momentum"].evaluate(ctx(make_bars(downtrend()))) is None
 
 
 def test_momentum_skips_an_overbought_name():
     """A vertical line has RSI 100 — exactly the chase the rule refuses."""
     closes = [100 * (1.01**i) for i in range(260)]
-    assert STRATEGIES["momentum"].evaluate(make_bars(closes)) is None
+    assert STRATEGIES["momentum"].evaluate(ctx(make_bars(closes))) is None
 
 
 def test_breakout_needs_volume():
     closes = [100.0] * 60 + [101.0]  # a new 20-day high on ordinary volume
     quiet = make_bars(closes, volumes=[1_000_000] * 61)
-    assert STRATEGIES["breakout"].evaluate(quiet) is None
+    assert STRATEGIES["breakout"].evaluate(ctx(quiet)) is None
 
     loud = make_bars(closes, volumes=[1_000_000] * 60 + [3_000_000])
-    signal = STRATEGIES["breakout"].evaluate(loud)
+    signal = STRATEGIES["breakout"].evaluate(ctx(loud))
     assert signal is not None
     assert "average volume" in signal.reason
 
@@ -116,13 +126,13 @@ def test_breakout_needs_volume():
 def test_breakout_needs_a_new_high():
     closes = [100.0] * 60 + [99.0]
     bars = make_bars(closes, volumes=[1_000_000] * 60 + [5_000_000])
-    assert STRATEGIES["breakout"].evaluate(bars) is None
+    assert STRATEGIES["breakout"].evaluate(ctx(bars)) is None
 
 
 def test_pullback_fires_on_a_dip_that_turns_up():
     closes = uptrend(240)
     closes += [closes[-1] * 0.93, closes[-1] * 0.88, closes[-1] * 0.86, closes[-1] * 0.90]
-    signal = STRATEGIES["pullback"].evaluate(make_bars(closes))
+    signal = STRATEGIES["pullback"].evaluate(ctx(make_bars(closes)))
     assert signal is not None
     assert "turned up" in signal.reason
 
@@ -130,7 +140,7 @@ def test_pullback_fires_on_a_dip_that_turns_up():
 def test_pullback_ignores_a_dip_still_falling():
     closes = uptrend(240)
     closes += [closes[-1] * 0.93, closes[-1] * 0.88, closes[-1] * 0.84, closes[-1] * 0.80]
-    assert STRATEGIES["pullback"].evaluate(make_bars(closes)) is None
+    assert STRATEGIES["pullback"].evaluate(ctx(make_bars(closes))) is None
 
 
 def test_macd_cross_fires_on_the_flip_bar():
@@ -141,7 +151,7 @@ def test_macd_cross_fires_on_the_flip_bar():
     fired = [
         i
         for i in range(len(closes) - 8, len(closes))
-        if STRATEGIES["macd_cross"].evaluate(bars[: i + 1]) is not None
+        if STRATEGIES["macd_cross"].evaluate(ctx(bars[: i + 1])) is not None
     ]
     assert fired, "expected the MACD histogram to cross up somewhere in the recovery"
 
@@ -149,9 +159,9 @@ def test_macd_cross_fires_on_the_flip_bar():
 def test_strategies_return_none_below_min_bars():
     short = make_bars(uptrend(30))
     for strategy in STRATEGIES.values():
-        if strategy.min_bars > len(short):
+        if strategy.warmup_bars(DAILY) > len(short):
             continue
-        strategy.evaluate(short)  # must not raise
+        strategy.evaluate(ctx(short))  # must not raise
 
 
 # ------------------------------------------------------------------ exit rules
@@ -325,14 +335,54 @@ def make_intraday_bars(
     return out
 
 
+def trend_daily(
+    end_price: float = 100.0,
+    last_session: date = date(2024, 9, 13),
+    sessions: int = 260,
+    rising: bool = True,
+) -> list[DailyBar]:
+    """A daily history arriving at `end_price`, ending before `last_session`.
+
+    An intraday engine reads its trend filter off daily bars — 200 sessions of
+    5-minute bars is 15,600 of them, more than any provider serves. The two
+    series have to tell one coherent story, because they are one instrument: a
+    daily history at a different price level than the intraday bars would fail
+    `price > sma50 > sma200` for a reason that has nothing to do with the rule.
+    So this walks steadily into the level the intraday series starts at.
+
+    `rising=False` arrives at the same place from above — a name in a downtrend
+    whose price now sits below its own averages, which is what the trend filter
+    is supposed to refuse.
+    """
+    span = (0.55, 1.0) if rising else (1.8, 1.0)
+    closes = [
+        end_price * (span[0] + (span[1] - span[0]) * i / (sessions - 1)) for i in range(sessions)
+    ]
+    bars = make_bars(closes)
+    shift = (last_session - timedelta(days=1) - bars[-1].date).days
+    return [b.model_copy(update={"date": b.date + timedelta(days=shift)}) for b in bars]
+
+
 def seed_intraday(
-    conn: duckdb.DuckDBPyConnection, symbol: str, bars: list[IntradayBar], timeframe: str = "5m"
+    conn: duckdb.DuckDBPyConnection,
+    symbol: str,
+    bars: list[IntradayBar],
+    timeframe: str = "5m",
+    daily: list[DailyBar] | None = None,
 ) -> int:
     repo = InstrumentRepo(conn)
     instrument = repo.get_by_symbol(symbol) or repo.insert(
         InstrumentInfo(symbol=symbol, name=symbol)
     )
-    PriceRepo(conn).upsert_intraday(instrument.id, timeframe, bars)
+    prices = PriceRepo(conn)
+    prices.upsert_intraday(instrument.id, timeframe, bars)
+    # Both series, the way `trd sync` stores them for an intraday engine: the
+    # bars it trades on, and the daily history its trend filter reads. The daily
+    # history leads into the intraday series' opening level so the two describe
+    # the same instrument.
+    if daily is None:
+        daily = trend_daily(float(bars[0].close), last_session=bars[0].ts.date())
+    prices.upsert_daily(instrument.id, daily)
     return instrument.id
 
 
@@ -503,7 +553,7 @@ def test_short_history_names_the_missing_bars(engine, provider, conn):
     engine.init(symbols=["AAA"], strategies=["momentum"])
     result = engine.scan(at=datetime(2024, 9, 16, 10, 0))
     assert result.opened == []
-    assert any("momentum needs 200" in line for line in result.skipped)
+    assert any("momentum needs 201" in line for line in result.skipped)
 
 
 def test_live_quote_forms_todays_bar(engine, provider, conn):
@@ -747,7 +797,7 @@ def test_the_stop_still_wins_at_the_bell():
 def test_no_new_entries_inside_the_cutoff(engine, provider, conn):
     """Entering at 15:50 only to be flattened at 15:55 pays the spread twice for
     five minutes of exposure."""
-    bars = make_intraday_bars(uptrend())
+    bars = make_intraday_bars(uptrend(n=1600, drift=0.0002, wobble=0.6))
     seed_intraday(conn, "AAA", bars)
     # A quote carries volume, and the forming intraday bar inherits it. Momentum
     # refuses to fire when volume is unknown, so a volume-less quote would make
@@ -767,7 +817,7 @@ def test_no_new_entries_inside_the_cutoff(engine, provider, conn):
 
 
 def test_entries_still_run_before_the_cutoff(engine, provider, conn):
-    bars = make_intraday_bars(uptrend())
+    bars = make_intraday_bars(uptrend(n=1600, drift=0.0002, wobble=0.6))
     seed_intraday(conn, "AAA", bars)
     # A quote carries volume, and the forming intraday bar inherits it. Momentum
     # refuses to fire when volume is unknown, so a volume-less quote would make
@@ -787,7 +837,7 @@ def test_entries_still_run_before_the_cutoff(engine, provider, conn):
 
 def test_a_day_engine_closes_its_position_at_the_bell(engine, provider, conn):
     """End to end: open mid-session, flat by the bell, recorded as a sell."""
-    bars = make_intraday_bars(uptrend())
+    bars = make_intraday_bars(uptrend(n=1600, drift=0.0002, wobble=0.6))
     seed_intraday(conn, "AAA", bars)
     # A quote carries volume, and the forming intraday bar inherits it. Momentum
     # refuses to fire when volume is unknown, so a volume-less quote would make
@@ -834,11 +884,11 @@ def test_volume_is_read_from_the_last_bar_that_closed():
     assert last_closed([]) is None
 
     bars = make_bars(uptrend())
-    assert STRATEGIES["momentum"].evaluate(bars) is not None  # volume present, fires
+    assert STRATEGIES["momentum"].evaluate(ctx(bars)) is not None  # volume present, fires
 
     # One gap: the forming bar. Falls back to the bar that closed.
     forming = [*bars[:-1], bars[-1].model_copy(update={"volume": None})]
-    assert STRATEGIES["momentum"].evaluate(forming) is not None
+    assert STRATEGIES["momentum"].evaluate(ctx(forming)) is not None
 
     # Two gaps: the provider is not reporting volume. The rule refuses.
     blind = [
@@ -846,7 +896,7 @@ def test_volume_is_read_from_the_last_bar_that_closed():
         bars[-2].model_copy(update={"volume": None}),
         bars[-1].model_copy(update={"volume": None}),
     ]
-    assert STRATEGIES["momentum"].evaluate(blind) is None
+    assert STRATEGIES["momentum"].evaluate(ctx(blind)) is None
 
     # Breakout is the rule whose whole thesis is volume, so prove it there too:
     # heavy volume on the bar that closed, a new high on the bar still forming,
@@ -855,7 +905,7 @@ def test_volume_is_read_from_the_last_bar_that_closed():
     # reason; now it passes on the closed bar's 4x.
     closes = [100.0] * 59 + [100.2, 103.0]
     volumes = [1_000_000] * 59 + [4_000_000, None]
-    signal = STRATEGIES["breakout"].evaluate(make_bars(closes, volumes=volumes))
+    signal = STRATEGIES["breakout"].evaluate(ctx(make_bars(closes, volumes=volumes)))
     assert signal is not None, "the forming bar's missing volume must not veto the break"
     assert "average volume" in signal.reason
 
@@ -1094,13 +1144,13 @@ def test_status_names_symbols_too_short_to_trade(engine, provider, conn):
     """A symbol without enough history cannot fire a signal, and silence is
     indistinguishable from 'the rules said no'."""
     provider.add_symbol("AAA", price="100")
-    engine.init(symbols=["AAA"], strategies=["breakout"])  # breakout needs 60 bars
+    engine.init(symbols=["AAA"], strategies=["breakout"])  # 50-session trend + the bar judged
     instrument = InstrumentRepo(conn).get_by_symbol("AAA")
     assert instrument is not None
     PriceRepo(conn).upsert_daily(instrument.id, make_bars([100.0] * 10))
 
     status = engine.status()
-    assert status.warmup_bars == 60
+    assert status.warmup_bars == 51
     assert status.short_history == [("AAA", 10)]
     assert status.bars_total == 10
 

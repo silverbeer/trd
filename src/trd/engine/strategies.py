@@ -10,10 +10,9 @@ bar, so the engine knows which two to take when six names qualify and it has roo
 for two. Read the `reason`, not the number.
 """
 
-from collections.abc import Sequence
-
 from trd.engine.base import (
     Strategy,
+    StrategyContext,
     StrategySignal,
     clamp01,
     indicator,
@@ -22,7 +21,23 @@ from trd.engine.base import (
     prior,
     register,
 )
-from trd.models import Bar
+
+# Every lookback here is denominated in *sessions*, matching the exit rules.
+# Trend constants are read off `ctx.daily` (one bar per session, so the number is
+# already in bars); trigger constants go through `ctx.periods()` to become bars of
+# the engine's own timeframe. Before this split they were raw bar counts, which
+# read correctly on a swing engine and meant something else entirely on an
+# intraday one: a 5-minute engine's "200-day trend filter" was 200 bars, or 2.6
+# sessions, and every description this module prints was wrong about what the
+# rule had actually checked.
+TREND_FAST_SESSIONS = 50
+TREND_SLOW_SESSIONS = 200
+CHANNEL_SESSIONS = 20
+RSI_SESSIONS = 14
+VOLUME_SESSIONS = 20
+MACD_SESSIONS = (12, 26, 9)
+# How far back "RSI dipped recently" looks, for the pullback rule.
+DIP_SESSIONS = 3
 
 
 @register
@@ -35,14 +50,18 @@ class Momentum(Strategy):
         "band. Skips names already overbought — the goal is to join a trend, not "
         "to buy the last day of one."
     )
-    min_bars = 200
+    trend_sessions = TREND_SLOW_SESSIONS
+    signal_sessions = VOLUME_SESSIONS
 
-    def evaluate(self, bars: Sequence[Bar]) -> StrategySignal | None:
+    def evaluate(self, ctx: StrategyContext) -> StrategySignal | None:
+        bars = ctx.bars
         price = float(bars[-1].close)
-        sma50 = last(indicator("sma", bars, period=50)["value"])
-        sma200 = last(indicator("sma", bars, period=200)["value"])
-        rsi = last(indicator("rsi", bars, period=14)["value"])
-        vol = last_closed(indicator("volratio", bars, period=20)["ratio"])
+        # Trend off daily bars; the price it is compared against is the engine's
+        # own current bar, so an intraday engine still reacts intraday.
+        sma50 = last(indicator("sma", ctx.daily, period=TREND_FAST_SESSIONS)["value"])
+        sma200 = last(indicator("sma", ctx.daily, period=TREND_SLOW_SESSIONS)["value"])
+        rsi = last(indicator("rsi", bars, period=ctx.periods(RSI_SESSIONS))["value"])
+        vol = last_closed(indicator("volratio", bars, period=ctx.periods(VOLUME_SESSIONS))["ratio"])
         # `vol is None` used to fall through this filter, which meant the rule
         # silently dropped its volume requirement exactly when volume was unknown.
         # A filter that switches itself off on missing data is the wrong default
@@ -85,16 +104,22 @@ class Breakout(Strategy):
         "heavy volume (1.5x average or better) and only above the 50-day. Volume "
         "is the whole filter: a breakout nobody shows up for is a fakeout."
     )
-    min_bars = 60
+    trend_sessions = TREND_FAST_SESSIONS
+    signal_sessions = VOLUME_SESSIONS
 
-    def evaluate(self, bars: Sequence[Bar]) -> StrategySignal | None:
-        if len(bars) < 22:
+    def evaluate(self, ctx: StrategyContext) -> StrategySignal | None:
+        bars = ctx.bars
+        # The channel is a statement about sessions, so it is measured on daily
+        # bars — the prior 20 *sessions'* highs, which is what "the 20-day high"
+        # has always meant. `ctx.daily` already excludes the session in progress,
+        # so the level cannot include the bar trying to break it.
+        window = list(ctx.daily[-CHANNEL_SESSIONS:])
+        if len(window) < CHANNEL_SESSIONS:
             return None
         price = float(bars[-1].close)
-        window = bars[-21:-1]  # prior 20 bars, today excluded
         channel_high = max(float(b.high) for b in window)
-        sma50 = last(indicator("sma", bars, period=50)["value"])
-        vol = last_closed(indicator("volratio", bars, period=20)["ratio"])
+        sma50 = last(indicator("sma", ctx.daily, period=TREND_FAST_SESSIONS)["value"])
+        vol = last_closed(indicator("volratio", bars, period=ctx.periods(VOLUME_SESSIONS))["ratio"])
         if sma50 is None or vol is None:
             return None
         if price <= channel_high:
@@ -127,19 +152,25 @@ class Pullback(Strategy):
         "under 40 in the last three days, and today it is turning back up. The "
         "'turning up' part matters — a falling RSI under 40 is a downtrend, not a sale."
     )
-    min_bars = 200
+    trend_sessions = TREND_SLOW_SESSIONS
+    signal_sessions = RSI_SESSIONS + DIP_SESSIONS
 
-    def evaluate(self, bars: Sequence[Bar]) -> StrategySignal | None:
+    def evaluate(self, ctx: StrategyContext) -> StrategySignal | None:
+        bars = ctx.bars
         price = float(bars[-1].close)
-        sma200 = last(indicator("sma", bars, period=200)["value"])
-        rsi_series = indicator("rsi", bars, period=14)["value"]
+        sma200 = last(indicator("sma", ctx.daily, period=TREND_SLOW_SESSIONS)["value"])
+        rsi_series = indicator("rsi", bars, period=ctx.periods(RSI_SESSIONS))["value"]
         rsi = last(rsi_series)
+        # One bar back, not one session: "turning back up" is a change of
+        # direction, and direction is read at the width the engine trades on.
+        # The series it is read from is already session-scaled above.
         rsi_prev = prior(rsi_series, 1)
         if sma200 is None or rsi is None or rsi_prev is None:
             return None
         if price <= sma200:
             return None
-        recent = [v for v in rsi_series[-4:-1] if v is not None]
+        dip = ctx.periods(DIP_SESSIONS)
+        recent = [v for v in rsi_series[-(dip + 1) : -1] if v is not None]
         if not recent:
             return None
         trough = min(recent)
@@ -171,12 +202,15 @@ class MacdCross(Strategy):
         "crossing back above slow — filtered to names already above their 200-day. "
         "Catches turns earlier than a moving-average cross, at the cost of more noise."
     )
-    min_bars = 200
+    trend_sessions = TREND_SLOW_SESSIONS
+    signal_sessions = MACD_SESSIONS[1] + MACD_SESSIONS[2]
 
-    def evaluate(self, bars: Sequence[Bar]) -> StrategySignal | None:
+    def evaluate(self, ctx: StrategyContext) -> StrategySignal | None:
+        bars = ctx.bars
         price = float(bars[-1].close)
-        sma200 = last(indicator("sma", bars, period=200)["value"])
-        hist_series = indicator("macd", bars, fast=12, slow=26, signal=9)["hist"]
+        sma200 = last(indicator("sma", ctx.daily, period=TREND_SLOW_SESSIONS)["value"])
+        fast, slow, signal_p = (ctx.periods(n) for n in MACD_SESSIONS)
+        hist_series = indicator("macd", bars, fast=fast, slow=slow, signal=signal_p)["hist"]
         hist = last(hist_series)
         hist_prev = prior(hist_series, 1)
         if sma200 is None or hist is None or hist_prev is None:
