@@ -203,6 +203,39 @@ def test_no_lookahead_prefix_runs_are_identical():
     assert crashed.trades[0].quantity == full.trades[0].quantity
 
 
+# ------------------------------------------------------- live/backtest parity
+
+
+def test_an_exit_cannot_be_followed_by_a_same_bar_entry():
+    """The harness runs exits before entries to free capacity. The freed symbol
+    must not become a candidate on the bar that closed it — the live scanner
+    refuses that, and a backtest that allows it books round trips the engine
+    would never take, inflating the trade count and dragging expectancy toward
+    zero.
+    """
+    series = breakout_series()
+    _entry, _stop, target = entry_levels(series)
+    next_day = series[-1].date + timedelta(days=1)
+    # One bar wearing both hats: its high takes the target out intrabar, and its
+    # close clears the 20-day high on 3x volume, so the breakout rule fires for
+    # the very name the target just closed.
+    both = bar(
+        next_day,
+        float(target) - 1,
+        float(target) + 1,
+        float(target) - 1.5,
+        float(target) + 0.5,
+        volume=3_000_000,
+    )
+    result = run({"AAA": [*series, both]})
+
+    assert len(result.trades) == 1
+    assert result.trades[0].rule == "target"
+    assert result.open_at_end == 0, "re-bought the name the exit had just closed"
+    # Passed over, not silently dropped — the signal still fired.
+    assert result.reentry_blocked == 1
+
+
 # ------------------------------------------------------- alignment and limits
 
 
