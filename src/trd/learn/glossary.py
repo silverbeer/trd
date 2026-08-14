@@ -806,7 +806,11 @@ def _strategy_entries() -> list[GlossaryEntry]:
             term=f"{strategy.name} (entry rule)",
             category=Category.ENGINE,
             definition=strategy.description,
-            formula=f"needs {strategy.min_bars} bars of history before it can fire",
+            formula=(
+                f"trend filter reads {strategy.trend_sessions} sessions of daily bars; "
+                f"the trigger reads {strategy.signal_sessions} sessions of the engine's "
+                "own bars, whatever width those are"
+            ),
             related=["expectancy", "r-multiple", "initial-stop"],
             used_in=["trd engine rules", "trd engine signals", "trd engine report"],
         )

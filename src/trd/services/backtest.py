@@ -29,6 +29,7 @@ What a daily bar cannot express, this module decides explicitly:
   swing engine or produce zero trades, and an explicit error beats a silent lie.
 """
 
+from bisect import bisect_left
 from collections.abc import Mapping, Sequence
 from datetime import date, datetime, time, timedelta
 from decimal import Decimal
@@ -40,6 +41,7 @@ from pydantic import BaseModel, computed_field
 from trd.engine import REGISTRY as STRATEGIES
 from trd.engine import evaluate_exits, regime
 from trd.engine.bars import DAILY, BarSource
+from trd.engine.base import StrategyContext
 from trd.engine.exits import RULES, ExitDecision
 from trd.errors import TrdError
 from trd.models import Bar, DailyBar, EnginePosition, PositionStatus, SizingMode, StrategyStat
@@ -272,6 +274,7 @@ def simulate(
     end: date | None = None,
     timeframe: str = DAILY,
     regime_bars: Mapping[str, Sequence[DailyBar]] | None = None,
+    daily_by_symbol: Mapping[str, Sequence[DailyBar]] | None = None,
 ) -> BacktestResult:
     """Walk history forward and run the live rules at every step.
 
@@ -308,13 +311,42 @@ def simulate(
     if not series:
         raise TrdError("No price history to backtest. Run 'trd sync --years 10' first.")
 
+    # The trend filter's series, kept apart from the engine's own bars. On a swing
+    # run they are the same list; on an intraday one they have to be supplied,
+    # because 200 sessions of 5-minute bars is 15,600 of them and the provider
+    # serves about 4,600. See StrategyContext.
+    if source.is_intraday:
+        if not daily_by_symbol:
+            raise TrdError(
+                "An intraday backtest needs daily bars for the trend filter as well "
+                "as its own. Run 'trd sync --years 10' so the daily history exists."
+            )
+        daily_series = {s.upper(): list(b) for s, b in daily_by_symbol.items()}
+    else:
+        daily_series = {
+            s: [b for b in bars if isinstance(b, DailyBar)] for s, bars in series.items()
+        }
+    # Precomputed so each step can bisect instead of re-filtering: a ten-year
+    # 5-minute walk takes ~200k steps, and a scan per step per symbol would
+    # dominate the run.
+    daily_dates = {s: [b.date for b in bars] for s, bars in daily_series.items()}
+
     skipped: list[str] = []
-    warmup = max(STRATEGIES[k].min_bars for k in strategies)
+    # The command that would actually deepen *this* engine's series. Sending a
+    # 5-minute engine after 'sync --years 10' asks for bars nobody keeps.
+    deepen = "trd sync" if source.is_intraday else "trd sync --years 10"
+    warmup = max(STRATEGIES[k].warmup_bars(timeframe) for k in strategies)
+    warmup_daily = max(STRATEGIES[k].warmup_daily(timeframe) for k in strategies)
     for symbol in sorted(series):
         if len(series[symbol]) < warmup:
             skipped.append(
                 f"{symbol}: only {len(series[symbol])} bars — some strategies need "
-                f"{warmup} before they can fire (run 'trd sync --years 10')"
+                f"{warmup} before they can fire (run '{deepen}')"
+            )
+        if warmup_daily and len(daily_series.get(symbol, [])) < warmup_daily:
+            skipped.append(
+                f"{symbol}: only {len(daily_series.get(symbol, []))} daily bars for the trend "
+                f"filter — it needs {warmup_daily} (run 'trd sync --years 10')"
             )
 
     # Keyed on each bar's instant, not its date: on an intraday series a session
@@ -448,12 +480,23 @@ def simulate(
                 if i is None or symbol in open_positions:
                     continue
                 prefix = series[symbol][: i + 1]
+                # Daily bars strictly before today's session. The cut is the
+                # lookahead guarantee for the trend filter, exactly as the prefix
+                # slice is for the engine's own bars: mid-session the daily bar is
+                # not written yet, and a rule that read it would be reading a close
+                # that has not happened.
+                cut = bisect_left(daily_dates.get(symbol, []), today)
+                prefix_daily = daily_series.get(symbol, [])[:cut]
                 blocked = _in_blackout(earnings.get(symbol), today, earnings_blackout_days)
                 for key in strategies:
                     strategy = STRATEGIES[key]
-                    if len(prefix) < strategy.min_bars:
+                    if len(prefix) < strategy.warmup_bars(timeframe):
                         continue
-                    signal = strategy.evaluate(prefix)
+                    if len(prefix_daily) < strategy.warmup_daily(timeframe):
+                        continue
+                    signal = strategy.evaluate(
+                        StrategyContext(bars=prefix, daily=prefix_daily, timeframe=timeframe)
+                    )
                     if signal is None:
                         continue
                     if blocked:
@@ -598,6 +641,7 @@ class BacktestService:
         # provider does not keep.
         deepen = "trd sync" if source.is_intraday else "trd sync --years 10"
         bars_by_symbol: dict[str, Sequence[Bar]] = {}
+        daily_by_symbol: dict[str, Sequence[DailyBar]] = {}
         earnings_by_symbol: dict[str, list[date]] = {}
         for symbol in universe:
             instrument = self.instruments.get_by_symbol(symbol)
@@ -609,6 +653,18 @@ class BacktestService:
                     f"{symbol} has no {config.timeframe} price history. Run '{deepen}' first."
                 )
             bars_by_symbol[symbol] = bars
+            if source.is_intraday:
+                # A second series, for the trend filter only. An intraday engine
+                # cannot hold 200 sessions of its own bars, so "above the 200-day"
+                # is read where 200 sessions actually exist.
+                daily = self.prices.daily_bars(instrument.id)
+                if not daily:
+                    raise TrdError(
+                        f"{symbol} has no daily price history, which this engine's trend "
+                        "filter reads even though it trades intraday. Run "
+                        "'trd sync --years 10' first."
+                    )
+                daily_by_symbol[symbol] = daily
             earnings_by_symbol[symbol] = self.earnings.dates_for_instrument(instrument.id)
 
         # The point of SB-492: run the same history with the gate on and off and
@@ -646,4 +702,5 @@ class BacktestService:
             end=end,
             timeframe=config.timeframe,
             regime_bars=regime_series,
+            daily_by_symbol=daily_by_symbol or None,
         )

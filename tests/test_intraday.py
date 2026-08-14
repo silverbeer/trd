@@ -14,6 +14,7 @@ import pytest
 
 from trd.db.connection import connect
 from trd.engine import REGISTRY as STRATEGIES
+from trd.engine.base import StrategyContext
 from trd.indicators import REGISTRY as INDICATORS
 from trd.models import DailyBar, InstrumentInfo, IntradayBar
 from trd.repos import InstrumentRepo, PriceRepo
@@ -38,6 +39,23 @@ def _series(n: int, start: str = "100", step: str = "1") -> list[IntradayBar]:
             )
         )
     return bars
+
+
+def _daily(n: int, start: str = "100", step: str = "1") -> list[DailyBar]:
+    """The daily series an intraday engine's trend filter reads, ending before
+    `_series`' session so it is settled history rather than the bar in flight."""
+    first = date(2026, 7, 31) - timedelta(days=n)
+    return [
+        DailyBar(
+            date=first + timedelta(days=i),
+            open=Decimal(start) + Decimal(step) * i,
+            high=Decimal(start) + Decimal(step) * i + Decimal("0.30"),
+            low=Decimal(start) + Decimal(step) * i - Decimal("0.40"),
+            close=Decimal(start) + Decimal(step) * i,
+            volume=1_000 + i,
+        )
+        for i in range(n)
+    ]
 
 
 @pytest.fixture
@@ -158,8 +176,14 @@ def test_every_strategy_evaluates_intraday_bars() -> None:
     a synthetic ramp is not the point — that it can *see* it is."""
     bars = _series(260)
     for key, strategy in STRATEGIES.items():
-        strategy.evaluate(bars)  # must not raise on a non-daily series
-        assert strategy.min_bars > 0, f"{key} has no warm-up"
+        # Both series, as an intraday engine supplies them: its own bars for the
+        # trigger, daily bars for the trend filter. Passing the intraday series
+        # as `daily` too would be the bug this contract exists to prevent.
+        strategy.evaluate(
+            StrategyContext(bars=bars, daily=_daily(260), timeframe="5m")
+        )  # must not raise on a non-daily series
+        assert strategy.warmup_bars("5m") > 0, f"{key} has no warm-up"
+        assert strategy.warmup_daily("5m") > 0, f"{key} has no trend history requirement"
 
 
 def test_daily_bars_still_satisfy_the_protocol() -> None:

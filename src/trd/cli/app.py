@@ -2447,7 +2447,7 @@ def engine_rules() -> None:
     with suppress(TrdError):  # rules are readable before the engine is configured
         config = service.config()
         params, timeframe = config.exit_params, config.timeframe
-    console.print(engine_strategies_table())
+    console.print(engine_strategies_table(timeframe))
     console.print(engine_exits_table(params, timeframe))
 
 

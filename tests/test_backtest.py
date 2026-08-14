@@ -23,6 +23,7 @@ from trd.repos import InstrumentRepo, PriceRepo
 from trd.services import BacktestService, EngineService
 from trd.services.backtest import BacktestResult, FillMode, simulate
 from trd.services.engine import plan_entry
+from trd.timeframes import DAILY
 
 from .conftest import FakeProvider
 from .test_engine import make_bars
@@ -60,6 +61,19 @@ def run(
     exit_params: dict[str, float] | None = None,
     **extra: Any,
 ) -> BacktestResult:
+    # An intraday run needs a daily series for the trend filter, the way
+    # BacktestService loads one — 200 sessions of 5-minute bars is more history
+    # than exists. Derived from each symbol's own opening level so the two series
+    # describe one instrument.
+    if extra.get("timeframe", DAILY) != DAILY and "daily_by_symbol" not in extra:
+        from tests.test_engine import trend_daily
+        from trd.engine.bars import BarSource
+
+        stamper = BarSource.stamper(extra["timeframe"])
+        extra["daily_by_symbol"] = {
+            symbol: trend_daily(float(bars[0].close), last_session=stamper.session(bars[0]))
+            for symbol, bars in bars_by_symbol.items()
+        }
     return simulate(
         bars_by_symbol,
         strategies=strategies or ["breakout"],
@@ -468,15 +482,20 @@ def test_service_symbols_override_requires_known_symbols(
 # ------------------------------------------------------------------ day mode
 
 
-def _intraday_series(n: int = 800):
-    """A rising 5-minute series long enough to clear the 200-bar warmup and still
-    span several sessions, so the bell is crossed more than once."""
+def _intraday_series(n: int = 1700):
+    """A rising 5-minute series long enough to clear the warmup and still span
+    several sessions, so the bell is crossed more than once.
+
+    The length is set by the warmup, which is now denominated in sessions: a
+    20-session trigger lookback is 1,561 five-minute bars, where the old 200-bar
+    reading needed 800 and quietly meant 2.6 sessions.
+    """
     from tests.test_engine import make_intraday_bars, uptrend
 
-    return make_intraday_bars(uptrend(n=n))
+    return make_intraday_bars(uptrend(n=n, drift=0.0004, wobble=0.6))
 
 
-def _slow_intraday_series(n: int = 800):
+def _slow_intraday_series(n: int = 1700):
     """The same shape, drifting slowly enough that a trade is still open at 15:55.
 
     `_intraday_series` climbs 0.4% a bar — over the 78 bars of a session that is

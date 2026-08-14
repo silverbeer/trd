@@ -33,7 +33,7 @@ from trd.engine.bars import (
     sessions_to_bars,
     validate_timeframe,
 )
-from trd.engine.base import indicator, last
+from trd.engine.base import StrategyContext, indicator, last
 from trd.engine.regime import REGIME_SYMBOLS
 from trd.errors import ProviderError, TrdError
 from trd.learn import GLOSSARY
@@ -439,6 +439,20 @@ class EngineService:
         """The command that would actually fetch the bars this engine needs."""
         return "trd sync --intraday" if source.is_intraday else "trd sync --full"
 
+    def _trend_bars(
+        self, instrument_id: int, bars: list[Bar], source: BarSource, today: date
+    ) -> list[Bar]:
+        """Settled daily bars for a rule's trend filter.
+
+        Never the session in progress. On a swing engine that means dropping the
+        forming bar off the series the engine already holds; on an intraday one
+        it means a second read, because the engine's own bars are minutes wide
+        and 200 sessions of them is more history than the provider serves.
+        """
+        if not source.is_intraday:
+            return [bar for bar in bars if source.session(bar) < today]
+        return [bar for bar in self.prices.daily_bars(instrument_id) if bar.date < today]
+
     def bars(self, config: EngineConfig | None = None) -> BarSource:
         """The series this engine reasons over. Every timeframe decision lives in
         BarSource, so nothing below has to ask which timeframe it is running."""
@@ -701,16 +715,27 @@ class EngineService:
             # signal blocked by earnings is a real signal on good data, unlike a
             # stale-quote one, and the passed-over signals are half the learning.
             blackout = self._earnings_blackout(instrument.id, today, config.earnings_blackout_days)
+            # The trend filter's series. Loaded once per symbol, not once per
+            # strategy — three of the four rules want the same 200 daily bars.
+            daily = self._trend_bars(instrument.id, bars, source, today)
             withheld = False
             short_by: list[str] = []
+            thin_trend: list[str] = []
             for key in config.strategies:
                 strategy = STRATEGIES.get(key)
                 if strategy is None:
                     continue
-                if len(bars) < strategy.min_bars:
-                    short_by.append(f"{key} needs {strategy.min_bars}")
+                need = strategy.warmup_bars(source.timeframe)
+                if len(bars) < need:
+                    short_by.append(f"{key} needs {need}")
                     continue
-                signal = strategy.evaluate(bars)
+                need_daily = strategy.warmup_daily(source.timeframe)
+                if len(daily) < need_daily:
+                    thin_trend.append(f"{key} needs {need_daily}")
+                    continue
+                signal = strategy.evaluate(
+                    StrategyContext(bars=bars, daily=daily, timeframe=source.timeframe)
+                )
                 if signal is None:
                     continue
 
@@ -770,6 +795,14 @@ class EngineService:
                 result.skipped.append(
                     f"{instrument.symbol}: only {len(bars)} bars — {', '.join(short_by)} "
                     f"(run '{self._sync_hint(source)}')"
+                )
+            if thin_trend:
+                # Distinct from the message above: the engine has plenty of its
+                # own bars, it is the *daily* history behind the trend filter
+                # that is short — a different sync, and a different fix.
+                result.skipped.append(
+                    f"{instrument.symbol}: only {len(daily)} settled daily bars for the trend "
+                    f"filter — {', '.join(thin_trend)} (run 'trd sync --full')"
                 )
 
         capacity = config.max_positions - len(held)
@@ -1051,7 +1084,7 @@ class EngineService:
             total, first, last_bar = self.prices.coverage()
         counts = source.bar_counts()
         enabled = [STRATEGIES[k] for k in config.strategies if k in STRATEGIES]
-        warmup = max((s.min_bars for s in enabled), default=0)
+        warmup = max((s.warmup_bars(source.timeframe) for s in enabled), default=0)
         short = sorted(
             (i.symbol, counts.get(i.id, 0)) for i in universe if counts.get(i.id, 0) < warmup
         )

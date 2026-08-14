@@ -1449,16 +1449,30 @@ def engine_report_table(stats: list[StrategyStat]) -> Table:
     return table
 
 
-def engine_strategies_table() -> Table:
-    """What each rule looks for, in plain English."""
+def engine_strategies_table(timeframe: str = DAILY) -> Table:
+    """What each rule looks for, in plain English.
+
+    Warmup is shown as the two series it actually needs. On a swing engine that
+    collapses to one number; on a 5-minute engine "200d + 1561" is the honest
+    statement — the trend filter reads 200 daily bars, the trigger reads 1561
+    five-minute ones — where a single bar count would have to be either wrong
+    about the trend or impossible to satisfy.
+    """
     table = Table(title="Entry strategies", title_justify="left")
     table.add_column("Key", style="bold")
     table.add_column("Name")
-    table.add_column("Bars", justify="right")
+    table.add_column("Warm-up", justify="right")
     table.add_column("Looks for", style="dim")
     for key in sorted(STRATEGIES):
         strategy = STRATEGIES[key]
-        table.add_row(key, strategy.name, str(strategy.min_bars), strategy.description)
+        bars = strategy.warmup_bars(timeframe)
+        daily = strategy.warmup_daily(timeframe)
+        table.add_row(
+            key,
+            strategy.name,
+            f"{daily}d + {bars}" if daily else str(bars),
+            strategy.description,
+        )
     return table
 
 
