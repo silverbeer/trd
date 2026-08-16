@@ -240,6 +240,63 @@ class EarningsEvent(BaseModel):
     eps_actual: Decimal | None = None
 
 
+class EarningsResult(BaseModel):
+    """One reported earnings result, as it was known when first observed.
+
+    The distinction from `EarningsEvent` is the whole point: an event says a
+    report is coming and is rewritten on every sync, while a result is a record
+    of what the tape actually knew, written once and never revised. A backtest
+    that reads estimates from the event table is reading today's numbers into
+    yesterday's decision.
+
+    Fields the provider cannot supply stay None rather than defaulting to
+    anything convenient — `quality_status` names what was genuinely observed, so
+    a missing revenue surprise can never be read as a surprise of zero.
+    """
+
+    instrument_id: int
+    released_on: date
+    release_timing: str = "unknown"  # bmo | amc | during_market | unknown
+    source: str
+    source_observed_at: datetime
+    eps_actual: Decimal | None = None
+    eps_estimate_pre_release: Decimal | None = None
+    revenue_actual: Decimal | None = None
+    revenue_estimate_pre_release: Decimal | None = None
+    guidance_direction: str = "unknown"  # raised | reaffirmed | lowered | none | unknown
+    next_quarter_revision_pct: float | None = None
+    next_year_revision_pct: float | None = None
+    earnings_day_return_pct: float | None = None
+    earnings_day_relative_strength_pct: float | None = None
+    quality_status: str = ""
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def observed(self) -> list[str]:
+        """Which fields were genuinely measured, rather than left unknown.
+
+        A list, not a set, because this rides the --json contract and a set has
+        no stable order to serialise.
+        """
+        return sorted(flag for flag in self.quality_status.split(",") if flag)
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def eps_surprise_pct(self) -> float | None:
+        """Actual versus the estimate on record, in percent.
+
+        None when either side is missing *or* when the estimate is zero — a
+        percentage against a zero base is not a large surprise, it is undefined,
+        and returning a big number there would rank a name on an artefact.
+        """
+        if self.eps_actual is None or self.eps_estimate_pre_release is None:
+            return None
+        if self.eps_estimate_pre_release == 0:
+            return None
+        delta = self.eps_actual - self.eps_estimate_pre_release
+        return float(delta / abs(self.eps_estimate_pre_release) * 100)
+
+
 class BoardRow(BaseModel):
     """One line of the watch board: instrument + live market read."""
 

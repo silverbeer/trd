@@ -37,6 +37,7 @@ trd buy AAPL 10 [--price 213.50] [--account main] [--date 2026-06-10] [--fees 1]
 trd sell AAPL 5 [--price ...]         # validates held quantity
 trd import txns.csv                   # bulk-load transactions
 trd backup data.json                 # export user-owned facts (txns/accounts/plans/watch/indicators)
+                                      # + the point-in-time earnings archive, which sync CANNOT rebuild
 trd restore data.json [--force]      # rebuild a DB from a backup, then trd sync (cross-machine sync)
 trd watch add NVDA [--list ai]        # follow a symbol (creates list if needed)
 trd watch rm NVDA [--list ai]
@@ -197,6 +198,7 @@ CSV import format (header required): `date,account,symbol,side,quantity,price[,f
 - Services ([src/trd/services](src/trd/services)) never import Typer/Rich — pure logic, fully testable.
 - All market data goes through the `MarketDataProvider` protocol ([src/trd/providers/base.py](src/trd/providers/base.py)). Never import yfinance outside [src/trd/providers/yf.py](src/trd/providers/yf.py).
 - Holdings are always derived from transactions via FIFO ([src/trd/services/fifo.py](src/trd/services/fifo.py)) — never stored as mutable balances.
+- `earnings_event` is a rewritable cache of *dates* (what the entry blackout needs). `earnings_result` ([src/trd/services/earnings_archive.py](src/trd/services/earnings_archive.py)) is the **point-in-time archive**: written when a release is first announced so the estimate is captured before the number lands, never revised afterwards, and `quality_status` names what was genuinely observed so an unfillable column (revenue, guidance, revisions, BMO/AMC timing — none of which yfinance supplies) never reads as a measurement of zero. It is the one provider-sourced table in `trd backup`, because no provider can hand it back.
 - Schema changes = new numbered file in [src/trd/db/migrations](src/trd/db/migrations). Never edit an applied migration.
 - Money/quantities are `Decimal` end to end. Never float.
 - Broker integration is **agent-side only**: an MCP session reads the brokerage and writes a snapshot file; `trd engine reconcile` does the diff. Nothing under `src/trd` imports or knows about MCP. The committed `.claude/settings.json` (never `settings.local.json`, which is gitignored and would put the gate on one machine only) names all 53 tools the server exposes: 34 reads allowed, 19 denied — the 17 that mutate broker state (order place/cancel, option exercise, watchlist and scan mutations) plus both `review_*_order` tools, which price an order without placing it and are denied anyway because trd decides from its own data. There is no mid-name wildcard, so a tool added later matches neither list and surfaces as an unlisted tool needing an explicit decision. See [docs/robinhood-mcp.md](docs/robinhood-mcp.md).

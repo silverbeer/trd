@@ -9,6 +9,7 @@ from trd.errors import ProviderError
 from trd.models import InstrumentType
 from trd.providers.base import MarketDataProvider
 from trd.repos import EarningsRepo, EngineConfigRepo, InstrumentRepo, PriceRepo, WatchlistRepo
+from trd.services.earnings_archive import EarningsArchiveService
 
 RECENT_DAYS = 7
 FULL_BACKFILL_DAYS = 730
@@ -48,6 +49,7 @@ class SyncService:
         self.earnings = EarningsRepo(conn)
         self.configs = EngineConfigRepo(conn)
         self.watchlists = WatchlistRepo(conn)
+        self.archive = EarningsArchiveService(conn)
 
     def sync(self, full: bool = False, years: int | None = None) -> SyncResult:
         """Refresh quotes + daily bars for every tracked instrument.
@@ -80,9 +82,11 @@ class SyncService:
                 failures.append(instrument.symbol)
             if instrument.type == InstrumentType.STOCK:
                 try:
-                    earnings_count += self.earnings.upsert(
-                        instrument.id, self.provider.get_earnings_dates(instrument.symbol)
-                    )
+                    events = self.provider.get_earnings_dates(instrument.symbol)
+                    earnings_count += self.earnings.upsert(instrument.id, events)
+                    # After the bars are stored, so a release whose session just
+                    # settled gets its reaction frozen on the same pass.
+                    self.archive.capture(instrument, events)
                 except ProviderError:
                     if instrument.symbol not in failures:
                         failures.append(instrument.symbol)
@@ -206,7 +210,11 @@ class SyncService:
             if dates is None:
                 failures.append(symbol)
                 continue
-            events += self.earnings.upsert(instrument.id, dates)
+            events += self.earnings.upsert(instrument.id, dates, today)
+            # This path runs on every scan, which is the one that matters for the
+            # archive: it is where a newly-published date is first seen, and the
+            # estimate is only point-in-time before the number lands.
+            self.archive.capture(instrument, dates)
         return EarningsSyncResult(checked=len(targets), events=events, failures=failures)
 
     def sync_intraday(

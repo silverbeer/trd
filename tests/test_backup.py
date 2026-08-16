@@ -215,3 +215,60 @@ def test_exit_triggers_survive_a_round_trip(
     assert rows[0].stop_price == Decimal("100")
     assert rows[0].target_price == Decimal("500")
     assert rows[0].note == "hand-set"
+
+
+def test_the_earnings_archive_survives_a_round_trip(
+    tmp_path: Path, conn: duckdb.DuckDBPyConnection, provider
+) -> None:
+    """The archive is provider-sourced but not provider-recoverable.
+
+    Prices and earnings *dates* are left out of a backup because `trd sync`
+    rebuilds them. Point-in-time estimates cannot be rebuilt by anything —
+    yfinance reports only today's values — so leaving them out would make the
+    documented restore-then-sync workflow destroy them permanently. This is the
+    test that keeps the exclusion list honest about the difference.
+    """
+    from datetime import date
+
+    from trd.models import EarningsDate, InstrumentInfo
+    from trd.repos import EarningsResultRepo, InstrumentRepo
+    from trd.services import EarningsArchiveService
+
+    repo = InstrumentRepo(conn)
+    instrument = repo.get_by_symbol("AAA") or repo.insert(InstrumentInfo(symbol="AAA", name="AAA"))
+    released = date(2026, 5, 4)
+    EarningsArchiveService(conn).capture(
+        instrument,
+        [EarningsDate(date=released, eps_estimate=Decimal("1.20"), eps_actual=Decimal("1.44"))],
+        now=datetime(2026, 5, 1, 8, 0),
+    )
+
+    fresh = connect(tmp_path / "restored.duckdb")
+    restore_data(fresh, export_data(conn))
+
+    restored_instrument = InstrumentRepo(fresh).get_by_symbol("AAA")
+    assert restored_instrument is not None
+    stored = EarningsResultRepo(fresh).get(restored_instrument.id, released)
+    assert stored is not None
+    assert stored.eps_estimate_pre_release == Decimal("1.20")
+    assert stored.eps_actual == Decimal("1.44")
+    # The observation time is the field that makes the rest point-in-time. A
+    # round trip that dropped it would leave numbers nobody can date.
+    assert stored.source_observed_at == datetime(2026, 5, 1, 8, 0)
+    assert stored.observed == ["eps", "estimate"]
+
+
+def test_a_v3_backup_without_the_archive_still_restores(
+    tmp_path: Path, conn: duckdb.DuckDBPyConnection, provider
+) -> None:
+    """Older backups predate the archive. A missing section is empty, not an
+    error — it did not exist to be exported."""
+    _populate(conn, provider)
+    data = export_data(conn)
+    data["version"] = 3
+    del data["earnings_results"]
+
+    fresh = connect(tmp_path / "old.duckdb")
+    stats = restore_data(fresh, data)
+    assert stats.earnings_results == 0
+    assert stats.transactions > 0

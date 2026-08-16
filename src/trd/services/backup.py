@@ -1,8 +1,13 @@
 """Portable backup of the user-owned facts — the irreplaceable data that can't be
 re-fetched from a provider: accounts, transactions, DCA plans, watchlists, the
-followed-indicator list, exit triggers, and engine state (plus the instruments they
-reference). Prices, earnings, and quotes are deliberately excluded — they rebuild
-with `trd sync`.
+followed-indicator list, exit triggers, engine state, and the point-in-time earnings
+archive (plus the instruments they reference). Prices, quotes and earnings *dates* are
+deliberately excluded — they rebuild with `trd sync`.
+
+The earnings archive is the exception that proves the rule. It comes from a provider,
+but no provider can hand it back: yfinance reports only today's estimates, so a restore
+followed by a sync would refill the dates and lose every value that was ever
+point-in-time. Excluding it would make a documented workflow destroy data permanently.
 
 Engine state travels with the transactions that produced it. A restore that brought
 back the engine's buy/sell rows without `engine_position` would leave holdings the
@@ -23,10 +28,12 @@ from trd.errors import TrdError
 from trd.models import SizingMode
 from trd.repos.engine import DEFAULT_EARNINGS_BLACKOUT_DAYS
 
-BACKUP_VERSION = 3
+BACKUP_VERSION = 4
 # v1 predates exit triggers and the engine; v2 keyed engine signals by bar date and
-# dropped the engine config fields added after it, so v3 reads either.
-SUPPORTED_VERSIONS = (1, 2, 3)
+# dropped the engine config fields added after it; v3 predates the point-in-time
+# earnings archive. Every older version still reads — the missing sections are
+# treated as empty, which is correct: they did not exist to be exported.
+SUPPORTED_VERSIONS = (1, 2, 3, 4)
 
 
 class BackupStats(BaseModel):
@@ -37,6 +44,7 @@ class BackupStats(BaseModel):
     watchlists: int
     indicators: int
     exit_triggers: int = 0
+    earnings_results: int = 0
     engine_positions: int = 0
     engine_signals: int = 0
 
@@ -251,6 +259,45 @@ def export_data(conn: duckdb.DuckDBPyConnection) -> dict:
         )
     ]
 
+    # The one provider-sourced table that belongs in a backup. Prices, quotes and
+    # earnings *dates* are excluded because `trd sync` rebuilds them — this cannot
+    # be rebuilt by anything. yfinance reports only today's values, so a restore
+    # followed by a sync would refill the dates and silently lose every estimate
+    # that was ever point-in-time. Losing it is permanent, which makes it
+    # irreplaceable in exactly the sense this file is named for.
+    earnings_results = [
+        {
+            "symbol": r[0],
+            "released_on": _iso(r[1]),
+            "release_timing": r[2],
+            "source": r[3],
+            "source_observed_at": _iso(r[4]),
+            "eps_actual": str(r[5]) if r[5] is not None else None,
+            "eps_estimate_pre_release": str(r[6]) if r[6] is not None else None,
+            "revenue_actual": str(r[7]) if r[7] is not None else None,
+            "revenue_estimate_pre_release": str(r[8]) if r[8] is not None else None,
+            "guidance_direction": r[9],
+            "next_quarter_revision_pct": r[10],
+            "next_year_revision_pct": r[11],
+            "earnings_day_return_pct": r[12],
+            "earnings_day_relative_strength_pct": r[13],
+            "quality_status": r[14],
+        }
+        for r in rows(
+            """
+            SELECT i.symbol, e.released_on, e.release_timing, e.source, e.source_observed_at,
+                   e.eps_actual, e.eps_estimate_pre_release, e.revenue_actual,
+                   e.revenue_estimate_pre_release, e.guidance_direction,
+                   e.next_quarter_revision_pct, e.next_year_revision_pct,
+                   e.earnings_day_return_pct, e.earnings_day_relative_strength_pct,
+                   e.quality_status
+            FROM earnings_result e
+            JOIN instrument i ON i.id = e.instrument_id
+            ORDER BY e.released_on, i.symbol
+            """
+        )
+    ]
+
     return {
         "version": BACKUP_VERSION,
         "instruments": instruments,
@@ -260,6 +307,7 @@ def export_data(conn: duckdb.DuckDBPyConnection) -> dict:
         "watchlists": watchlists,
         "indicators": indicators,
         "exit_triggers": exit_triggers,
+        "earnings_results": earnings_results,
         "engine": {
             "config": engine_config,
             "signals": engine_signals,
@@ -405,6 +453,38 @@ def restore_data(conn: duckdb.DuckDBPyConnection, data: dict) -> BackupStats:
             ],
         )
 
+    # Restored before the engine, and unconditionally: this is the only section
+    # `trd sync` cannot regenerate, so dropping it on a restore would destroy the
+    # history permanently rather than merely delay it.
+    for result in data.get("earnings_results", []):
+        conn.execute(
+            """INSERT OR REPLACE INTO earnings_result
+                   (instrument_id, released_on, release_timing, source, source_observed_at,
+                    eps_actual, eps_estimate_pre_release, revenue_actual,
+                    revenue_estimate_pre_release, guidance_direction,
+                    next_quarter_revision_pct, next_year_revision_pct,
+                    earnings_day_return_pct, earnings_day_relative_strength_pct,
+                    quality_status)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            [
+                instrument_id[result["symbol"]],
+                date.fromisoformat(result["released_on"]),
+                result["release_timing"],
+                result["source"],
+                _as_stamp(result["source_observed_at"]),
+                _dec(result["eps_actual"]),
+                _dec(result["eps_estimate_pre_release"]),
+                _dec(result["revenue_actual"]),
+                _dec(result["revenue_estimate_pre_release"]),
+                result["guidance_direction"],
+                result["next_quarter_revision_pct"],
+                result["next_year_revision_pct"],
+                result["earnings_day_return_pct"],
+                result["earnings_day_relative_strength_pct"],
+                result["quality_status"],
+            ],
+        )
+
     engine = data.get("engine") or {}
     config = engine.get("config")
     if config is not None:
@@ -495,6 +575,7 @@ def restore_data(conn: duckdb.DuckDBPyConnection, data: dict) -> BackupStats:
         watchlists=len(data["watchlists"]),
         indicators=len(data["indicators"]),
         exit_triggers=len(exit_triggers),
+        earnings_results=len(data.get("earnings_results", [])),
         engine_positions=len(positions),
         engine_signals=len(signals),
     )
