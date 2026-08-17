@@ -6,7 +6,7 @@ from pydantic import BaseModel
 
 from trd.engine.bars import DAILY, BarSource
 from trd.errors import ProviderError
-from trd.models import InstrumentType
+from trd.models import Instrument, InstrumentType
 from trd.providers.base import MarketDataProvider
 from trd.repos import EarningsRepo, EngineConfigRepo, InstrumentRepo, PriceRepo, WatchlistRepo
 from trd.services.earnings_archive import EarningsArchiveService
@@ -38,6 +38,9 @@ class SyncResult(BaseModel):
     failures: list[str]
     intraday_bars: int = 0
     intraday_timeframe: str | None = None
+    # Symbols left behind by this sync — see `SyncService._stale_symbols`. Distinct
+    # from `failures`, which only ever holds symbols whose provider call *raised*.
+    stale_symbols: list[str] = []
 
 
 class SyncService:
@@ -103,7 +106,36 @@ class SyncService:
             failures=failures,
             intraday_bars=intraday_count,
             intraday_timeframe=intraday_timeframe,
+            stale_symbols=self._stale_symbols(instruments),
         )
+
+    def _stale_symbols(self, instruments: list[Instrument]) -> list[str]:
+        """Symbols whose newest stored daily bar is behind the newest one this sync
+        stored for anything.
+
+        The failure this exists to name: `trd sync` runs once at 09:30, and yfinance
+        has not published the day's daily row yet for whichever symbols the loop
+        reaches first. An empty frame is a *successful* call returning zero rows, so
+        it raises nothing, lands in no `failures` list, and leaves `bars` nonzero
+        because the same pass re-wrote a week of gap-fill. Observed 2026-08-17: nine
+        symbols kept Friday's close all session, two of them open positions, and the
+        engine priced its book off a stale mark for the whole day.
+
+        Compared against the sync's own high-water mark rather than a calendar, on
+        purpose. On a holiday, a weekend or before the open nobody has a newer bar,
+        the maximum is yesterday's, and nothing is reported — no market calendar to
+        keep current and no false alarm on a day the market never traded. The moment
+        45 of 54 symbols carry today's bar, the 9 that don't are unambiguous.
+
+        Instruments with no bars at all are excluded: a name added minutes ago has
+        nothing to be behind with, and `engine status` already reports short history
+        as its own condition.
+        """
+        latest = self.prices.latest_dates()
+        newest = max(latest.values(), default=None)
+        if newest is None:
+            return []
+        return sorted(i.symbol for i in instruments if i.id in latest and latest[i.id] < newest)
 
     def backfill_symbol(self, symbol: str, years: int = 2, now: datetime | None = None) -> int:
         """Pull deep history for one symbol, and only that symbol.
