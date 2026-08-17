@@ -523,3 +523,48 @@ def test_intraday_only_sync_is_a_no_op_for_a_daily_engine(cli_env: FakeProvider)
     result = runner.invoke(app, ["sync", "--intraday-only"])
     assert result.exit_code == 0, result.output
     assert "No intraday engine configured" in result.output
+
+
+def test_require_current_exits_nonzero_when_a_symbol_is_left_behind(
+    cli_env: FakeProvider,
+) -> None:
+    """The guard the engine entrypoint stamps `.last-sync` on. A zero exit there
+    means "the day is synced", and before this a symbol that lost the 09:30 race
+    to the provider still produced one."""
+    import json
+    from datetime import date, timedelta
+    from decimal import Decimal
+
+    from trd.models import DailyBar
+
+    def series(last: date) -> list[DailyBar]:
+        return [
+            DailyBar(
+                date=last - timedelta(days=i),
+                open=Decimal(100),
+                high=Decimal(105),
+                low=Decimal(99),
+                close=Decimal(102),
+                volume=1_000,
+            )
+            for i in range(5)
+        ]
+
+    today = date.today()
+    assert runner.invoke(app, ["init"]).exit_code == 0
+    assert runner.invoke(app, ["buy", "AAPL", "1", "--price", "100"]).exit_code == 0
+    assert runner.invoke(app, ["buy", "NVDA", "1", "--price", "100"]).exit_code == 0
+    cli_env.bars["AAPL"] = series(today - timedelta(days=1))  # lost the race
+    cli_env.bars["NVDA"] = series(today)
+
+    stale = runner.invoke(app, ["sync", "--require-current"])
+    assert stale.exit_code == 1
+    assert "AAPL" in stale.output
+
+    payload = json.loads(runner.invoke(app, ["sync", "--json"]).output)
+    assert payload["stale_symbols"] == ["AAPL"]
+
+    # Once the provider catches up, the same command succeeds — this is what lets
+    # the next 5-minute pass stamp the day instead of retrying forever.
+    cli_env.bars["AAPL"] = series(today)
+    assert runner.invoke(app, ["sync", "--require-current"]).exit_code == 0

@@ -45,13 +45,21 @@ fi
 # --- refresh daily bars once per day ------------------------------------------
 # The live quote forms today's bar; yesterday's settled close still has to be
 # pulled down. One sync a day is enough — the scans between use the quote.
+#
+# --require-current is what keeps the once-a-day rule honest. The first pass of
+# the day fires at 09:30:00, and yfinance has not published the day's daily row
+# yet for whichever symbols the loop reaches first — an empty frame, which raises
+# nothing and writes nothing. Stamping on that leaves those names priced at
+# yesterday's close for the whole session (2026-08-17: nine symbols, two of them
+# open positions). With the flag, a sync that left anyone behind exits non-zero,
+# the stamp is not written, and the 09:35 pass simply tries again.
 STAMP="${TRD_HOME}/.last-sync"
 today=$(TZ=America/New_York date +%F)
 if [ "$(cat "$STAMP" 2>/dev/null || true)" != "$today" ]; then
-    if trd sync; then
+    if trd sync --require-current; then
         echo "$today" > "$STAMP"
     else
-        echo "sync failed — continuing with stored bars"
+        echo "sync incomplete — bars stored, retrying on the next pass"
     fi
 fi
 

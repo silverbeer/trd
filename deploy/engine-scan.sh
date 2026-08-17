@@ -51,14 +51,19 @@ echo "=== $(date) :: engine scan ===" >> "$LOG"
 # --- refresh daily bars once per day ------------------------------------------
 # The live quote forms today's bar, but yesterday's settled close still has to be
 # pulled down. One sync per day is enough; the scans in between use the quote.
+#
+# --require-current: the 09:30 pass races yfinance publishing the day's row, and a
+# symbol it loses that race to keeps yesterday's close all session — silently, as
+# an empty frame raises nothing. Exiting non-zero there leaves the stamp unwritten
+# so the next pass retries. Same guard as the k3s entrypoint.
 STAMP="$TRD_HOME/.last-sync"
 today=$(TZ=America/New_York date +%F)
 if [ "$(cat "$STAMP" 2>/dev/null || true)" != "$today" ]; then
-    if trd sync >> "$LOG" 2>&1; then
+    if trd sync --require-current >> "$LOG" 2>&1; then
         mkdir -p "$TRD_HOME"
         echo "$today" > "$STAMP"
     else
-        echo "sync failed (continuing with stored bars)" >> "$LOG"
+        echo "sync incomplete (bars stored, retrying next pass)" >> "$LOG"
     fi
 fi
 

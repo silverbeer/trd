@@ -18,9 +18,17 @@ uv run ty check             # type checking
 trd init                              # create ~/.trd/trd.duckdb + 'main' account
 trd account add fidelity              # one account per brokerage (--type simulation for paper)
 trd account ls
-trd sync [--full]                     # refresh quotes + daily bars + earnings (--full = 2y backfill)
+trd sync [--full] [--require-current] [--json]
+                                      # refresh quotes + daily bars + earnings (--full = 2y backfill)
                                       # also pulls intraday bars for an intraday engine's universe,
                                       # driven by its config — no flag to forget
+                                      # reports 'stale_symbols': names left behind the newest bar this
+                                      # sync stored. An empty provider frame raises nothing and writes
+                                      # nothing, so a symbol that loses the 09:30 race to publication
+                                      # keeps yesterday's close all session and every mark drawn from
+                                      # it (unrealized, risk at stop, R) is quietly wrong.
+                                      # --require-current exits non-zero when that list is non-empty,
+                                      # so an unattended runner retries instead of stamping the day done
 trd portfolio [--account NAME]        # holdings with live P&L
 trd equity [--account NAME] [--days N | --months N] [--all] [--json]
                                       # equity curve: portfolio value over time, period return,

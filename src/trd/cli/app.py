@@ -319,6 +319,15 @@ def sync(
             "enough to run every scan, because its bars settle every few minutes.",
         ),
     ] = False,
+    require_current: Annotated[
+        bool,
+        typer.Option(
+            "--require-current",
+            help="Exit non-zero if any symbol is left behind the newest bar this "
+            "sync stored — lets a caller retry instead of stamping the day done.",
+        ),
+    ] = False,
+    as_json: Annotated[bool, typer.Option("--json", help="Emit the result as JSON.")] = False,
 ) -> None:
     """Refresh quotes and daily price history for all tracked instruments."""
     settings = get_settings()
@@ -345,21 +354,39 @@ def sync(
         if earnings.failures:
             err_console.print(f"[yellow]warning:[/yellow] failed: {', '.join(earnings.failures)}")
         return
+    _use_json(as_json)
     with _spinner("Syncing market data..."):
         result = service.sync(full=full, years=years)
-    console.print(
-        f"Synced [bold]{result.quotes}[/bold]/{result.instruments} quotes, "
-        f"[bold]{result.bars}[/bold] daily bars, "
-        f"[bold]{result.earnings}[/bold] earnings dates."
-        + (
-            f"\nPlus [bold]{result.intraday_bars}[/bold] {result.intraday_timeframe} bars "
-            "for the engine universe."
-            if result.intraday_timeframe
-            else ""
+    if as_json:
+        _emit_json(result)
+    else:
+        console.print(
+            f"Synced [bold]{result.quotes}[/bold]/{result.instruments} quotes, "
+            f"[bold]{result.bars}[/bold] daily bars, "
+            f"[bold]{result.earnings}[/bold] earnings dates."
+            + (
+                f"\nPlus [bold]{result.intraday_bars}[/bold] {result.intraday_timeframe} bars "
+                "for the engine universe."
+                if result.intraday_timeframe
+                else ""
+            )
         )
-    )
-    if result.failures:
-        err_console.print(f"[yellow]warning:[/yellow] failed: {', '.join(result.failures)}")
+        if result.failures:
+            err_console.print(f"[yellow]warning:[/yellow] failed: {', '.join(result.failures)}")
+        # Named separately from `failures` because it is a different fault: the
+        # provider answered, said nothing, and left the name priced at an older
+        # close. Every mark derived from it — unrealized, risk at stop, R — is
+        # reading a stale number while looking entirely healthy.
+        if result.stale_symbols:
+            err_console.print(
+                f"[yellow]warning:[/yellow] no current daily bar for "
+                f"{', '.join(result.stale_symbols)} — marks for these are stale. "
+                "Re-run 'trd sync' once the provider has published them."
+            )
+    # Deliberately after the report: the caller wanting to retry still gets to see
+    # what happened, and a partial sync is worth keeping either way.
+    if require_current and result.stale_symbols:
+        raise typer.Exit(code=1)
 
 
 @app.command()
