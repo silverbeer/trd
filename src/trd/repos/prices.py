@@ -145,6 +145,18 @@ class PriceRepo:
         ).fetchall()
         return {r[0]: r[1] for r in rows}
 
+    def latest_dates(self) -> dict[int, date]:
+        """Newest stored bar date per instrument id.
+
+        The map a sync compares against itself to find symbols left behind: a
+        provider that answers with an empty frame raises nothing, writes nothing,
+        and is indistinguishable from a symbol that simply had no new bar.
+        """
+        rows = self.conn.execute(
+            "SELECT instrument_id, max(date) FROM price_daily GROUP BY instrument_id"
+        ).fetchall()
+        return {r[0]: r[1] for r in rows}
+
     def insert_snapshot(
         self, instrument_id: int, price: Decimal, prev_close: Decimal | None
     ) -> None:
