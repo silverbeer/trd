@@ -66,6 +66,7 @@ class ExitRule(ABC):
         self,
         position: EnginePosition,
         bars: Sequence[Bar],
+        settled: Sequence[Bar],
         price: Decimal,
         params: dict[str, float],
         now: datetime,
@@ -73,9 +74,16 @@ class ExitRule(ABC):
     ) -> ExitDecision | None:
         """Return a decision if this rule says get out, else None.
 
-        `timeframe` is required rather than defaulted: a rule that quietly assumed
-        daily bars is precisely how a 20-session average became a 100-minute one,
-        and a default would let the next caller reintroduce it silently.
+        `bars` ends with the bar still forming — that is deliberate, and it is
+        what lets a stop fire intraday instead of waiting for the bell. `settled`
+        is the same series with every unfinished bar removed, for the rules that
+        talk about a *close*.
+
+        Both are required rather than defaulted, for the same reason `timeframe`
+        is: a rule that quietly assumed daily bars is precisely how a 20-session
+        average became a 100-minute one, and this engine has now twice shipped a
+        rule whose description and behaviour disagreed. A default would let the
+        next caller reintroduce it silently.
         """
 
 
@@ -91,6 +99,7 @@ class StopLoss(ExitRule):
         self,
         position: EnginePosition,
         bars: Sequence[Bar],
+        settled: Sequence[Bar],
         price: Decimal,
         params: dict[str, float],
         now: datetime,
@@ -120,6 +129,7 @@ class TrailingStop(ExitRule):
         self,
         position: EnginePosition,
         bars: Sequence[Bar],
+        settled: Sequence[Bar],
         price: Decimal,
         params: dict[str, float],
         now: datetime,
@@ -153,6 +163,7 @@ class ProfitTarget(ExitRule):
         self,
         position: EnginePosition,
         bars: Sequence[Bar],
+        settled: Sequence[Bar],
         price: Decimal,
         params: dict[str, float],
         now: datetime,
@@ -174,15 +185,18 @@ class IndicatorExit(ExitRule):
         "Leave when the reason for owning it stops being true: price loses the "
         "20-session average, MACD momentum flips negative, or RSI runs above the "
         "blow-off level and rolls over. Every lookback is in sessions, so it means "
-        "the same span on a 5-minute engine as on a daily one. Held off for the "
-        "first few sessions so a pullback entry is not sold by the very dip it was "
-        "bought on."
+        "the same span on a 5-minute engine as on a daily one. Reads settled bars "
+        "only — a thesis stated in closes is judged on closes, so this rule waits "
+        "for the bar to finish while the stop keeps watching the live price. Held "
+        "off for the first few sessions so a pullback entry is not sold by the "
+        "very dip it was bought on."
     )
 
     def check(
         self,
         position: EnginePosition,
         bars: Sequence[Bar],
+        settled: Sequence[Bar],
         price: Decimal,
         params: dict[str, float],
         now: datetime,
@@ -195,9 +209,28 @@ class IndicatorExit(ExitRule):
         grace = params.get("indicator_grace_sessions", 3)
         if position.bars_held < sessions_to_bars(timeframe, grace):
             return None
-        value = float(price)
+        # Settled bars, not the forming one. This rule is a thesis check — "the
+        # reason for owning it stopped being true" — and every branch below is
+        # phrased as a close: closed below the average, the histogram flipped,
+        # RSI peaked and turned. Read off a bar that is minutes old, none of
+        # those statements is true yet.
+        #
+        # Observed live on 2026-08-19: three positions sold between 09:31 and
+        # 09:36, one on a MACD histogram at -0.06 and one 8.00 under a 487.79
+        # average — readings taken from six minutes of trade, either of which
+        # could plausibly have been the other side of the line by 16:00. The
+        # backtest never reproduced it, because a replay only ever sees settled
+        # bars, so the rule that validated over 3,603 trades was not the rule
+        # that was running.
+        #
+        # Deliberately NOT applied to stop, trail or target: a stop that waits
+        # for the close is not a stop. Those protect capital against the live
+        # price and must keep doing so.
+        if not settled:
+            return None
+        value = float(settled[-1].close)
         sma_period = sessions_to_bars(timeframe, INDICATOR_SMA_SESSIONS)
-        sma20 = last(indicator("sma", bars, period=sma_period)["value"])
+        sma20 = last(indicator("sma", settled, period=sma_period)["value"])
         if sma20 is not None and value < sma20:
             return ExitDecision(
                 rule=self.key,
@@ -208,7 +241,7 @@ class IndicatorExit(ExitRule):
             )
 
         fast, slow, signal = (sessions_to_bars(timeframe, n) for n in INDICATOR_MACD_SESSIONS)
-        hist_series = indicator("macd", bars, fast=fast, slow=slow, signal=signal)["hist"]
+        hist_series = indicator("macd", settled, fast=fast, slow=slow, signal=signal)["hist"]
         hist, hist_prev = last(hist_series), prior(hist_series, 1)
         if hist is not None and hist_prev is not None and hist < 0 <= hist_prev:
             return ExitDecision(
@@ -217,7 +250,7 @@ class IndicatorExit(ExitRule):
             )
 
         rsi_series = indicator(
-            "rsi", bars, period=sessions_to_bars(timeframe, INDICATOR_RSI_SESSIONS)
+            "rsi", settled, period=sessions_to_bars(timeframe, INDICATOR_RSI_SESSIONS)
         )["value"]
         rsi, rsi_prev = last(rsi_series), prior(rsi_series, 1)
         hot = params.get("rsi_exit", 80.0)
@@ -243,6 +276,7 @@ class TimeExit(ExitRule):
         self,
         position: EnginePosition,
         bars: Sequence[Bar],
+        settled: Sequence[Bar],
         price: Decimal,
         params: dict[str, float],
         now: datetime,
@@ -272,6 +306,7 @@ class SessionClose(ExitRule):
         self,
         position: EnginePosition,
         bars: Sequence[Bar],
+        settled: Sequence[Bar],
         price: Decimal,
         params: dict[str, float],
         now: datetime,
@@ -327,6 +362,7 @@ def missing_rules(params: dict[str, float]) -> list[tuple[str, str]]:
 def evaluate(
     position: EnginePosition,
     bars: Sequence[Bar],
+    settled: Sequence[Bar],
     price: Decimal,
     params: dict[str, float],
     now: datetime,
@@ -334,7 +370,7 @@ def evaluate(
 ) -> ExitDecision | None:
     """First rule to fire wins."""
     for rule in RULES:
-        decision = rule.check(position, bars, price, params, now, timeframe)
+        decision = rule.check(position, bars, settled, price, params, now, timeframe)
         if decision is not None:
             return decision
     return None

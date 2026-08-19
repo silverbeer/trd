@@ -170,7 +170,9 @@ def _level_decision(
     for rule in RULES:
         if rule.key not in _LEVEL_RULES:
             continue
-        decision = rule.check(position, bars, price, params, now, timeframe)
+        # Level rules ignore the settled series by design — a stop reads the live
+        # price, which at a probe is the price being probed.
+        decision = rule.check(position, bars, bars, price, params, now, timeframe)
         if decision is not None:
             return decision
     return None
@@ -220,7 +222,13 @@ def _check_exit(
     # The close probe mirrors a live end-of-day scan: today's bar is settled and
     # the trail high has absorbed today's close before the rules read it.
     probe = position.model_copy(update={"trail_high": max(position.trail_high, bar.close)})
-    decision = evaluate_exits(probe, bars[: i + 1], bar.close, params, now, timeframe)
+    # Both series are the same here, and that is the point: a replay only ever
+    # holds settled bars, so the close probe is already the settled reading the
+    # live engine now takes. This is why the backtest never showed the forming-bar
+    # exit — it could not.
+    decision = evaluate_exits(
+        probe, bars[: i + 1], bars[: i + 1], bar.close, params, now, timeframe
+    )
     if decision is not None:
         return bar.close, decision
     return None

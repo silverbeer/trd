@@ -613,7 +613,15 @@ class EngineService:
                     "bars_held": source.bars_since(stored, position.opened_at),
                 }
             )
-            decision = evaluate_exits(live, bars, price, config.exit_params, now, config.timeframe)
+            decision = evaluate_exits(
+                live,
+                bars,
+                source.settled(bars, now),
+                price,
+                config.exit_params,
+                now,
+                config.timeframe,
+            )
             if decision is None:
                 self.positions.touch(
                     position.id, live.trail_high, live.bars_held, source.session(bars[-1])
