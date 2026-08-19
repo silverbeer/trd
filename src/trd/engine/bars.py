@@ -156,6 +156,22 @@ class BarSource:
             return [*bars[:-1], self._refine(bars[-1], price, quote)]
         return [*bars, self._open_bar(current, price, quote)]
 
+    def settled(self, bars: list[Bar], now: datetime) -> list[Bar]:
+        """The bars whose bucket has already closed.
+
+        A rule that talks about a *close* has to read one. Two different bars can
+        be unsettled at the same instant: the forming bar `with_live_bar` folds
+        the quote into, and — on a daily engine — a bar the morning sync stored
+        for today, which holds minutes of trading and is still moving. Both are
+        excluded by comparing against the current bucket rather than by counting
+        back a fixed number of bars.
+
+        Empty during the first bucket of a series, which is a real answer: there
+        is no close to judge yet, and a rule that needs one should decline.
+        """
+        current = self.current_bucket(now)
+        return [bar for bar in bars if self.stamp(bar) < current]
+
     def current_bucket(self, now: datetime) -> datetime:
         """The instant the bar being formed right now opened."""
         minutes = self.minutes

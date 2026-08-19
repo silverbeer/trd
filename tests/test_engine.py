@@ -195,19 +195,24 @@ MIDDAY = datetime(2024, 9, 16, 12, 0)
 def test_stop_fires_at_or_below_the_stop():
     bars = make_bars(uptrend())
     assert (
-        exit_rules.StopLoss().check(_position(), bars, Decimal("91"), PARAMS, MIDDAY, DAILY) is None
+        exit_rules.StopLoss().check(_position(), bars, bars, Decimal("91"), PARAMS, MIDDAY, DAILY)
+        is None
     )
-    hit = exit_rules.StopLoss().check(_position(), bars, Decimal("90"), PARAMS, MIDDAY, DAILY)
+    hit = exit_rules.StopLoss().check(_position(), bars, bars, Decimal("90"), PARAMS, MIDDAY, DAILY)
     assert hit is not None and hit.rule == "stop"
 
 
 def test_target_fires_at_or_above_the_target():
     bars = make_bars(uptrend())
     assert (
-        exit_rules.ProfitTarget().check(_position(), bars, Decimal("119"), PARAMS, MIDDAY, DAILY)
+        exit_rules.ProfitTarget().check(
+            _position(), bars, bars, Decimal("119"), PARAMS, MIDDAY, DAILY
+        )
         is None
     )
-    hit = exit_rules.ProfitTarget().check(_position(), bars, Decimal("120"), PARAMS, MIDDAY, DAILY)
+    hit = exit_rules.ProfitTarget().check(
+        _position(), bars, bars, Decimal("120"), PARAMS, MIDDAY, DAILY
+    )
     assert hit is not None and hit.rule == "target"
 
 
@@ -216,14 +221,16 @@ def test_trailing_stop_waits_until_it_beats_the_initial_stop():
     # trail_high 100, ATR 5, mult 3 -> trail stop 85, below the initial 90: inactive.
     early = _position(trail_high=Decimal("100"))
     assert (
-        exit_rules.TrailingStop().check(early, bars, Decimal("86"), PARAMS, MIDDAY, DAILY) is None
+        exit_rules.TrailingStop().check(early, bars, bars, Decimal("86"), PARAMS, MIDDAY, DAILY)
+        is None
     )
     # trail_high 130 -> trail stop 115, now the tighter of the two.
     late = _position(trail_high=Decimal("130"))
     assert (
-        exit_rules.TrailingStop().check(late, bars, Decimal("116"), PARAMS, MIDDAY, DAILY) is None
+        exit_rules.TrailingStop().check(late, bars, bars, Decimal("116"), PARAMS, MIDDAY, DAILY)
+        is None
     )
-    hit = exit_rules.TrailingStop().check(late, bars, Decimal("115"), PARAMS, MIDDAY, DAILY)
+    hit = exit_rules.TrailingStop().check(late, bars, bars, Decimal("115"), PARAMS, MIDDAY, DAILY)
     assert hit is not None and hit.rule == "trail"
     assert "gave back" in hit.reason
 
@@ -232,24 +239,63 @@ def test_time_exit_fires_after_max_sessions():
     bars = make_bars(uptrend())
     assert (
         exit_rules.TimeExit().check(
-            _position(bars_held=9), bars, Decimal("101"), PARAMS, MIDDAY, DAILY
+            _position(bars_held=9), bars, bars, Decimal("101"), PARAMS, MIDDAY, DAILY
         )
         is None
     )
     hit = exit_rules.TimeExit().check(
-        _position(bars_held=10), bars, Decimal("101"), PARAMS, MIDDAY, DAILY
+        _position(bars_held=10), bars, bars, Decimal("101"), PARAMS, MIDDAY, DAILY
     )
     assert hit is not None and hit.rule == "time"
 
 
-def test_indicator_exit_fires_when_price_loses_the_20_session_average():
-    bars = make_bars(uptrend())
-    sma20 = sum(float(b.close) for b in bars[-20:]) / 20
+def test_indicator_exit_fires_when_the_settled_close_loses_the_20_session_average():
+    closes = uptrend()
+    sma20 = sum(closes[-20:]) / 20
+    closes[-1] = sma20 * 0.9  # the last *settled* bar closes under its average
+    bars = make_bars(closes)
     hit = exit_rules.IndicatorExit().check(
-        _position(bars_held=3), bars, Decimal(str(sma20 * 0.9)), PARAMS, MIDDAY, DAILY
+        _position(bars_held=3), bars, bars, bars[-1].close, PARAMS, MIDDAY, DAILY
     )
     assert hit is not None and hit.rule == "indicator"
     assert "20-session" in hit.reason
+
+
+def test_indicator_exit_ignores_a_live_price_that_has_not_closed_yet():
+    """SB-784. The rule says "closed below the 20-session average" — so a quote
+    that dips under it mid-session is not yet that statement.
+
+    Live on 2026-08-19 three positions were sold between 09:31 and 09:36 on
+    readings taken from six minutes of trade. The backtest never reproduced it,
+    because a replay only ever holds settled bars — so the rule that validated
+    over 3,603 trades was not the rule that was running."""
+    bars = make_bars(uptrend())  # every settled close above its average
+    sma20 = sum(float(b.close) for b in bars[-20:]) / 20
+    plunging = Decimal(str(sma20 * 0.9))  # the forming bar, far below it
+
+    assert (
+        exit_rules.IndicatorExit().check(
+            _position(bars_held=3), bars, bars, plunging, PARAMS, MIDDAY, DAILY
+        )
+        is None
+    )
+    # The stop is unaffected: capital protection never waits for a close.
+    stopped = exit_rules.StopLoss().check(
+        _position(), bars, bars, Decimal("90"), PARAMS, MIDDAY, DAILY
+    )
+    assert stopped is not None and stopped.rule == "stop"
+
+
+def test_indicator_exit_declines_while_nothing_has_settled_yet():
+    """First bar of a series: there is no close to judge, and the safe answer is
+    to decline rather than to read the bar that is still moving."""
+    bars = make_bars(uptrend())
+    assert (
+        exit_rules.IndicatorExit().check(
+            _position(bars_held=3), bars, [], bars[-1].close, PARAMS, MIDDAY, DAILY
+        )
+        is None
+    )
 
 
 def test_indicator_exit_gives_a_new_entry_room_to_breathe():
@@ -261,7 +307,7 @@ def test_indicator_exit_gives_a_new_entry_room_to_breathe():
     for held in (0, 1, 2):
         assert (
             exit_rules.IndicatorExit().check(
-                _position(bars_held=held), bars, below, PARAMS, MIDDAY, DAILY
+                _position(bars_held=held), bars, bars, below, PARAMS, MIDDAY, DAILY
             )
             is None
         )
@@ -271,7 +317,7 @@ def test_the_stop_still_runs_during_the_indicator_grace_period():
     """Grace applies to indicator exits only — capital protection never pauses."""
     bars = make_bars(uptrend())
     decision = exit_rules.evaluate(
-        _position(bars_held=0), bars, Decimal("89"), PARAMS, MIDDAY, DAILY
+        _position(bars_held=0), bars, bars, Decimal("89"), PARAMS, MIDDAY, DAILY
     )
     assert decision is not None and decision.rule == "stop"
 
@@ -280,7 +326,7 @@ def test_capital_protection_runs_before_profit_taking():
     """A bar that trips both the stop and the target reports the stop."""
     bars = make_bars(uptrend())
     position = _position(stop_price=Decimal("130"), target_price=Decimal("120"))
-    decision = exit_rules.evaluate(position, bars, Decimal("125"), PARAMS, MIDDAY, DAILY)
+    decision = exit_rules.evaluate(position, bars, bars, Decimal("125"), PARAMS, MIDDAY, DAILY)
     assert decision is not None and decision.rule == "stop"
 
 
@@ -767,7 +813,9 @@ def test_session_close_is_off_by_default():
     bars = make_bars(uptrend())
     late = datetime(2024, 9, 16, 15, 59)
     assert (
-        exit_rules.SessionClose().check(_position(), bars, Decimal("101"), PARAMS, late, DAILY)
+        exit_rules.SessionClose().check(
+            _position(), bars, bars, Decimal("101"), PARAMS, late, DAILY
+        )
         is None
     )
 
@@ -776,9 +824,9 @@ def test_session_close_fires_at_the_flat_time():
     bars = make_bars(uptrend())
     rule = exit_rules.SessionClose()
     before = datetime(2024, 9, 16, 15, 54)
-    assert rule.check(_position(), bars, Decimal("101"), DAY_PARAMS, before, DAILY) is None
+    assert rule.check(_position(), bars, bars, Decimal("101"), DAY_PARAMS, before, DAILY) is None
     hit = rule.check(
-        _position(), bars, Decimal("101"), DAY_PARAMS, datetime(2024, 9, 16, 15, 55), DAILY
+        _position(), bars, bars, Decimal("101"), DAY_PARAMS, datetime(2024, 9, 16, 15, 55), DAILY
     )
     assert hit is not None and hit.rule == "session_close"
     assert "15:55" in hit.reason
@@ -789,7 +837,7 @@ def test_the_stop_still_wins_at_the_bell():
     trade's R-multiple should be attributed to the rule that actually decided it."""
     bars = make_bars(uptrend())
     decision = exit_rules.evaluate(
-        _position(), bars, Decimal("80"), DAY_PARAMS, datetime(2024, 9, 16, 15, 55), DAILY
+        _position(), bars, bars, Decimal("80"), DAY_PARAMS, datetime(2024, 9, 16, 15, 55), DAILY
     )
     assert decision is not None and decision.rule == "stop"
 

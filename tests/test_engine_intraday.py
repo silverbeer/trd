@@ -470,18 +470,21 @@ def test_the_indicator_exit_no_longer_sells_a_five_minute_trade_in_fifteen_minut
     # that the indicator returns None and the rule declines — the safe direction,
     # and the reason a freshly-added symbol simply produces no indicator exit
     # until it has the history.
-    bars = make_intraday_bars(uptrend(n=2200))
+    closes = uptrend(n=2200)
+    window = sessions_to_bars("5m", 20)
+    # The weakness goes in the settled closes, where this rule now reads it —
+    # a low quote alone no longer arms it (SB-784).
+    closes[-1] = sum(closes[-window:]) / window * 0.9
+    bars = make_intraday_bars(closes)
     params = dict(DEFAULT_EXIT_PARAMS)
     rule = exit_rules.IndicatorExit()
-    window = sessions_to_bars("5m", 20)
-    sma20 = sum(float(b.close) for b in bars[-window:]) / window
-    below = Decimal(str(sma20 * 0.9))
+    below = bars[-1].close
     now = bars[-1].ts
 
     # three bars in — what used to be enough to arm the rule
-    assert rule.check(_position(bars_held=3), bars, below, params, now, "5m") is None
+    assert rule.check(_position(bars_held=3), bars, bars, below, params, now, "5m") is None
     # three *sessions* in, the threshold it was always meant to be
-    armed = rule.check(_position(bars_held=234), bars, below, params, now, "5m")
+    armed = rule.check(_position(bars_held=234), bars, bars, below, params, now, "5m")
     assert armed is not None and armed.rule == "indicator"
     assert "20-session" in armed.reason
     assert "20-day" not in armed.reason  # the string that lied in 228 trade records
@@ -495,8 +498,10 @@ def test_the_time_exit_no_longer_fires_after_fifty_minutes() -> None:
     rule = exit_rules.TimeExit()
     now = bars[-1].ts
 
-    assert rule.check(_position(bars_held=10), bars, Decimal("101"), params, now, "5m") is None
-    hit = rule.check(_position(bars_held=780), bars, Decimal("101"), params, now, "5m")
+    assert (
+        rule.check(_position(bars_held=10), bars, bars, Decimal("101"), params, now, "5m") is None
+    )
+    hit = rule.check(_position(bars_held=780), bars, bars, Decimal("101"), params, now, "5m")
     assert hit is not None and hit.rule == "time"
     assert "10 sessions" in hit.reason
 
@@ -510,12 +515,12 @@ def test_the_same_thresholds_still_fire_on_schedule_for_a_swing_engine() -> None
 
     assert (
         exit_rules.TimeExit().check(
-            _position(bars_held=9), bars, Decimal("101"), params, now, DAILY
+            _position(bars_held=9), bars, bars, Decimal("101"), params, now, DAILY
         )
         is None
     )
     hit = exit_rules.TimeExit().check(
-        _position(bars_held=10), bars, Decimal("101"), params, now, DAILY
+        _position(bars_held=10), bars, bars, Decimal("101"), params, now, DAILY
     )
     assert hit is not None and hit.rule == "time"
 
