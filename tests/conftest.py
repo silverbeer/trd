@@ -43,10 +43,16 @@ class FakeProvider:
         year_low: str | None = None,
         volume: int | None = None,
         avg_volume: int | None = None,
+        tradable: bool = True,
     ) -> None:
         symbol = symbol.upper()
         self.infos[symbol] = InstrumentInfo(
-            symbol=symbol, name=name or f"{symbol} Inc", type=type_, exchange="TEST", currency="USD"
+            symbol=symbol,
+            name=name or f"{symbol} Inc",
+            type=type_,
+            exchange="TEST",
+            currency="USD",
+            tradable=tradable,
         )
         self.quotes[symbol] = Quote(
             symbol=symbol,
