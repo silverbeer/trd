@@ -145,16 +145,21 @@ class CommandQueueService:
     def apply(self, command: QueuedCommand) -> AppliedCommand:
         try:
             if command.kind == CommandKind.ADD:
-                return AppliedCommand(command, True, self._add(command.symbol))
+                return AppliedCommand(command, True, self.add(command.symbol))
             if command.kind == CommandKind.REMOVE:
-                return AppliedCommand(command, True, self._remove(command.symbol))
+                return AppliedCommand(command, True, self.remove(command.symbol))
             return AppliedCommand(command, False, f"unknown command {command.kind!r}")
         except TrdError as exc:
             return AppliedCommand(command, False, str(exc))
 
     # ------------------------------------------------------------- actions
+    #
+    # Public because `trd engine add` / `trd engine rm` call them directly. Chat
+    # and terminal have to be the same code: two implementations of "add a name
+    # to the universe" would drift, and the one that drifts is the one nobody
+    # runs interactively.
 
-    def _add(self, symbol: str) -> str:
+    def add(self, symbol: str) -> str:
         config = self.engine.config()
         added = self.watchlists.add(symbol, config.watchlist)
 
@@ -176,7 +181,7 @@ class CommandQueueService:
             )
         return f"{prefix} — {bars} bars pulled, ready to trade."
 
-    def _remove(self, symbol: str) -> str:
+    def remove(self, symbol: str) -> str:
         config = self.engine.config()
         # Deliberately does not touch an open position. Dropping a name from the
         # universe stops new entries; the trade already on keeps its stop, its
