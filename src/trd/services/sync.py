@@ -19,6 +19,12 @@ FULL_BACKFILL_DAYS = 730
 # both the one that can still be rescheduled and the one the blackout depends on.
 EARNINGS_REFRESH_HORIZON_DAYS = 10
 
+# How many traded sessions a symbol may sit behind its peers before it is read as
+# having stopped trading rather than as lagging publication. Three is deliberately
+# generous: a name that misses three consecutive sessions its peers all printed is
+# not late, it is halted, delisted or renamed.
+DORMANT_AFTER_SESSIONS = 3
+
 
 class EarningsSyncResult(BaseModel):
     """What an earnings-only refresh touched. Separate from SyncResult because it
@@ -38,9 +44,13 @@ class SyncResult(BaseModel):
     failures: list[str]
     intraday_bars: int = 0
     intraday_timeframe: str | None = None
-    # Symbols left behind by this sync — see `SyncService._stale_symbols`. Distinct
-    # from `failures`, which only ever holds symbols whose provider call *raised*.
+    # Symbols left behind by this sync — see `SyncService._freshness`. Distinct from
+    # `failures`, which only ever holds symbols whose provider call *raised*.
     stale_symbols: list[str] = []
+    # Behind by so many sessions they have evidently stopped trading rather than
+    # merely lagged. Reported, never blocking: they can never catch up, so treating
+    # them as stale would wedge `--require-current` permanently.
+    dormant_symbols: list[str] = []
 
 
 class SyncService:
@@ -97,6 +107,7 @@ class SyncService:
                 failures.append(instrument.symbol)
 
         intraday_count, intraday_timeframe = self.sync_intraday(failures)
+        stale, dormant = self._freshness(instruments)
 
         return SyncResult(
             instruments=len(instruments),
@@ -106,12 +117,12 @@ class SyncService:
             failures=failures,
             intraday_bars=intraday_count,
             intraday_timeframe=intraday_timeframe,
-            stale_symbols=self._stale_symbols(instruments),
+            stale_symbols=stale,
+            dormant_symbols=dormant,
         )
 
-    def _stale_symbols(self, instruments: list[Instrument]) -> list[str]:
-        """Symbols whose newest stored daily bar is behind the newest one this sync
-        stored for anything.
+    def _freshness(self, instruments: list[Instrument]) -> tuple[list[str], list[str]]:
+        """(stale, dormant) — symbols behind the rest of the book, split by how far.
 
         The failure this exists to name: `trd sync` runs once at 09:30, and yfinance
         has not published the day's daily row yet for whichever symbols the loop
@@ -121,21 +132,47 @@ class SyncService:
         symbols kept Friday's close all session, two of them open positions, and the
         engine priced its book off a stale mark for the whole day.
 
-        Compared against the sync's own high-water mark rather than a calendar, on
-        purpose. On a holiday, a weekend or before the open nobody has a newer bar,
-        the maximum is yesterday's, and nothing is reported — no market calendar to
-        keep current and no false alarm on a day the market never traded. The moment
-        45 of 54 symbols carry today's bar, the 9 that don't are unambiguous.
+        **Measured against the median, not the maximum.** The maximum is whatever
+        one instrument runs furthest ahead, and something always does: at 07:30 on
+        2026-08-20 `^VIX` alone carried that day's bar and all 53 stocks were
+        reported stale, 90 minutes before the open. The median asks the question
+        that actually matters — has this session been published *broadly* — and one
+        instrument cannot move it. Note that types would not have saved this: there
+        is no INDEX in `InstrumentType`, and `^VIX` is stored as a stock.
+
+        **Behind is not the same as gone.** A symbol one session back is lagging
+        publication and a retry fixes it. A symbol frozen for several sessions has
+        stopped trading — halted, delisted, renamed — and can never catch up. Left
+        in the same bucket it would fail `--require-current` forever, so
+        `.last-sync` would never be written and the daily sync would re-run on every
+        five-minute pass, all day, every day: a quiet provider-load multiplier whose
+        only symptom is a slow scan. Those are reported as `dormant`, which says the
+        true thing and does not block.
+
+        Distance is counted in *sessions actually traded*, read from the dates in
+        the data, so a weekend or a holiday never counts against a symbol.
 
         Instruments with no bars at all are excluded: a name added minutes ago has
         nothing to be behind with, and `engine status` already reports short history
         as its own condition.
         """
         latest = self.prices.latest_dates()
-        newest = max(latest.values(), default=None)
-        if newest is None:
-            return []
-        return sorted(i.symbol for i in instruments if i.id in latest and latest[i.id] < newest)
+        known = sorted((latest[i.id], i.symbol) for i in instruments if i.id in latest)
+        if not known:
+            return [], []
+        # Median rather than mean: dates are ordinal, and half the book being here
+        # is the claim worth making.
+        reference = known[len(known) // 2][0]
+        rank = {day: n for n, day in enumerate(self.prices.session_dates())}
+
+        stale: list[str] = []
+        dormant: list[str] = []
+        for day, symbol in known:
+            if day >= reference:
+                continue
+            behind = rank[reference] - rank[day]
+            (stale if behind <= DORMANT_AFTER_SESSIONS else dormant).append(symbol)
+        return sorted(stale), sorted(dormant)
 
     def backfill_symbol(self, symbol: str, years: int = 2, now: datetime | None = None) -> int:
         """Pull deep history for one symbol, and only that symbol.
