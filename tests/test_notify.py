@@ -293,3 +293,35 @@ def test_http_error_never_leaks_the_token(monkeypatch):
         TelegramNotifier("supersecrettoken", "-100").send("hello")
     assert "supersecrettoken" not in str(exc.value)
     assert "401" in str(exc.value)
+
+
+def test_a_multi_day_hold_shows_both_dates():
+    """A swing trade's "when" is the part that lets you go and look at the chart.
+    "Held: 8d 23h" gives the span and not the sessions."""
+    swing = CLOSE_FILL.model_copy(
+        update={
+            "opened_at": datetime(2026, 8, 11, 10, 0),
+            "closed_at": datetime(2026, 8, 20, 9, 31),
+        }
+    )
+    text = close_message(swing)
+    assert "Entry: 326.56 · Aug 11, 10:00" in text
+    assert "Exit: 300.00 · Aug 20, 09:31" in text
+    assert "Held: 8d 23h" in text
+
+
+def test_a_same_session_trade_does_not_repeat_the_date():
+    """Noise on a day trade, and its absence is what makes a multi-day hold
+    visible at a glance."""
+    text = close_message(CLOSE_FILL)  # opened and closed 2026-07-28
+    assert "Entry: 326.56 · Jul 28, 09:45" in text
+    assert "Exit: 300.00 · 11:59" in text
+    assert text.count("Jul 28") == 1
+
+
+def test_a_fill_with_no_timestamps_still_shows_its_prices():
+    bare = CLOSE_FILL.model_copy(update={"opened_at": None, "closed_at": None})
+    text = close_message(bare)
+    assert "Entry: 326.56" in text
+    assert "Exit: 300.00" in text
+    assert "Held" not in text

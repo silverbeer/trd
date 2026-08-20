@@ -18,7 +18,7 @@ padded with "—" reads as broken rather than as inapplicable.
 Plain text, no markup — see TelegramNotifier for why.
 """
 
-from datetime import timedelta
+from datetime import datetime, timedelta
 from decimal import Decimal
 
 from trd.services.engine import ScanFill, ScanResult
@@ -32,6 +32,25 @@ def _signed(value: float | Decimal | None) -> str:
     if value is None:
         return "—"
     return f"{'+' if float(value) >= 0 else '-'}{abs(float(value)):,.2f}"
+
+
+def _stamp(moment: datetime | None) -> str | None:
+    """ "Aug 18, 09:45" — the date a swing trade needs and the time an intraday one
+    does. Times are the engine's own local clock, the same one every other trd
+    surface prints."""
+    return f"{moment:%b %-d, %H:%M}" if moment else None
+
+
+def _clock(moment: datetime | None) -> str | None:
+    return f"{moment:%H:%M}" if moment else None
+
+
+def _leg(price: Decimal, moment: datetime | None, same_session: bool) -> str:
+    """A price and when it happened. The exit drops the date when the trade opened
+    and closed on the same session — repeating it is noise on a day trade, and its
+    absence is what makes a multi-day hold visible at a glance."""
+    when = _clock(moment) if same_session else _stamp(moment)
+    return f"{_money(price)} · {when}" if when else _money(price)
 
 
 def _duration(span: timedelta | None) -> str | None:
@@ -121,12 +140,22 @@ def close_message(fill: ScanFill, label: str | None = None) -> str:
             # at risk, the other what came back in those units.
             result += f" ({r:+.2f}R)"
 
+    same_session = (
+        fill.opened_at is not None
+        and fill.closed_at is not None
+        and fill.opened_at.date() == fill.closed_at.date()
+    )
     lines = [_headline(fill, label)]
     lines += _section(
         "Trade",
         [
-            ("Entry", _money(fill.entry_price) if fill.entry_price is not None else None),
-            ("Exit", _money(fill.price)),
+            (
+                "Entry",
+                _leg(fill.entry_price, fill.opened_at, False)
+                if fill.entry_price is not None
+                else None,
+            ),
+            ("Exit", _leg(fill.price, fill.closed_at, same_session)),
             ("Size", f"{fill.quantity:g} sh ({_money(fill.price * fill.quantity)})"),
             ("Held", _duration(fill.held_for)),
         ],
