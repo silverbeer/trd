@@ -5,14 +5,52 @@ would train you to ignore the channel. Only fills are pushed: a position opening
 or closing is the engine actually doing something. Signals it declined stay in the
 log and the dashboard.
 
+A closed trade gets sections — trade, risk, thesis, execution — because the
+questions a human asks afterwards are always the same four: what happened, what
+did it cost, why was it on, and did it fill where it should have. Every figure
+comes off `ScanFill`, which carries what the position already knew; nothing here
+recomputes a stop or a risk number.
+
+Sections whose data is absent are dropped rather than printed with dashes. An
+indicator exit has no trigger price, so it has no execution section, and a message
+padded with "—" reads as broken rather than as inapplicable.
+
 Plain text, no markup — see TelegramNotifier for why.
 """
+
+from datetime import timedelta
+from decimal import Decimal
 
 from trd.services.engine import ScanFill, ScanResult
 
 
-def _money(value: float | None) -> str:
-    return f"{value:,.2f}" if value is not None else "—"
+def _money(value: float | Decimal | None) -> str:
+    return f"{float(value):,.2f}" if value is not None else "—"
+
+
+def _signed(value: float | Decimal | None) -> str:
+    if value is None:
+        return "—"
+    return f"{'+' if float(value) >= 0 else '-'}{abs(float(value)):,.2f}"
+
+
+def _duration(span: timedelta | None) -> str | None:
+    """Whole units, largest two: "2h 14m", "3d 4h", "45m". A trade held eleven
+    seconds and one held eleven minutes are different trades, and one held three
+    days does not need its minutes."""
+    if span is None:
+        return None
+    total = int(span.total_seconds())
+    if total < 60:
+        return f"{total}s"
+    days, rem = divmod(total, 86400)
+    hours, rem = divmod(rem, 3600)
+    minutes = rem // 60
+    if days:
+        return f"{days}d {hours}h" if hours else f"{days}d"
+    if hours:
+        return f"{hours}h {minutes}m" if minutes else f"{hours}h"
+    return f"{minutes}m"
 
 
 def _tag(label: str | None) -> str:
@@ -23,32 +61,115 @@ def _tag(label: str | None) -> str:
     return f"[{label}] " if label else ""
 
 
+def _section(title: str, rows: list[tuple[str, str | None]]) -> list[str]:
+    """A titled block, or nothing at all when every row is missing."""
+    present = [(k, v) for k, v in rows if v is not None]
+    if not present:
+        return []
+    return ["", title, *[f"{k}: {v}" for k, v in present]]
+
+
 def open_message(fill: ScanFill, label: str | None = None) -> str:
-    return "\n".join(
+    lines = [
+        f"{_tag(label)}🟢 BUY {fill.symbol} x{fill.quantity:g} @ {_money(fill.price)}",
+        f"strategy: {fill.strategy}",
+        fill.reason,
+    ]
+    # What this trade risks, stated before it risks it.
+    lines += _section(
+        "Risk",
         [
-            f"{_tag(label)}🟢 BUY {fill.symbol} x{fill.quantity:g} @ {float(fill.price):,.2f}",
-            f"strategy: {fill.strategy}",
-            fill.reason,
-        ]
+            ("Stop", _money(fill.stop_price) if fill.stop_price is not None else None),
+            ("Target", _money(fill.target_price) if fill.target_price is not None else None),
+            (
+                "Risk",
+                f"{_money(fill.risk_per_share)}/share" if fill.risk_per_share is not None else None,
+            ),
+            ("1R", _money(fill.planned_1r) if fill.planned_1r is not None else None),
+        ],
     )
+    return "\n".join(lines)
+
+
+def _headline(fill: ScanFill, label: str | None) -> str:
+    """Name the outcome, not just the side. "STOPPED OUT" is the thing a reader
+    is actually scanning for; SELL is true of every exit and says nothing."""
+    pnl = float(fill.pnl) if fill.pnl is not None else None
+    verdict = "🔴" if (pnl is not None and pnl < 0) else "🟦"
+    outcome = {
+        "stop": "STOPPED OUT",
+        "trail": "TRAILED OUT",
+        "target": "TARGET HIT",
+        "time": "TIME EXIT",
+        "indicator": "THESIS BROKEN",
+        "session_close": "FLAT AT THE BELL",
+    }.get(fill.rule or "", "CLOSED")
+    return f"{_tag(label)}{verdict} {fill.symbol} — {outcome}"
 
 
 def close_message(fill: ScanFill, label: str | None = None) -> str:
     pnl = float(fill.pnl) if fill.pnl is not None else None
     r = float(fill.r_multiple) if fill.r_multiple is not None else None
-    verdict = "🔴" if (pnl is not None and pnl < 0) else "🟦"
-    result = f"{'+' if pnl is not None and pnl >= 0 else ''}{_money(pnl)}"
-    if r is not None:
-        result += f" ({r:+.2f}R)"
-    return "\n".join(
+    # None, not "—", when there is no P&L to state: `_section` drops a missing row
+    # entirely, and a dash-padded line reads as broken rather than inapplicable.
+    result = None
+    if pnl is not None:
+        result = _signed(pnl)
+        if r is not None:
+            # Realized R, next to the planned 1R above it. The two are deliberately
+            # adjacent and deliberately labelled differently: one is what was put
+            # at risk, the other what came back in those units.
+            result += f" ({r:+.2f}R)"
+
+    lines = [_headline(fill, label)]
+    lines += _section(
+        "Trade",
         [
-            f"{_tag(label)}{verdict} SELL {fill.symbol} x{fill.quantity:g} "
-            f"@ {float(fill.price):,.2f}",
-            f"P&L: {result}",
-            f"strategy: {fill.strategy} · exit rule: {fill.rule or '—'}",
-            fill.reason,
-        ]
+            ("Entry", _money(fill.entry_price) if fill.entry_price is not None else None),
+            ("Exit", _money(fill.price)),
+            ("Size", f"{fill.quantity:g} sh ({_money(fill.price * fill.quantity)})"),
+            ("Held", _duration(fill.held_for)),
+        ],
     )
+    lines += _section(
+        "Risk",
+        [
+            ("Stop", _money(fill.stop_price) if fill.stop_price is not None else None),
+            (
+                "Risk",
+                f"{_money(fill.risk_per_share)}/share" if fill.risk_per_share is not None else None,
+            ),
+            ("1R", _money(fill.planned_1r) if fill.planned_1r is not None else None),
+            ("Target", _money(fill.target_price) if fill.target_price is not None else None),
+            ("P&L", result),
+        ],
+    )
+    lines += _section(
+        "Thesis",
+        [
+            ("Strategy", fill.strategy),
+            ("Setup", fill.setup),
+            ("Exit rule", fill.rule),
+            ("Why", fill.reason),
+        ],
+    )
+    # Only when a rule named a level. An indicator or time exit has no intended
+    # price, so there is nothing for the fill to have slipped against.
+    slip = fill.slippage_per_share
+    lines += _section(
+        "Execution",
+        [
+            ("Triggered", _money(fill.trigger_price) if fill.trigger_price is not None else None),
+            ("Filled", _money(fill.price) if fill.trigger_price is not None else None),
+            (
+                "Slippage",
+                f"{_signed(slip)}/share ({_signed(fill.slippage_total)})"
+                if slip is not None
+                else None,
+            ),
+        ],
+    )
+    return "\n".join(lines)
 
 
 def scan_messages(result: ScanResult, label: str | None = None) -> list[str]:
