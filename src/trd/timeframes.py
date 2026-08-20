@@ -27,6 +27,13 @@ INTRADAY_BACKFILL_DAYS = 59
 # whatever width the engine happens to run.
 SESSION_MINUTES = 390
 
+# Minute-of-day the regular session opens (09:30). With SESSION_MINUTES it gives
+# the instant a *daily* bar stops moving, which is what tells a rule reading
+# closes that today's close is finally a close. Deliberately not a market
+# calendar: this engine has never had one, and half-days and holidays are handled
+# by the shape of the data rather than by a table that has to be kept current.
+SESSION_OPEN_MINUTE = 9 * 60 + 30
+
 
 def bars_per_session(timeframe: str) -> int:
     """How many bars of this width make one session. Daily bars: one, by

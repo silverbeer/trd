@@ -12,6 +12,7 @@ Feed the same rules 5-minute bars and the stop is sized to the move a 5-minute
 bar actually makes.
 """
 
+from collections.abc import Sequence
 from datetime import date, datetime, time, timedelta
 from decimal import Decimal
 
@@ -22,6 +23,8 @@ from trd.timeframes import (
     DAILY,
     INTRADAY_BACKFILL_DAYS,
     INTRADAY_MINUTES,
+    SESSION_MINUTES,
+    SESSION_OPEN_MINUTE,
     TIMEFRAMES,
     bars_per_session,
     day_mode_on_daily_bars,
@@ -156,21 +159,55 @@ class BarSource:
             return [*bars[:-1], self._refine(bars[-1], price, quote)]
         return [*bars, self._open_bar(current, price, quote)]
 
-    def settled(self, bars: list[Bar], now: datetime) -> list[Bar]:
-        """The bars whose bucket has already closed.
+    def settled(self, bars: Sequence[Bar], now: datetime) -> list[Bar]:
+        """The bars that have finished — the ones whose close is a close.
 
-        A rule that talks about a *close* has to read one. Two different bars can
-        be unsettled at the same instant: the forming bar `with_live_bar` folds
-        the quote into, and — on a daily engine — a bar the morning sync stored
-        for today, which holds minutes of trading and is still moving. Both are
-        excluded by comparing against the current bucket rather than by counting
-        back a fixed number of bars.
+        A bar is settled once its own window has ended, which is the definition
+        that works on every timeframe: a 5-minute bar stamped 09:30 is done at
+        09:35, and a daily bar is done at the bell.
 
-        Empty during the first bucket of a series, which is a real answer: there
-        is no close to judge yet, and a rule that needs one should decline.
+        The daily case is the reason this is not simply "before the current
+        bucket". A daily bucket does not turn over until midnight, so that test
+        left today's bar unsettled for the whole session and pushed an exit that
+        belonged to today's close into tomorrow's 09:30 scan — a full session of
+        exposure on the rule that closes half of all trades (SB-788). Ending the
+        bar at the bell puts the exit back on the session it belongs to.
+
+        No market calendar, deliberately — this engine has never had one, and
+        both awkward cases come out right without it:
+
+        - **Half-days.** The close is 13:00, but the scans keep running to 16:00
+          on the clock. The bar settles at 16:00 and the rule reads the 13:00
+          close, which is the correct number, an hour later than ideal.
+        - **Holidays.** No bar is stored for the day at all, so the newest
+          settled bar stays yesterday's — the same reading yesterday already had,
+          which cannot fire anything new.
+
+        It is also indifferent to *which* scan runs. Nothing is keyed to the
+        16:00 pass, so an evicted pod or a busy database costs nothing: the next
+        scan, whenever it comes, sees the same settled bar.
+
+        Empty before the first bar of a series has closed, which is a real
+        answer: there is no close to judge yet, and a rule that needs one should
+        decline rather than read the bar that is still moving.
         """
-        current = self.current_bucket(now)
-        return [bar for bar in bars if self.stamp(bar) < current]
+        return [bar for bar in bars if self.bar_end(bar) <= now]
+
+    def bar_end(self, bar: Bar) -> datetime:
+        """The instant this bar stops moving.
+
+        Intraday, that is its own width past its stamp. Daily, it is the bell:
+        the bar covers one session, and a session that began at 09:30 is over
+        SESSION_MINUTES later.
+        """
+        stamp = self.stamp(bar)
+        minutes = self.minutes
+        if minutes is None:
+            open_at = datetime.combine(stamp.date(), time.min) + timedelta(
+                minutes=SESSION_OPEN_MINUTE
+            )
+            return open_at + timedelta(minutes=SESSION_MINUTES)
+        return stamp + timedelta(minutes=minutes)
 
     def current_bucket(self, now: datetime) -> datetime:
         """The instant the bar being formed right now opened."""
