@@ -2,7 +2,16 @@ import duckdb
 
 from trd.models import Instrument, InstrumentInfo
 
-_COLS = "id, symbol, name, type, exchange, sector, currency"
+_COLS = "id, symbol, name, type, exchange, sector, currency, tradable"
+
+# The same list qualified for a join. Five repos used to spell the seven columns
+# out by hand and slice the result positionally, so adding `tradable` broke all
+# of them at once — the same class of bug as the hardcoded 18 in `_list`.
+INSTRUMENT_COLS = len(_COLS.split(", "))
+
+
+def prefixed_cols(alias: str = "i") -> str:
+    return ", ".join(f"{alias}.{c}" for c in _COLS.split(", "))
 
 
 def _row_to_instrument(row: tuple) -> Instrument:
@@ -14,6 +23,10 @@ def _row_to_instrument(row: tuple) -> Instrument:
         exchange=row[4],
         sector=row[5],
         currency=row[6],
+        # Tolerant of a short row and of NULL: a caller selecting the older seven
+        # columns still gets a usable instrument, and rows written before the
+        # migration backfilled them arrive as None rather than a boolean.
+        tradable=True if len(row) < 8 or row[7] is None else row[7],
     )
 
 
@@ -36,9 +49,9 @@ class InstrumentRepo:
     def insert(self, info: InstrumentInfo) -> Instrument:
         row = self.conn.execute(
             """
-            INSERT INTO instrument (symbol, name, type, exchange, sector, currency)
-            VALUES (?, ?, ?, ?, ?, ?)
-            RETURNING id, symbol, name, type, exchange, sector, currency
+            INSERT INTO instrument (symbol, name, type, exchange, sector, currency, tradable)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            RETURNING id, symbol, name, type, exchange, sector, currency, tradable
             """,
             [
                 info.symbol.upper(),
@@ -47,6 +60,7 @@ class InstrumentRepo:
                 info.exchange,
                 info.sector,
                 info.currency,
+                info.tradable,
             ],
         ).fetchone()
         assert row is not None

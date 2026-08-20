@@ -12,7 +12,7 @@ from typing import Any
 import duckdb
 import pytest
 
-from trd.errors import NotifyError
+from trd.errors import NotifyError, NotTradableError
 from trd.models import DailyBar
 from trd.notify.bot import (
     BotConfigError,
@@ -596,3 +596,32 @@ def test_the_cli_rm_leaves_an_open_position_alone(queue_env):
         assert "open position stays" in message
         still = {i.symbol for _, i in engine.positions.list_open(account.id)}
         assert "AAA" in still
+
+
+def test_an_index_cannot_be_added_to_an_engine_universe(queue_env):
+    """SB-804. ^VIX has real OHLC and an 8% daily range, and `pullback` and
+    `macd_cross` read no volume — so an index in the universe is a paper position
+    in something with no shares, stopped at 2 x the ATR of a mean-reverting
+    index, folded into the scorecard beside real trades."""
+    service, engine, _home, provider = queue_env
+    provider.add_symbol("^VIX", price="15.91", tradable=False)
+    provider.add_bars("^VIX", bars(300, base=15))
+
+    with pytest.raises(NotTradableError) as caught:
+        service.add("^VIX")
+
+    assert "no shares to own" in str(caught.value)
+    assert "^VIX" not in [i.symbol for i in engine.universe()]
+
+
+def test_an_index_already_in_a_universe_is_skipped_not_fatal(queue_env):
+    """A universe assembled before the refusal existed still has one in it, and a
+    scan is not the place to start failing."""
+    service, engine, _home, provider = queue_env
+    provider.add_symbol("^VIX", price="15.91", tradable=False)
+    provider.add_bars("^VIX", bars(300, base=15))
+    # Straight past `add`, the way an older database would already look.
+    service.watchlists.add("^VIX", engine.config().watchlist)
+
+    assert "^VIX" not in [i.symbol for i in engine.universe()]
+    engine.scan(paper=True)  # must not raise

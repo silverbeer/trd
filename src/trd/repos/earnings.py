@@ -109,7 +109,7 @@ class EarningsRepo:
         rows = self.conn.execute(
             """
             SELECT e.date, e.eps_estimate, e.eps_actual,
-                   i.id, i.symbol, i.name, i.type, i.exchange, i.sector, i.currency
+                   i.id, i.symbol, i.name, i.type, i.exchange, i.sector, i.currency, i.tradable
             FROM earnings_event e
             JOIN instrument i ON i.id = e.instrument_id
             WHERE e.date BETWEEN ? AND ?

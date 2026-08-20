@@ -93,7 +93,7 @@ class SyncService:
                 bar_count += self.prices.upsert_daily(instrument.id, bars)
             except ProviderError:
                 failures.append(instrument.symbol)
-            if instrument.type == InstrumentType.STOCK:
+            if instrument.type == InstrumentType.STOCK and instrument.tradable:
                 try:
                     events = self.provider.get_earnings_dates(instrument.symbol)
                     earnings_count += self.earnings.upsert(instrument.id, events)
@@ -201,7 +201,7 @@ class SyncService:
         except ProviderError:
             return written
 
-        if instrument.type == InstrumentType.STOCK:
+        if instrument.type == InstrumentType.STOCK and instrument.tradable:
             with suppress(ProviderError):
                 self.earnings.upsert(
                     instrument.id, self.provider.get_earnings_dates(instrument.symbol)
@@ -243,7 +243,11 @@ class SyncService:
         horizon = today + timedelta(days=EARNINGS_REFRESH_HORIZON_DAYS)
         out: list[str] = []
         for instrument in self.instruments.list_all():
-            if instrument.type != InstrumentType.STOCK:
+            # An index is stored as a stock (the type CHECK allows nothing else)
+            # and never has an earnings date, so it qualified as 'needs a
+            # re-check' on every pass — ~158 wasted requests a day across two
+            # engines, each logging 'symbol may be delisted'.
+            if instrument.type != InstrumentType.STOCK or not instrument.tradable:
                 continue
             next_date = self.earnings.next_for_instrument(instrument.id, today)
             if next_date is None or next_date <= horizon:

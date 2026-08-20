@@ -57,7 +57,8 @@ class WatchlistRepo:
     def items(self, watchlist_id: int | None = None) -> list[tuple[str, Instrument]]:
         """(watchlist_name, instrument) pairs, optionally scoped to one list."""
         sql = """
-            SELECT w.name, i.id, i.symbol, i.name, i.type, i.exchange, i.sector, i.currency
+            SELECT w.name, i.id, i.symbol, i.name, i.type, i.exchange, i.sector,
+                   i.currency, i.tradable
             FROM watchlist_item wi
             JOIN watchlist w ON w.id = wi.watchlist_id
             JOIN instrument i ON i.id = wi.instrument_id

@@ -25,7 +25,7 @@ from pathlib import Path
 import duckdb
 from pydantic import BaseModel
 
-from trd.errors import TrdError
+from trd.errors import NotTradableError, TrdError
 from trd.providers.base import MarketDataProvider
 from trd.services.engine import EngineService
 from trd.services.sync import SyncService
@@ -161,6 +161,17 @@ class CommandQueueService:
 
     def add(self, symbol: str) -> str:
         config = self.engine.config()
+        # Before the watchlist write and before the backfill: an index that lands
+        # in the universe is one a price-only rule can fire on. `pullback` and
+        # `macd_cross` read no volume, so ^VIX — which has real OHLC and an 8%
+        # daily range — would open a paper position in something with no shares,
+        # stopped at 2 x the ATR of a mean-reverting index, and fold its
+        # R-multiples into the scorecard beside real trades.
+        instrument = self.watchlists.instruments.get_by_symbol(symbol) or (
+            self.watchlists.instruments.insert(self.provider.get_info(symbol))
+        )
+        if not instrument.tradable:
+            raise NotTradableError(instrument.symbol)
         added = self.watchlists.add(symbol, config.watchlist)
 
         # Backfill before reporting. A name is only really in the universe once

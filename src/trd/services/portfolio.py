@@ -9,6 +9,7 @@ import duckdb
 from trd.errors import (
     EnginePositionConflictError,
     InsufficientPositionError,
+    NotTradableError,
     TrdError,
     UnknownAccountError,
 )
@@ -54,6 +55,11 @@ class PortfolioService:
         if account is None:
             raise UnknownAccountError(account_name)
         instrument = self.ensure_instrument(symbol)
+        # An index has no shares. Refused here rather than at the CLI so every
+        # caller is covered — import, the DCA plans and the engine's own fills all
+        # arrive through this method or the repo beneath it.
+        if not instrument.tradable:
+            raise NotTradableError(instrument.symbol)
         # The engine tracks its own quantity in `engine_position`, and nothing here
         # updates it. A manual trade against a symbol the engine is holding leaves the
         # two disagreeing: the engine keeps believing it holds the original size and
