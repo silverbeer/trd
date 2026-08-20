@@ -548,3 +548,51 @@ def test_queued_commands_round_trip_through_json(tmp_path):
     loaded = QueuedCommand.model_validate_json(path.read_text())
     assert loaded.symbol == "PLTR"  # normalized on the way in
     assert loaded.user_id == ME
+
+
+# ------------------------------------------------- SB-796: the same path from the CLI
+
+
+def test_the_cli_add_uses_the_same_path_as_the_queue(queue_env):
+    """`trd engine add` calls the very method the bot's /add drains, so chat and
+    terminal cannot drift. Two implementations of "add a name to the universe"
+    would, and the one that drifts is the one nobody runs interactively."""
+    service, engine, _home, provider = queue_env
+    provider.add_symbol("VRT", price="120")
+    provider.add_bars("VRT", bars(300, base=100))
+
+    message = service.add("VRT")
+
+    assert "ready to trade" in message
+    assert "VRT" in [i.symbol for i in engine.universe()]
+
+
+def test_the_cli_add_reports_a_name_that_is_not_tradable_yet(queue_env):
+    """The reason this is a command and not `watch add` plus a sync: depth
+    against the engine's warmup is the answer the caller actually needs."""
+    service, engine, _home, provider = queue_env
+    provider.add_symbol("THIN", price="10")
+    provider.add_bars("THIN", bars(12, base=10))
+
+    message = service.add("THIN")
+
+    assert "not tradable yet" in message.lower()
+    assert "THIN" in [i.symbol for i in engine.universe()]
+
+
+def test_the_cli_rm_leaves_an_open_position_alone(queue_env):
+    """Dropping a name stops new entries. The trade already on keeps its stop,
+    its target and its exit rules, and closes on the rules that opened it."""
+    service, engine, _home, _provider = queue_env
+    engine.scan(paper=True)
+    account = engine.account()
+    held = {i.symbol for _, i in engine.positions.list_open(account.id)}
+
+    message = service.remove("AAA")
+
+    assert "removed AAA" in message
+    assert "AAA" not in [i.symbol for i in engine.universe()]
+    if "AAA" in held:
+        assert "open position stays" in message
+        still = {i.symbol for _, i in engine.positions.list_open(account.id)}
+        assert "AAA" in still

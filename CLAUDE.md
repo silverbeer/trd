@@ -100,6 +100,15 @@ trd engine monitor [--interval 60] [--passes N] # live view on a terminal: book 
 trd engine positions [--all]          # open trades: entry, stop (↑ = trailing in force), risk, target, R
                                       # risk = (mark − stop in force) × remaining qty, floored at 0 —
                                       # what this trade loses from here, not what it committed
+trd engine add SYMBOL                 # add a name to THIS engine's universe and pull only its
+                                      # history (2y daily, plus intraday on a day engine). Says
+                                      # whether it clears the engine's warmup — a name with no
+                                      # bars is skipped every pass and reads as a broken engine
+                                      # rather than one warming up. Same code path as the bot's
+                                      # /add, so chat and terminal cannot drift
+trd engine rm SYMBOL                  # drop a name from the universe. An OPEN POSITION in it is
+                                      # deliberately left alone: no new entries, but the trade on
+                                      # keeps its stop/target and closes on its own exit rules
 trd engine trim SYM --pct 50          # sell part of an open position, leave the rest running.
                       [--quantity N] [--price P]   # for taking cash out without abandoning the
                                       # trade. Stop/target/trail untouched — trimming changes the

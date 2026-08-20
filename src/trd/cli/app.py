@@ -1847,6 +1847,60 @@ def _notify_scan(result: ScanResult, label: str | None = None) -> None:
             err_console.print(f"[yellow]warning:[/yellow] notification failed: {exc}")
 
 
+@engine_app.command("add")
+def engine_add(
+    symbol: Annotated[str, typer.Argument(help="Ticker to add to this engine's universe.")],
+    as_json: JsonOpt = False,
+) -> None:
+    """Add a symbol to this engine's universe and pull the history its rules need.
+
+    The same code path the Telegram bot's /add drains, so chat and terminal cannot
+    give different answers. Backfills only this symbol — `trd sync --full` would
+    re-pull two years for the whole universe to serve one addition — and reports
+    whether it clears the engine's warmup, because a name in the universe with no
+    history is skipped every pass and reads as a broken engine rather than one
+    warming up.
+    """
+    _use_json(as_json)
+    settings = get_settings()
+    try:
+        service = CommandQueueService(connect(settings.db_path), YFinanceProvider())
+        with _spinner(f"Adding {symbol.upper()} and pulling its history..."):
+            message = service.add(symbol)
+    except TrdError as exc:
+        _fail(exc)
+        return
+    if as_json:
+        _emit_json({"symbol": symbol.upper(), "message": message})
+    else:
+        console.print(message)
+
+
+@engine_app.command("rm")
+def engine_rm(
+    symbol: Annotated[str, typer.Argument(help="Ticker to drop from this engine's universe.")],
+    as_json: JsonOpt = False,
+) -> None:
+    """Drop a symbol from this engine's universe.
+
+    Deliberately does not touch an open position in that name: dropping it stops
+    new entries, while the trade already on keeps its stop, its target and its
+    exit rules and closes on the rules that opened it.
+    """
+    _use_json(as_json)
+    settings = get_settings()
+    try:
+        service = CommandQueueService(connect(settings.db_path), YFinanceProvider())
+        message = service.remove(symbol)
+    except TrdError as exc:
+        _fail(exc)
+        return
+    if as_json:
+        _emit_json({"symbol": symbol.upper(), "message": message})
+    else:
+        console.print(message)
+
+
 @engine_app.command("apply-queue")
 def engine_apply_queue(
     notify: Annotated[
