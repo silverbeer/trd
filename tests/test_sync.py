@@ -142,3 +142,71 @@ def test_a_symbol_with_no_bars_at_all_is_not_stale(
     provider.bars["NVDA"] = []
 
     assert sync_service.sync().stale_symbols == []
+
+
+def test_one_symbol_running_ahead_does_not_make_the_rest_stale(
+    portfolio: PortfolioService, sync_service: SyncService, provider
+) -> None:
+    """SB-795. At 07:30 on 2026-08-20 ^VIX alone carried that day's bar and not
+    one of the 53 stocks did, so measuring against the newest bar *anywhere*
+    reported the whole book stale 90 minutes before the open.
+
+    Note ^VIX is stored as a stock — there is no INDEX in InstrumentType — so
+    grouping by type would not have helped. The median is what makes one
+    instrument unable to move the reference."""
+    today = date.today()
+    portfolio.record_trade("main", "AAPL", Side.BUY, Decimal(1), Decimal(100))
+    portfolio.record_trade("main", "NVDA", Side.BUY, Decimal(1), Decimal(100))
+    provider.add_symbol("^VIX", price="18.00")
+    portfolio.instruments.insert(provider.get_info("^VIX"))
+
+    provider.bars["AAPL"] = _bars_ending(5, today - timedelta(days=1))
+    provider.bars["NVDA"] = _bars_ending(5, today - timedelta(days=1))
+    provider.bars["^VIX"] = _bars_ending(5, today)  # printed early
+
+    result = sync_service.sync()
+
+    assert result.stale_symbols == []
+    assert result.dormant_symbols == []
+
+
+def test_a_symbol_that_stopped_trading_is_dormant_not_stale(
+    portfolio: PortfolioService, sync_service: SyncService, provider
+) -> None:
+    """A halted or delisted name can never catch up. Counted as stale it would
+    fail --require-current on every pass forever, so `.last-sync` would never be
+    written and the daily sync would re-run every five minutes, all day."""
+    today = date.today()
+    for symbol in ("AAPL", "NVDA"):
+        portfolio.record_trade("main", symbol, Side.BUY, Decimal(1), Decimal(100))
+    provider.add_symbol("MSFT", price="400.00")
+    portfolio.record_trade("main", "MSFT", Side.BUY, Decimal(1), Decimal(100))
+
+    provider.bars["AAPL"] = _bars_ending(20, today)
+    provider.bars["MSFT"] = _bars_ending(20, today)
+    provider.bars["NVDA"] = _bars_ending(20, today - timedelta(days=10))
+
+    result = sync_service.sync(full=True)
+
+    assert result.dormant_symbols == ["NVDA"]
+    assert result.stale_symbols == []  # must not block --require-current
+
+
+def test_a_symbol_one_session_behind_is_still_stale(
+    portfolio: PortfolioService, sync_service: SyncService, provider
+) -> None:
+    """The SB-669 case has to keep working: lagging publication by a session is
+    exactly what a retry fixes, so it still blocks."""
+    today = date.today()
+    for symbol in ("AAPL", "NVDA"):
+        portfolio.record_trade("main", symbol, Side.BUY, Decimal(1), Decimal(100))
+    provider.add_symbol("MSFT", price="400.00")
+    portfolio.record_trade("main", "MSFT", Side.BUY, Decimal(1), Decimal(100))
+
+    provider.bars["AAPL"] = _bars_ending(5, today)
+    provider.bars["MSFT"] = _bars_ending(5, today)
+    provider.bars["NVDA"] = _bars_ending(5, today - timedelta(days=1))
+
+    result = sync_service.sync()
+    assert result.stale_symbols == ["NVDA"]
+    assert result.dormant_symbols == []
