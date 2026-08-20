@@ -48,6 +48,11 @@ _QUOTE_TYPE_MAP = {
     "CRYPTOCURRENCY": InstrumentType.CRYPTO,
 }
 
+# Quote types that name a calculated number rather than a holding. They still
+# store as STOCK because instrument.type carries a CHECK constraint that only
+# DuckDB table surgery could widen; `tradable` is what actually gates them.
+_NOT_TRADABLE_QUOTE_TYPES = {"INDEX"}
+
 
 def _dec(value: Any) -> Decimal | None:
     """Convert a provider float to Decimal; None for missing/NaN."""
@@ -154,6 +159,7 @@ class YFinanceProvider:
             symbol=symbol,
             name=info.get("longName") or info.get("shortName"),
             type=_QUOTE_TYPE_MAP.get(info.get("quoteType", ""), InstrumentType.STOCK),
+            tradable=info.get("quoteType", "") not in _NOT_TRADABLE_QUOTE_TYPES,
             exchange=info.get("fullExchangeName") or info.get("exchange"),
             sector=info.get("sector"),
             currency=info.get("currency") or "USD",

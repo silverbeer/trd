@@ -387,10 +387,19 @@ class EngineService:
         return account
 
     def universe(self) -> list[Instrument]:
+        """The names this engine may trade.
+
+        Non-tradable instruments are filtered rather than refused, because this
+        is the read path: a universe assembled before `trd engine add` learned to
+        reject an index still has one in it, and a scan is not the place to start
+        failing. `add` is where the refusal belongs, and it says why.
+        """
         board = self.watchlists.get_by_name(self.config().watchlist)
         if board is None:
             return []
-        return [instrument for _, instrument in self.watchlists.items(board.id)]
+        return [
+            instrument for _, instrument in self.watchlists.items(board.id) if instrument.tradable
+        ]
 
     # --------------------------------------------------------- market regime
 

@@ -269,7 +269,7 @@ class EngineSignalRepo:
         rows = self.conn.execute(
             f"""
             SELECT {", ".join(f"s.{c}" for c in _SIGNAL_COLS.split(", "))},
-                   i.id, i.symbol, i.name, i.type, i.exchange, i.sector, i.currency
+                   i.id, i.symbol, i.name, i.type, i.exchange, i.sector, i.currency, i.tradable
             FROM engine_signal s
             JOIN instrument i ON i.id = s.instrument_id
             {where}
@@ -329,7 +329,7 @@ class EnginePositionRepo:
         rows = self.conn.execute(
             f"""
             SELECT {", ".join(f"p.{c}" for c in _POSITION_COLS.split(", "))},
-                   i.id, i.symbol, i.name, i.type, i.exchange, i.sector, i.currency
+                   i.id, i.symbol, i.name, i.type, i.exchange, i.sector, i.currency, i.tradable
             FROM engine_position p
             JOIN instrument i ON i.id = p.instrument_id
             {where}

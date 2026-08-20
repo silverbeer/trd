@@ -31,6 +31,10 @@ class InstrumentInfo(BaseModel):
     exchange: str | None = None
     sector: str | None = None
     currency: str = "USD"
+    # False for a calculated number rather than a holding — an index. It stays
+    # typed as a stock because instrument.type carries a CHECK constraint that
+    # only table surgery could widen, and 12 foreign keys point at this table.
+    tradable: bool = True
 
 
 class Instrument(BaseModel):
@@ -41,6 +45,10 @@ class Instrument(BaseModel):
     exchange: str | None = None
     sector: str | None = None
     currency: str = "USD"
+    # False for a calculated number rather than a holding — an index. It stays
+    # typed as a stock because instrument.type carries a CHECK constraint that
+    # only table surgery could widen, and 12 foreign keys point at this table.
+    tradable: bool = True
 
 
 class Account(BaseModel):
