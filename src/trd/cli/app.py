@@ -383,6 +383,14 @@ def sync(
                 f"{', '.join(result.stale_symbols)} — marks for these are stale. "
                 "Re-run 'trd sync' once the provider has published them."
             )
+        # Reported, never blocking. These cannot catch up, so counting them as
+        # stale would fail --require-current on every pass forever.
+        if result.dormant_symbols:
+            err_console.print(
+                f"[yellow]note:[/yellow] {', '.join(result.dormant_symbols)} "
+                f"stopped printing several sessions ago — halted, delisted or "
+                "renamed. Marks are frozen; consider removing them."
+            )
     # Deliberately after the report: the caller wanting to retry still gets to see
     # what happened, and a partial sync is worth keeping either way.
     if require_current and result.stale_symbols:

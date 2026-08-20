@@ -145,6 +145,18 @@ class PriceRepo:
         ).fetchall()
         return {r[0]: r[1] for r in rows}
 
+    def session_dates(self) -> list[date]:
+        """Every date any instrument has a bar for, oldest first.
+
+        The market's own session calendar, read out of the data rather than kept
+        in a table: whatever days the provider returned bars for are the days the
+        market traded. Used to measure how many *sessions* a symbol is behind,
+        which is what separates a name lagging today's publication from one that
+        has stopped trading.
+        """
+        rows = self.conn.execute("SELECT DISTINCT date FROM price_daily ORDER BY date").fetchall()
+        return [r[0] for r in rows]
+
     def latest_dates(self) -> dict[int, date]:
         """Newest stored bar date per instrument id.
 
