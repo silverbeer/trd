@@ -613,3 +613,114 @@ def test_every_strategy_warms_up_in_sessions_on_every_timeframe(timeframe) -> No
             assert bars == max(strategy.trend_sessions, strategy.signal_sessions) + 1, key
         else:
             assert strategy.warmup_daily(timeframe) == strategy.trend_sessions + 1, key
+
+
+# --------------------------------------------------- SB-788: when a bar settles
+
+
+def test_a_daily_bar_settles_at_the_bell_not_at_midnight() -> None:
+    """SB-784 made indicator exits read settled bars; measured against the
+    *bucket*, a daily bar stayed unsettled until midnight, so an exit belonging
+    to today's close landed on tomorrow's 09:30 scan — a full session of exposure
+    on the rule that closes half of all trades."""
+    source = BarSource(None, DAILY)
+    bars = make_bars(uptrend(n=3))
+    today = bars[-1].date
+
+    during = datetime.combine(today, time(11, 0))
+    assert source.settled(bars, during) == bars[:-1]  # today still moving
+
+    at_the_bell = datetime.combine(today, time(16, 0))
+    assert source.settled(bars, at_the_bell) == bars  # done, and readable
+
+
+def test_a_settled_bar_does_not_depend_on_which_scan_runs() -> None:
+    """Nothing is keyed to the 16:00 pass. An evicted pod or a busy database
+    costs nothing: the next scan, whenever it comes, sees the same settled bar —
+    which is what stops a missed final scan from silently deferring a session."""
+    source = BarSource(None, DAILY)
+    bars = make_bars(uptrend(n=3))
+    today = bars[-1].date
+
+    for missed in (
+        datetime.combine(today, time(16, 5)),  # a late pass
+        datetime.combine(today, time(23, 59)),  # nothing ran all evening
+        datetime.combine(today + timedelta(days=1), time(9, 30)),  # next morning
+    ):
+        assert source.settled(bars, missed) == bars
+
+
+def test_a_half_day_settles_on_the_clock_and_reads_the_real_close() -> None:
+    """The market closes at 13:00 several times a year and there is deliberately
+    no calendar in this engine. The scans keep running on the clock, so the bar
+    settles at 16:00 carrying the 13:00 close — the correct number, later than
+    ideal, rather than a wrong one or a deferred session."""
+    source = BarSource(None, DAILY)
+    bars = make_bars(uptrend(n=3))
+    today = bars[-1].date
+
+    assert source.settled(bars, datetime.combine(today, time(13, 30))) == bars[:-1]
+    settled = source.settled(bars, datetime.combine(today, time(16, 0)))
+    assert settled == bars
+    assert settled[-1].close == bars[-1].close  # the 13:00 close, unaltered
+
+
+def test_a_holiday_settles_nothing_new_so_nothing_can_fire() -> None:
+    """No bar is stored for a holiday at all, so the newest settled bar stays
+    yesterday's — the same reading yesterday already had, which cannot fire
+    anything new."""
+    source = BarSource(None, DAILY)
+    bars = make_bars(uptrend(n=3))
+    holiday = bars[-1].date + timedelta(days=1)
+
+    assert source.settled(bars, datetime.combine(holiday, time(12, 0))) == bars
+
+
+def test_an_intraday_bar_settles_one_width_after_its_stamp() -> None:
+    """The intraday path is unchanged by SB-788: a 5-minute engine was never a
+    session behind, and the fix must not disturb it."""
+    source = BarSource(None, "5m")
+    bars = make_intraday_bars(uptrend(n=4))
+    last = bars[-1].ts
+
+    assert source.settled(bars, last + timedelta(minutes=4)) == bars[:-1]
+    assert source.settled(bars, last + timedelta(minutes=5)) == bars
+
+
+def test_the_indicator_exit_now_fires_on_the_session_it_belongs_to() -> None:
+    """The whole point of SB-788, end to end: a close below the 20-session
+    average is acted on at the bell, not deferred to the next morning."""
+    closes = uptrend()
+    sma20 = sum(closes[-20:]) / 20
+    closes[-1] = sma20 * 0.9
+    bars = make_bars(closes)
+    source = BarSource(None, DAILY)
+    today = bars[-1].date
+    rule = exit_rules.IndicatorExit()
+    params = dict(DEFAULT_EXIT_PARAMS)
+
+    midday = datetime.combine(today, time(11, 0))
+    assert (
+        rule.check(
+            _position(bars_held=3),
+            bars,
+            source.settled(bars, midday),
+            bars[-1].close,
+            params,
+            midday,
+            DAILY,
+        )
+        is None
+    )
+
+    bell = datetime.combine(today, time(16, 0))
+    fired = rule.check(
+        _position(bars_held=3),
+        bars,
+        source.settled(bars, bell),
+        bars[-1].close,
+        params,
+        bell,
+        DAILY,
+    )
+    assert fired is not None and fired.rule == "indicator"
