@@ -7,6 +7,7 @@
 #   ./scripts/deploy-k3s.sh --skip-build    # apply manifests against the existing image
 #   ./scripts/deploy-k3s.sh --test          # apply, then run one scan now (ignores market hours)
 #   ./scripts/deploy-k3s.sh --day           # the day-mode engine (~/.trd-day) instead
+#   ./scripts/deploy-k3s.sh --bot           # the Telegram command bot (one Deployment)
 #
 # Two engines can run side by side: they share the image, the namespace and the
 # optional Telegram secret, and differ only in which database they mount. The
@@ -28,14 +29,16 @@ NAMESPACE="trd"
 SKIP_BUILD=false
 RUN_TEST=false
 DAY_MODE=false
+BOT_MODE=false
 while [[ $# -gt 0 ]]; do
     case $1 in
         --skip-build) SKIP_BUILD=true; shift ;;
         --test) RUN_TEST=true; shift ;;
         --day) DAY_MODE=true; shift ;;
+        --bot) BOT_MODE=true; shift ;;
         *)
             echo "Unknown option: $1"
-            echo "Usage: $0 [--skip-build] [--test] [--day]"
+            echo "Usage: $0 [--skip-build] [--test] [--day] [--bot]"
             exit 1
             ;;
     esac
@@ -172,6 +175,72 @@ render_manifest() {
         -e "s#value: trd-engine\$#value: ${ENGINE_NAME}#" \
         k3s/trd-engine/cronjob.yaml
 }
+
+# --- the Telegram command bot ------------------------------------------------
+# A Deployment, not a CronJob: long polling has to stay resident. It shares the
+# image and the engines' volumes but never opens a database — DuckDB is
+# single-writer and the bot is up while a scan is not, so a connection held here
+# would lock out the trading path. It reads the snapshots a scan publishes and
+# writes command files the scan drains.
+if [[ "$BOT_MODE" == true ]]; then
+    SWING_HOME="${SWING_HOME:-$HOME/.trd-engine}"
+    DAY_HOME="${DAY_HOME:-$HOME/.trd-day}"
+
+    # Both refusals below are the same idea: fail with the fix rather than start
+    # a pod that crash-loops with the answer buried in its logs.
+    if ! kubectl get secret trd-engine-telegram -n "$NAMESPACE" &>/dev/null; then
+        echo -e "${RED}✗ No trd-engine-telegram secret.${NC} The bot cannot start without a token."
+        exit 1
+    fi
+    if ! kubectl get secret trd-engine-telegram -n "$NAMESPACE" \
+        -o jsonpath='{.data.TRD_BOT_ALLOWED_USER_IDS}' 2>/dev/null | grep -q .; then
+        echo -e "${RED}✗ The secret has no TRD_BOT_ALLOWED_USER_IDS.${NC}"
+        echo "  The bot refuses to start without an allowlist — an unrestricted bot takes"
+        echo "  commands from anyone who finds it. Add your NUMERIC Telegram user id:"
+        echo ""
+        echo "    kubectl patch secret trd-engine-telegram -n trd \\"
+        echo "      -p '{\"stringData\":{\"TRD_BOT_ALLOWED_USER_IDS\":\"123456789\"}}'"
+        echo ""
+        echo "  Usernames are not accepted: they are changeable and re-registerable."
+        exit 1
+    fi
+    for home in "$SWING_HOME" "$DAY_HOME"; do
+        if [[ ! -d "$home" ]]; then
+            echo -e "${RED}✗ ${home} does not exist.${NC} Seed the engine before mounting it."
+            exit 1
+        fi
+    done
+
+    echo -e "${YELLOW}⚙️  Applying the bot Deployment...${NC}"
+    kubectl apply -f k3s/trd-engine/namespace.yaml
+    # Same rewrite as the CronJob's, one hostPath per engine home. Order matters:
+    # the swing path is the first hostPath in the file and the day path the
+    # second, so each is matched by the name of the volume above it rather than
+    # positionally.
+    sed -E \
+        -e "/name: swing-home/,/type: DirectoryOrCreate/ s#path: /Users/[^[:space:]]+#path: ${SWING_HOME}#" \
+        -e "/name: day-home/,/type: DirectoryOrCreate/ s#path: /Users/[^[:space:]]+#path: ${DAY_HOME}#" \
+        k3s/trd-engine/bot-deployment.yaml | kubectl apply -f -
+    echo -e "${GREEN}✅ Applied${NC} (trd-engine-bot → swing=${SWING_HOME}, day=${DAY_HOME})"
+    echo ""
+
+    # One poller, or Telegram permanently 409s the second one. Worth asserting
+    # rather than assuming: a stuck terminating pod is exactly how two end up
+    # running at once.
+    kubectl rollout status deployment/trd-engine-bot -n "$NAMESPACE" --timeout=90s || true
+    RUNNING=$(kubectl get pods -n "$NAMESPACE" -l component=bot \
+        --field-selector=status.phase=Running --no-headers 2>/dev/null | wc -l | tr -d ' ')
+    echo -e "${BLUE}Bot pods running:${NC} ${RUNNING}"
+    if [[ "$RUNNING" -gt 1 ]]; then
+        echo -e "${RED}⚠️  More than one poller. Telegram allows a single getUpdates per token${NC}"
+        echo -e "${RED}   and answers the rest with a permanent 409.${NC}"
+    fi
+    echo ""
+    echo -e "${BLUE}Useful:${NC}"
+    echo "    kubectl logs -n trd -l component=bot -f"
+    echo "    kubectl exec -n trd deploy/trd-engine-bot -- trd bot check"
+    exit 0
+fi
 
 echo -e "${YELLOW}⚙️  Applying manifests...${NC}"
 kubectl apply -f k3s/trd-engine/namespace.yaml
