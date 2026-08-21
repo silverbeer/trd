@@ -247,12 +247,58 @@ config), so day and swing are separate homes and the bot is told about both:
   value: swing=/engines/swing,day=/engines/day
 ```
 
-Edit the two `hostPath`s in `bot-deployment.yaml` for this machine, then:
+```bash
+./scripts/deploy-k3s.sh --bot --skip-build
+kubectl logs -n trd -l component=bot -f
+```
+
+The script rewrites both `hostPath`s for this machine — the committed
+`/Users/tomdrake/...` is a default, exactly as it is for the CronJobs — and
+refuses to apply anything if the secret has no `TRD_BOT_ALLOWED_USER_IDS`, or if
+an engine home does not exist. Both refusals print the fix: a pod that
+crash-loops with the answer buried in its logs is a worse way to learn either
+one. It then asserts that exactly one poller is running.
+
+### Finding your numeric user id
+
+The allowlist takes a numeric id and Telegram does not show you your own.
+`TRD_BOT_ALLOWED_USER_IDS` rejects usernames on purpose — they are changeable
+and re-registerable, so they are not identity.
 
 ```bash
-kubectl apply -f k3s/trd-engine/bot-deployment.yaml
-kubectl logs -n trd deploy/trd-engine-bot -f
+# 1. send any message to the bot in Telegram
+# 2.
+./scripts/telegram-whoami.sh
+user_id=123456789  username=you  chat_id=123456789
 ```
+
+It reads `getUpdates` with the token already in the cluster secret, inside a
+throwaway pod, so the token is never printed, copied, or written to a shell
+history file. It refuses to run while the bot is up: `getUpdates` allows one
+caller per token, and the second gets the 409 — asking would knock the running
+poller off its own poll.
+
+### Rotating the token
+
+Treat the token as compromised if it has ever been pasted anywhere that keeps a
+record — a chat window, a terminal transcript, a CI log. Anyone holding it can
+read every message sent to the bot and post as it, and **the allowlist does not
+help**: it filters which *users* may command the bot, not who may hold its
+credentials.
+
+```bash
+# 1. BotFather -> /revoke -> the bot -> new token
+# 2. In a terminal, with `read -rs` so it is never echoed or saved:
+read -rs TOKEN && kubectl patch secret trd-engine-telegram -n trd \
+  -p "{\"stringData\":{\"TELEGRAM_BOT_TOKEN\":\"$TOKEN\"}}" && unset TOKEN
+
+# 3. Restart the poller so it picks the new token up:
+kubectl rollout restart deploy/trd-engine-bot -n trd
+```
+
+The CronJobs need no restart — each scan is a fresh pod that reads the secret at
+start. Revoking immediately invalidates the old token, so the only cost of
+rotating is the restart above.
 
 Verify the configuration without taking the token's poll slot:
 

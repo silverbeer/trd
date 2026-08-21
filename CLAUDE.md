@@ -151,6 +151,7 @@ trd engine apply-queue [--notify]     # apply the commands the Telegram bot queu
                                       # whoever typed it, in their own chat
 trd bot serve [--passes N]            # Telegram command bot: /add SYM [engines], /rm, /status,
                                       # /book, /report, /engines. Long-polls (no public endpoint,
+                                      # cert). User guide: [docs/telegram-bot.md](docs/telegram-bot.md)
                                       # no cert), opens no database, and reads answer from the
                                       # snapshots the scan publishes. Env: TELEGRAM_BOT_TOKEN,
                                       # TRD_BOT_ENGINES='swing=/path,day=/path',
