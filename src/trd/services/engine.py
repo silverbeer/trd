@@ -16,11 +16,11 @@ the engine can react intraday.
 """
 
 from collections.abc import Sequence
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from decimal import ROUND_DOWN, Decimal
 
 import duckdb
-from pydantic import BaseModel
+from pydantic import BaseModel, computed_field
 
 from trd.build import build_version
 from trd.engine import DEFAULT_EXIT_PARAMS, EXIT_REGISTRY, evaluate_exits, missing_rules, regime
@@ -109,6 +109,15 @@ class ScanSignal(BaseModel):
 
 
 class ScanFill(BaseModel):
+    """One fill, with the context needed to explain it without a second lookup.
+
+    Everything below the first block is optional because a fill is also produced
+    in places that have no position to describe yet, and because an older stored
+    result should still load. Nothing here is new data: it is what
+    `EnginePosition` already knows, carried to the notifier so the message layer
+    never has to recompute a stop or a risk figure and get it subtly different.
+    """
+
     symbol: str
     strategy: str
     quantity: Decimal
@@ -117,6 +126,52 @@ class ScanFill(BaseModel):
     rule: str | None = None
     pnl: Decimal | None = None
     r_multiple: Decimal | None = None
+
+    # --- the trade
+    entry_price: Decimal | None = None
+    opened_at: datetime | None = None
+    closed_at: datetime | None = None
+
+    # --- the risk it was taken with
+    stop_price: Decimal | None = None
+    target_price: Decimal | None = None
+    risk_per_share: Decimal | None = None
+    # Planned 1R in dollars: risk per share x the size taken at entry. Distinct
+    # from `r_multiple`, which is what the trade actually returned in those units.
+    planned_1r: Decimal | None = None
+
+    # --- why it was taken, and how it actually filled
+    setup: str | None = None
+    trigger_price: Decimal | None = None
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def slippage_per_share(self) -> Decimal | None:
+        """Fill minus the level the rule triggered at.
+
+        Negative means the fill was worse than the level for a long: the stop said
+        get out at 355.71 and the trade left at 354.46. Only meaningful for the
+        rules that name a level — an indicator or time exit has no intended price,
+        so there is nothing to have slipped against.
+        """
+        if self.trigger_price is None:
+            return None
+        return self.price - self.trigger_price
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def slippage_total(self) -> Decimal | None:
+        per_share = self.slippage_per_share
+        if per_share is None:
+            return None
+        return per_share * self.quantity
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def held_for(self) -> timedelta | None:
+        if self.opened_at is None or self.closed_at is None:
+            return None
+        return self.closed_at - self.opened_at
 
 
 class ScanResult(BaseModel):
@@ -638,6 +693,9 @@ class EngineService:
                 continue
 
             pnl = live.pnl_at(price)
+            # The signal this trade was opened on — the setup, in the words the
+            # rule used at entry. One lookup per close, and closes are rare.
+            signal = self.signals.by_id(position.signal_id) if position.signal_id else None
             fill = ScanFill(
                 symbol=instrument.symbol,
                 strategy=position.strategy,
@@ -648,6 +706,17 @@ class EngineService:
                 rule=decision.rule,
                 pnl=pnl,
                 r_multiple=live.r_multiple_at(price),
+                entry_price=position.entry_price,
+                opened_at=position.opened_at,
+                closed_at=now,
+                stop_price=position.stop_price,
+                target_price=position.target_price,
+                risk_per_share=position.risk_per_share,
+                # Against the size taken at entry, which is what R is measured in —
+                # not against the remainder, which a trim would have changed.
+                planned_1r=position.risk_per_share * position.quantity,
+                setup=signal.reason if signal else None,
+                trigger_price=decision.level,
             )
             if paper:
                 self.txns.insert(
@@ -931,6 +1000,15 @@ class EngineService:
             quantity=plan.quantity,
             price=price,
             reason=scan_signal.reason,
+            # An entry notification that states the stop is the one a reader can
+            # act on: it says what this trade risks before it risks it.
+            entry_price=price,
+            opened_at=now,
+            stop_price=plan.stop_price,
+            target_price=plan.target_price,
+            risk_per_share=price - plan.stop_price,
+            planned_1r=(price - plan.stop_price) * plan.quantity,
+            setup=scan_signal.reason,
         )
 
     def trim(
