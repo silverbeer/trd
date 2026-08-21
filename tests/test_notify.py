@@ -102,10 +102,26 @@ def test_a_quiet_scan_still_emits_its_summary():
 def test_open_message_names_the_trade_and_the_why():
     text = open_message(OPEN_FILL)
     assert "BUY GOOGL" in text
-    assert "x3" in text
-    assert "326.56" in text
-    assert "pullback" in text
-    assert "RSI bottomed" in text
+    assert "3 sh @ 326.56" in text
+    # The registry's display name, not the dict key it is stored under.
+    assert "Pullback" in text
+    assert "pullback" not in text
+    # Labelled, so "why is this on" is answered rather than implied.
+    assert "Why we bought" in text
+    assert "Trigger: RSI bottomed" in text
+
+
+def test_a_close_answers_both_why_questions_separately():
+    """They have different answers and a reader wants one or the other: what put
+    this trade on, and what took it off."""
+    text = close_message(CLOSE_FILL)
+    assert "Why we bought" in text
+    assert "Strategy: Pullback" in text
+    assert "Why we exited" in text
+    assert "Rule: Stop Loss" in text
+    assert "Trigger: hit the stop at 303.90" in text
+    # The two sections are ordered bought-then-exited, matching the trade.
+    assert text.index("Why we bought") < text.index("Why we exited")
 
 
 def test_close_message_leads_with_the_outcome():
@@ -125,7 +141,7 @@ def test_close_message_carries_the_whole_trade():
     assert "Stop: 303.90" in text
     assert "Risk: 22.66/share" in text
     assert "Target: 371.88" in text
-    assert "Setup: RSI bottomed" in text
+    assert "Trigger: RSI bottomed" in text
 
 
 def test_planned_1r_and_realized_r_are_not_conflated():
@@ -141,8 +157,8 @@ def test_a_stop_out_separates_the_trigger_from_the_fill():
     """The stop said 303.90 and the trade left at 300.00. A message that shows one
     number cannot tell you the rule worked and the execution did not."""
     text = close_message(CLOSE_FILL)
-    assert "Triggered: 303.90" in text
-    assert "Filled: 300.00" in text
+    assert "Level: 303.90" in text
+    assert "Fill: 300.00" in text
     assert "Slippage: -3.90/share (-11.70)" in text
 
 
