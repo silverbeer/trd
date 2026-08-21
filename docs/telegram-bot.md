@@ -91,4 +91,8 @@ Operator-side checks:
 ```bash
 kubectl logs -n trd -l component=bot -f
 kubectl exec -n trd deploy/trd-engine-bot -- trd bot check
+
+# and, without needing the cluster at all:
+./scripts/telegram.sh check      # is the token live, and whose is it
+./scripts/telegram.sh send "hi"  # prove the outbound path
 ```

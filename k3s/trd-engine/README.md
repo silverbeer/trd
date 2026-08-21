@@ -268,15 +268,34 @@ and re-registerable, so they are not identity.
 ```bash
 # 1. send any message to the bot in Telegram
 # 2.
-./scripts/telegram-whoami.sh
-user_id=123456789  username=you  chat_id=123456789
+./scripts/telegram.sh whoami
+user_id=123456789  username=you  chat_id=123456789  chat_type=private
 ```
 
-It reads `getUpdates` with the token already in the cluster secret, inside a
-throwaway pod, so the token is never printed, copied, or written to a shell
-history file. It refuses to run while the bot is up: `getUpdates` allows one
-caller per token, and the second gets the 409 — asking would knock the running
-poller off its own poll.
+It refuses to run while the bot is up: `getUpdates` allows one caller per token,
+and the second gets the 409 — asking would knock the running poller off its own
+poll, trading a diagnostic for an outage.
+
+`chat_type` is worth reading. Commands are only taken in a **private** chat, so a
+`group` there means the message you sent will never be answered no matter what
+the allowlist says.
+
+### Talking to the API without a pod
+
+`scripts/telegram.sh` covers the rest of it — `check` asks whether the token is
+live and which bot it belongs to, `send` posts a message, `whoami` is above:
+
+```bash
+./scripts/telegram.sh check
+token source: 1Password (op://Personal/Telegram Bot Tokens/trd-engine-bot)
+ok — @trd_engine_bot (id 8959767886)
+```
+
+The token is resolved from `$TELEGRAM_BOT_TOKEN`, then 1Password, then the cluster
+secret, and is never printed. 1Password comes before the cluster deliberately: a
+laptop that can reach the vault does not need kubectl, so this still answers when
+the cluster is down — which is one of the times you most want to ask whether the
+token works.
 
 ### Rotating the token
 
