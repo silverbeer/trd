@@ -181,12 +181,14 @@ def _level_decision(
 def _level_price(
     decision: ExitDecision, position: EnginePosition, params: dict[str, float]
 ) -> Decimal:
-    """Where the fill lands when a level was touched intrabar: at the level."""
-    if decision.rule == "stop":
-        return position.stop_price
-    if decision.rule == "trail":
-        mult = Decimal(str(params.get("trail_atr_mult", 3.0)))
-        return position.trail_high - position.atr_at_entry * mult
+    """Where the fill lands when a level was touched intrabar: at the level.
+
+    The level comes from the decision itself — the rule that fired is the thing
+    that knows where it fired. This used to recompute it here, which meant the
+    trailing stop's chandelier arithmetic existed twice and could drift.
+    """
+    if decision.level is not None:
+        return decision.level
     return position.target_price
 
 

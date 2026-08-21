@@ -54,6 +54,14 @@ DEFAULT_EXIT_PARAMS: dict[str, float] = {
 class ExitDecision(BaseModel):
     rule: str
     reason: str
+    # The price the rule triggered at, for the rules that are about a level.
+    # Stated by the rule that fired rather than re-derived by each caller: the
+    # backtest used to recompute it in `_level_price` and a notification would
+    # have needed a third copy, and the trailing stop's level in particular is a
+    # function of state (trail_high, ATR, the multiplier) that is easy to get
+    # subtly wrong twice. Also what makes execution slippage measurable — the
+    # difference between where the rule said to get out and where the fill landed.
+    level: Decimal | None = None
 
 
 class ExitRule(ABC):
@@ -109,6 +117,7 @@ class StopLoss(ExitRule):
             return None
         return ExitDecision(
             rule=self.key,
+            level=position.stop_price,
             reason=(
                 f"hit the stop at {position.stop_price:.2f} — thesis broke, "
                 f"lost 1R ({position.risk_per_share:.2f}/share)"
@@ -144,6 +153,7 @@ class TrailingStop(ExitRule):
         given_back = position.trail_high - price
         return ExitDecision(
             rule=self.key,
+            level=trail_stop,
             reason=(
                 f"trailed out at {trail_stop:.2f} after peaking at {position.trail_high:.2f} — "
                 f"gave back {given_back:.2f}/share, kept the rest"
@@ -174,6 +184,7 @@ class ProfitTarget(ExitRule):
         r = params.get("target_r", 2.0)
         return ExitDecision(
             rule=self.key,
+            level=position.target_price,
             reason=f"hit the {r:.0f}R target at {position.target_price:.2f} — took the win",
         )
 

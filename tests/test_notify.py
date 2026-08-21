@@ -39,6 +39,23 @@ CLOSE_FILL = ScanFill(
     rule="stop",
     pnl=Decimal("-79.68"),
     r_multiple=Decimal("-1.05"),
+    entry_price=Decimal("326.56"),
+    opened_at=datetime(2026, 7, 28, 9, 45),
+    closed_at=datetime(2026, 7, 28, 11, 59),
+    stop_price=Decimal("303.90"),
+    target_price=Decimal("371.88"),
+    risk_per_share=Decimal("22.66"),
+    planned_1r=Decimal("67.98"),
+    setup="RSI bottomed at 31 and has turned up to 37",
+    trigger_price=Decimal("303.90"),
+)
+# An exit with no level to slip against — the case the Execution section drops.
+INDICATOR_FILL = CLOSE_FILL.model_copy(
+    update={
+        "rule": "indicator",
+        "reason": "closed below the 20-session average",
+        "trigger_price": None,
+    }
 )
 
 
@@ -85,18 +102,103 @@ def test_a_quiet_scan_still_emits_its_summary():
 def test_open_message_names_the_trade_and_the_why():
     text = open_message(OPEN_FILL)
     assert "BUY GOOGL" in text
-    assert "x3" in text
-    assert "326.56" in text
-    assert "pullback" in text
-    assert "RSI bottomed" in text
+    assert "3 sh @ 326.56" in text
+    # The registry's display name, not the dict key it is stored under.
+    assert "Pullback" in text
+    assert "pullback" not in text
+    # Labelled, so "why is this on" is answered rather than implied.
+    assert "Why we bought" in text
+    assert "Trigger: RSI bottomed" in text
 
 
-def test_close_message_leads_with_the_result():
+def test_a_close_answers_both_why_questions_separately():
+    """They have different answers and a reader wants one or the other: what put
+    this trade on, and what took it off."""
     text = close_message(CLOSE_FILL)
-    assert "SELL GOOGL" in text
+    assert "Why we bought" in text
+    assert "Strategy: Pullback" in text
+    assert "Why we exited" in text
+    assert "Rule: Stop Loss" in text
+    assert "Trigger: hit the stop at 303.90" in text
+    # The two sections are ordered bought-then-exited, matching the trade.
+    assert text.index("Why we bought") < text.index("Why we exited")
+
+
+def test_close_message_leads_with_the_outcome():
+    """ "SELL" is true of every exit and says nothing. The outcome is what a reader
+    is scanning for."""
+    text = close_message(CLOSE_FILL)
+    assert "GOOGL — STOPPED OUT" in text
     assert "-79.68" in text
     assert "-1.05R" in text
-    assert "stop" in text
+
+
+def test_close_message_carries_the_whole_trade():
+    text = close_message(CLOSE_FILL)
+    assert "Entry: 326.56" in text
+    assert "Exit: 300.00" in text
+    assert "Held: 2h 14m" in text
+    assert "Stop: 303.90" in text
+    assert "Risk: 22.66/share" in text
+    assert "Target: 371.88" in text
+    assert "Trigger: RSI bottomed" in text
+
+
+def test_planned_1r_and_realized_r_are_not_conflated():
+    """One is what was put at risk, the other what came back in those units.
+    Reading them as the same number is how a losing rule looks fine."""
+    text = close_message(CLOSE_FILL)
+    assert "1R: 67.98" in text  # planned, in dollars
+    assert "(-1.05R)" in text  # realized, in R
+    assert "1R: -1.05" not in text
+
+
+def test_a_stop_out_separates_the_trigger_from_the_fill():
+    """The stop said 303.90 and the trade left at 300.00. A message that shows one
+    number cannot tell you the rule worked and the execution did not."""
+    text = close_message(CLOSE_FILL)
+    assert "Level: 303.90" in text
+    assert "Fill: 300.00" in text
+    assert "Slippage: -3.90/share (-11.70)" in text
+
+
+def test_an_exit_with_no_level_has_no_execution_section():
+    """An indicator exit names no price, so there is nothing to have slipped
+    against. Printing dashes there reads as broken rather than inapplicable."""
+    text = close_message(INDICATOR_FILL)
+    assert "Execution" not in text
+    assert "Slippage" not in text
+    assert "THESIS BROKEN" in text
+
+
+def test_an_entry_states_what_it_risks_before_it_risks_it():
+    fill = OPEN_FILL.model_copy(
+        update={
+            "stop_price": Decimal("303.90"),
+            "target_price": Decimal("371.88"),
+            "risk_per_share": Decimal("22.66"),
+            "planned_1r": Decimal("67.98"),
+        }
+    )
+    text = open_message(fill)
+    assert "BUY GOOGL" in text
+    assert "Stop: 303.90" in text
+    assert "1R: 67.98" in text
+
+
+def test_a_fill_with_no_lifecycle_still_renders():
+    """Older stored results, and any fill built without a position behind it."""
+    bare = ScanFill(
+        symbol="AAA",
+        strategy="momentum",
+        quantity=Decimal("1"),
+        price=Decimal("10"),
+        reason="x",
+        rule="time",
+    )
+    text = close_message(bare)
+    assert "AAA — TIME EXIT" in text
+    assert "—" not in text.replace("AAA — TIME EXIT", "")  # no dash-padded rows
 
 
 def test_only_fills_are_pushed():
@@ -207,3 +309,35 @@ def test_http_error_never_leaks_the_token(monkeypatch):
         TelegramNotifier("supersecrettoken", "-100").send("hello")
     assert "supersecrettoken" not in str(exc.value)
     assert "401" in str(exc.value)
+
+
+def test_a_multi_day_hold_shows_both_dates():
+    """A swing trade's "when" is the part that lets you go and look at the chart.
+    "Held: 8d 23h" gives the span and not the sessions."""
+    swing = CLOSE_FILL.model_copy(
+        update={
+            "opened_at": datetime(2026, 8, 11, 10, 0),
+            "closed_at": datetime(2026, 8, 20, 9, 31),
+        }
+    )
+    text = close_message(swing)
+    assert "Entry: 326.56 · Aug 11, 10:00" in text
+    assert "Exit: 300.00 · Aug 20, 09:31" in text
+    assert "Held: 8d 23h" in text
+
+
+def test_a_same_session_trade_does_not_repeat_the_date():
+    """Noise on a day trade, and its absence is what makes a multi-day hold
+    visible at a glance."""
+    text = close_message(CLOSE_FILL)  # opened and closed 2026-07-28
+    assert "Entry: 326.56 · Jul 28, 09:45" in text
+    assert "Exit: 300.00 · 11:59" in text
+    assert text.count("Jul 28") == 1
+
+
+def test_a_fill_with_no_timestamps_still_shows_its_prices():
+    bare = CLOSE_FILL.model_copy(update={"opened_at": None, "closed_at": None})
+    text = close_message(bare)
+    assert "Entry: 326.56" in text
+    assert "Exit: 300.00" in text
+    assert "Held" not in text
