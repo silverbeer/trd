@@ -92,6 +92,16 @@ class Transport(Protocol):
     def set_commands(self, commands: list[tuple[str, str]]) -> None: ...
 
 
+def _log(message: str) -> None:
+    """Operator-facing diagnostics, straight to stdout.
+
+    Not the reply channel and not Rich: this package must stay importable
+    without a terminal, and the image runs unbuffered so `kubectl logs` sees
+    each line as it happens. Never pass a URL here — the token is in it.
+    """
+    print(message, flush=True)
+
+
 class TelegramTransport:
     """Bot API over stdlib urllib — same dependency-free choice as the notifier."""
 
@@ -337,6 +347,29 @@ class CommandBot:
                 "No authorized users. Set TRD_BOT_ALLOWED_USER_IDS to your numeric "
                 "Telegram user id — an unrestricted bot would take commands from anyone."
             )
+        # Two names for one directory is never a valid configuration, and from
+        # inside the bot it is indistinguishable from a correct one: both homes
+        # read "ok" and every command appears to work. What it actually does is
+        # lose writes. A two-engine /add queues one file per home named by
+        # update_id, so with both homes the same path the second write overwrites
+        # the first under an identical filename and one engine silently never
+        # gets the command. Shipped exactly that way on 2026-08-21, via a sed
+        # bug in the deploy script that mounted both volumes on ~/.trd-day.
+        #
+        # Resolved, so /a and /a/../a are recognised as one home.
+        by_path: dict[Path, list[str]] = {}
+        for engine in engines:
+            by_path.setdefault(engine.home.resolve(), []).append(engine.name)
+        clashes = {path: names for path, names in by_path.items() if len(names) > 1}
+        if clashes:
+            detail = "; ".join(
+                f"{' and '.join(names)} both use {path}" for path, names in clashes.items()
+            )
+            raise BotConfigError(
+                f"Two engines share one home: {detail}. Each engine is a separate "
+                "database and a separate queue directory — sharing one loses commands "
+                "rather than failing. Check TRD_BOT_ENGINES and the mounted volumes."
+            )
         self.transport = transport
         self.engines = engines
         self.allowed_user_ids = allowed_user_ids
@@ -408,8 +441,6 @@ class CommandBot:
         # and, once released, re-registerable by somebody else. `chat.type` must
         # be private — a channel post carries no reliable sender, so there would
         # be nobody to authorize, and the fills channel must stay one-way.
-        if chat.get("type") != "private":
-            return
         raw_id = sender.get("id")
         if raw_id is None:
             return
@@ -417,9 +448,22 @@ class CommandBot:
             user_id = int(raw_id)
         except (TypeError, ValueError):
             return
-        if user_id not in self.allowed_user_ids:
+        known = user_id in self.allowed_user_ids
+        if chat.get("type") != "private":
+            # Still dropped: a group post has no reliable sender to authorize and
+            # the alert channel stays one-way. But when the sender is on the
+            # allowlist there is nobody to leak to, and this is the single most
+            # likely first-use mistake — it looks exactly like a dead bot.
+            if known:
+                _log(
+                    f"ignored a {chat.get('type')} message from an authorized user: "
+                    "commands are only taken in the private chat"
+                )
+            return
+        if not known:
             # Silently. A refusal tells a scanner the bot is live and worth
-            # working on; silence is indistinguishable from a dead token.
+            # working on; silence is indistinguishable from a dead token — and
+            # logging it would let anyone who found the bot fill the log.
             return
         if not text.strip():
             return
@@ -531,9 +575,13 @@ class CommandBot:
         for chunk in Reply(text).chunks():
             try:
                 self.transport.send(chat_id, chunk)
-            except NotifyError:
+            except NotifyError as exc:
                 # A reply that will not send must not stop the bot: the command
                 # itself already succeeded, and the queue is the durable record.
+                # It must not vanish either — silence here is indistinguishable
+                # from a message that never arrived, and that ambiguity cost a
+                # full setup session to unpick.
+                _log(f"reply to chat {chat_id} failed: {exc}")
                 return
 
 
