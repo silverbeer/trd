@@ -213,13 +213,23 @@ if [[ "$BOT_MODE" == true ]]; then
 
     echo -e "${YELLOW}⚙️  Applying the bot Deployment...${NC}"
     kubectl apply -f k3s/trd-engine/namespace.yaml
-    # Same rewrite as the CronJob's, one hostPath per engine home. Order matters:
-    # the swing path is the first hostPath in the file and the day path the
-    # second, so each is matched by the name of the volume above it rather than
-    # positionally.
+    # Rewrite each hostPath by the suffix it already carries, NOT by a sed range
+    # anchored on the volume name.
+    #
+    # The range version shipped broken and is worth remembering: `name:
+    # swing-home` appears twice in the manifest (volumeMounts and volumes), so
+    # `/name: day-home/,/type: DirectoryOrCreate/` opened at the day *mount* and
+    # closed at the swing *volume* — putting the swing hostPath inside the day
+    # expression, where it was rewritten second and won. Both volumes ended up on
+    # ~/.trd-day, the swing home was not mounted at all, and both engines' queue
+    # files landed in one directory under the same update-id filename, so one
+    # silently overwrote the other.
+    #
+    # Matching the path itself has no such ambiguity: whatever the committed
+    # default is, `.trd-engine` is the swing home and `.trd-day` is the day home.
     sed -E \
-        -e "/name: swing-home/,/type: DirectoryOrCreate/ s#path: /Users/[^[:space:]]+#path: ${SWING_HOME}#" \
-        -e "/name: day-home/,/type: DirectoryOrCreate/ s#path: /Users/[^[:space:]]+#path: ${DAY_HOME}#" \
+        -e "s#path: /Users/[^[:space:]]*\.trd-engine#path: ${SWING_HOME}#" \
+        -e "s#path: /Users/[^[:space:]]*\.trd-day#path: ${DAY_HOME}#" \
         k3s/trd-engine/bot-deployment.yaml | kubectl apply -f -
     echo -e "${GREEN}✅ Applied${NC} (trd-engine-bot → swing=${SWING_HOME}, day=${DAY_HOME})"
     echo ""
