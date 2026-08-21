@@ -625,3 +625,65 @@ def test_an_index_already_in_a_universe_is_skipped_not_fatal(queue_env):
 
     assert "^VIX" not in [i.symbol for i in engine.universe()]
     engine.scan(paper=True)  # must not raise
+
+
+# ------------------------------------- SB-806: the three silences that cost a setup
+
+
+def test_a_failed_reply_says_so_in_the_log(bot, capsys):
+    """A reply that will not send must not stop the bot — the command already
+    succeeded and the queue is the durable record. It must not vanish either:
+    silence there is indistinguishable from a message that never arrived, which
+    is what turned a bot setup into an afternoon of reading offset counters."""
+    bot.transport.fail_send = True
+
+    bot.handle(message("status"))
+
+    logged = capsys.readouterr().out
+    assert "reply to chat" in logged
+    assert "nope" in logged  # the transport's reason, carried through
+
+
+def test_a_group_message_from_the_owner_is_named_in_the_log(bot, capsys):
+    """The most likely first-use mistake, and it looks exactly like a dead bot."""
+    bot.handle(message("status", chat_type="group"))
+
+    logged = capsys.readouterr().out
+    assert "ignored a group message from an authorized user" in logged
+    assert "private chat" in logged
+    assert bot.transport.replies == []  # still dropped, not answered
+
+
+def test_a_group_message_from_a_stranger_logs_nothing(bot, capsys):
+    """A refusal — or a log line anyone can fill — tells a scanner the bot is live
+    and worth working on."""
+    bot.handle(message("status", user_id=OTHER, chat_type="group"))
+
+    assert capsys.readouterr().out == ""
+    assert bot.transport.replies == []
+
+
+def test_two_engines_sharing_one_home_refuse_to_start(tmp_path: Path):
+    """From inside the bot this is indistinguishable from a correct setup — both
+    homes report "ok" — and what it actually does is lose writes: a two-engine
+    /add names both queue files by update_id, so one overwrites the other.
+
+    Shipped exactly that way on 2026-08-21 via a sed bug in the deploy script.
+    """
+    home = tmp_path / "shared"
+    home.mkdir()
+    with pytest.raises(BotConfigError) as caught:
+        CommandBot(
+            transport=FakeTransport(),
+            engines=[
+                EngineTarget("swing", home),
+                # The same directory by a different spelling — resolve() is what
+                # makes these one home rather than two.
+                EngineTarget("day", home / ".." / "shared"),
+            ],
+            allowed_user_ids={ME},
+            state_dir=home,
+        )
+    detail = str(caught.value)
+    assert "swing and day" in detail
+    assert "loses commands" in detail
