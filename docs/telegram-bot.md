@@ -81,8 +81,9 @@ says which of those applies rather than guessing.
 
 The split exists because DuckDB has one writer and the scan is the process that
 safely holds it — so a chat command never opens the database itself, it leaves an
-intent for something that already has the lock. A name added from chat is in the universe for the very next scan,
-because the queue is drained *before* the scan rather than after.
+intent for something that already has the lock. A name added from chat is in the
+universe for the very next scan, because the queue is drained *before* the scan
+rather than after.
 
 `/add` also pulls two years of history for that symbol alone and tells you whether
 it clears the engine's warmup — a name in the universe with no bars is skipped
