@@ -49,6 +49,17 @@ class ProviderError(TrdError):
     """Market data provider failed (network, upstream change, unknown symbol)."""
 
 
+class SymbolNotFoundError(ProviderError):
+    """The provider has no such ticker — as opposed to being unable to answer.
+
+    A subclass so every existing `except ProviderError` keeps catching it, while
+    a caller that can act on the difference is able to. The two used to be
+    distinguishable only by matching the message text, which is not a contract:
+    an unknown ticker is a typo to correct, and a failed request is a reason to
+    try later.
+    """
+
+
 class NotifyError(TrdError):
     """A notifier could not deliver. Never fatal — a scan that traded successfully
     must not fail because a chat message didn't send."""
