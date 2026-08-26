@@ -256,6 +256,16 @@ echo -e "${YELLOW}⚙️  Applying manifests...${NC}"
 kubectl apply -f k3s/trd-engine/namespace.yaml
 render_manifest | kubectl apply -f -
 echo -e "${GREEN}✅ Applied${NC} (${ENGINE_NAME}-scan, hostPath → ${ENGINE_HOME})"
+
+# The queue drain, deployed with its engine because it is per-home: it applies
+# the commands typed in chat when the scan is not running, which is every hour
+# the market is closed. Same rewrite, same reasons.
+sed -E \
+    -e "s#path: /Users/[^[:space:]]+#path: ${ENGINE_HOME}#" \
+    -e "s#name: trd-engine-queue#name: ${ENGINE_NAME}-queue#" \
+    -e "s#value: trd-engine\$#value: ${ENGINE_NAME}#" \
+    k3s/trd-engine/apply-queue-cronjob.yaml | kubectl apply -f -
+echo -e "${GREEN}✅ Applied${NC} (${ENGINE_NAME}-queue, every 10 min outside the session)"
 echo ""
 
 if ! kubectl get secret trd-engine-telegram -n "$NAMESPACE" &>/dev/null; then

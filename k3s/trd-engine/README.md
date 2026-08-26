@@ -168,6 +168,38 @@ variable set falls back to `swing` or `day`, read from whether the rule set has 
 Want the two feeds separated entirely? Create a second channel and give the day
 engine its own secret — the CronJob's `envFrom` name is the only thing to change.
 
+## The queue drain — chat outside market hours
+
+The queue is normally drained inside the scan, which is the process that safely
+holds DuckDB's single writer. That is right during the session and useless
+outside it: `engine-entrypoint.sh` exits at its market-hours guard long before it
+reaches the drain, and the scan CronJob does not fire in the evening at all. A
+`/add` typed at 17:23 waited sixteen hours.
+
+`${ENGINE_NAME}-queue` is a second CronJob per engine home that closes that gap:
+
+```bash
+./scripts/deploy-k3s.sh            # deploys the scan AND the queue drain
+kubectl get cronjob -n trd         # trd-engine-scan, trd-engine-queue, ...
+```
+
+It runs `*/10 * * * *`, every day, and **skips 09:25–16:05 on weekdays** because
+the scan already drains the queue there — before it scans, so a name added from
+chat is in the universe for the very next pass.
+
+Two CronJobs are not covered by each other's `concurrencyPolicy`; it is scoped to
+one. A drain that grabbed the writer as a scan started would fail **the scan**,
+which is worse than a late `/add`. Hence the window guard, deliberately wider than
+09:30–16:00 at both ends, and a `DatabaseBusyError` treated as success rather than
+a failed Job — belt and braces, because the cost of meeting a scan is asymmetric.
+
+Force one for testing, ignoring the window:
+
+```bash
+kubectl run trd-queue-now -n trd --rm -i --restart=Never --image=trd:latest \
+  --image-pull-policy=Never --env TRD_QUEUE_FORCE=1 --command -- /app/queue-entrypoint.sh
+```
+
 ## Command bot — driving the engines from chat
 
 The feed above is one-way. `trd bot serve` makes the same bot two-way, so

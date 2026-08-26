@@ -28,7 +28,10 @@ COPY src/ /app/src/
 RUN pip install --no-cache-dir --no-deps .
 
 COPY deploy/engine-entrypoint.sh /app/engine-entrypoint.sh
-RUN chmod +x /app/engine-entrypoint.sh
+# The queue drain runs as its own CronJob so a command typed outside the session
+# does not wait for the next open. Same image, different entrypoint.
+COPY deploy/queue-entrypoint.sh /app/queue-entrypoint.sh
+RUN chmod +x /app/engine-entrypoint.sh /app/queue-entrypoint.sh
 
 # uid 1000 must be able to write the mounted TRD_HOME. If the hostPath mount
 # maps to a different uid, override runAsUser in the CronJob (see k3s README).

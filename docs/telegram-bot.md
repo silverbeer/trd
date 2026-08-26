@@ -75,9 +75,13 @@ a network blip must not block a legitimate add. `/rm` is never checked: dropping
 delisted name is exactly when the provider will not resolve it.
 
 **Writes are queued, not applied.** `/add` and `/rm` drop a file in the engine's
-`commands/` directory and the next scan drains it — within five minutes during the
-session, at the next open outside it. The reply says which of those applies rather
-than guessing. The change lands on the next pass. A name added from chat is in the universe for the very next scan,
+`commands/` directory, and something drains it: the scan during the session
+(within five minutes), and a dedicated job every ten minutes outside it. The reply
+says which of those applies rather than guessing.
+
+The split exists because DuckDB has one writer and the scan is the process that
+safely holds it — so a chat command never opens the database itself, it leaves an
+intent for something that already has the lock. A name added from chat is in the universe for the very next scan,
 because the queue is drained *before* the scan rather than after.
 
 `/add` also pulls two years of history for that symbol alone and tells you whether
