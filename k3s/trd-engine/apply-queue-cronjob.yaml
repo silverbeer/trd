@@ -1,0 +1,82 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: trd-engine-queue
+  namespace: trd
+  labels:
+    app: trd
+    component: queue
+spec:
+  # Every ten minutes, every day. Chat is not a weekday-only activity, and the
+  # case this exists for is a command typed in the evening or at the weekend.
+  #
+  # The entrypoint skips 09:25-16:05 on weekdays: the scan drains the queue there
+  # itself, before it scans, so a name added from chat is in the universe for the
+  # very next pass. Cron cannot express "every day except that window" in one
+  # expression; the script can, in two comparisons.
+  schedule: "*/10 * * * *"
+  timeZone: "America/New_York"
+
+  # Same reasoning as the scan: DuckDB has one writer, so two drains must not
+  # overlap. Note this does NOT protect against the scan — concurrencyPolicy is
+  # scoped to a single CronJob — which is why the entrypoint stays out of the
+  # session window and treats a busy database as success.
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 120
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 0
+      ttlSecondsAfterFinished: 900
+      template:
+        metadata:
+          labels:
+            app: trd
+            component: queue
+        spec:
+          restartPolicy: Never
+          containers:
+            - name: trd
+              image: trd:latest
+              imagePullPolicy: Never
+              command: ["/app/queue-entrypoint.sh"]
+              env:
+                - name: TRD_HOME
+                  value: /data
+                - name: TZ
+                  value: America/New_York
+                - name: NO_COLOR
+                  value: "1"
+                - name: TRD_ENGINE_LABEL
+                  value: trd-engine
+              envFrom:
+                # The confirmation goes back to whoever typed the command, so the
+                # token is needed here too. Optional: without it the queue still
+                # drains and the reply is simply not sent.
+                - secretRef:
+                    name: trd-engine-telegram
+                    optional: true
+              resources:
+                requests:
+                  memory: "128Mi"
+                  cpu: "50m"
+                limits:
+                  memory: "512Mi"
+                  cpu: "500m"
+              securityContext:
+                runAsNonRoot: true
+                runAsUser: 1000
+                allowPrivilegeEscalation: false
+                capabilities:
+                  drop:
+                    - ALL
+              volumeMounts:
+                - name: trd-home
+                  mountPath: /data
+          volumes:
+            # EDIT for the machine you deploy to — deploy-k3s.sh rewrites it.
+            - name: trd-home
+              hostPath:
+                path: /Users/tomdrake/.trd-engine
+                type: DirectoryOrCreate
