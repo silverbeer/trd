@@ -12,7 +12,7 @@ from typing import Any
 import duckdb
 import pytest
 
-from trd.errors import NotifyError, NotTradableError
+from trd.errors import NotifyError, NotTradableError, ProviderError, SymbolNotFoundError
 from trd.models import DailyBar
 from trd.notify.bot import (
     BotConfigError,
@@ -687,3 +687,91 @@ def test_two_engines_sharing_one_home_refuse_to_start(tmp_path: Path):
     detail = str(caught.value)
     assert "swing and day" in detail
     assert "loses commands" in detail
+
+
+# ---------------------------------- SB-837: a typo should come back in seconds
+
+
+def _verifier(known: dict[str, str]):
+    """Stands in for the provider: resolves a ticker to a name, or fails the way
+    the real one does."""
+
+    def verify(symbol: str) -> str:
+        if symbol not in known:
+            raise SymbolNotFoundError(f"Symbol {symbol} not found")
+        return known[symbol]
+
+    return verify
+
+
+def _bot_with(homes, tmp_path, verify):
+    state = tmp_path / "state2"
+    state.mkdir(exist_ok=True)
+    return CommandBot(
+        transport=FakeTransport(),
+        engines=homes,
+        allowed_user_ids={ME},
+        state_dir=state,
+        verify_symbol=verify,
+    )
+
+
+def test_an_unknown_symbol_is_refused_and_nothing_is_queued(homes, tmp_path):
+    """`/add FISERV` used to answer "queued" and be corrected by the engine at
+    09:30 the next morning — sixteen hours after the ticker left your head."""
+    bot = _bot_with(homes, tmp_path, _verifier({"INTC": "Intel Corporation"}))
+
+    bot.handle(message("/add FISERV"))
+
+    assert "no such symbol" in bot.transport.replies[0]
+    assert "try again" in bot.transport.replies[0]
+    for engine in homes:
+        assert pending(engine.home) == []  # nothing written anywhere
+
+
+def test_a_known_symbol_is_queued_and_named(homes, tmp_path):
+    bot = _bot_with(homes, tmp_path, _verifier({"INTC": "Intel Corporation"}))
+
+    bot.handle(message("/add INTC"))
+
+    reply = bot.transport.replies[0]
+    assert "queued: add INTC (Intel Corporation)" in reply
+    assert [c.symbol for c in pending(homes[0].home)] == ["INTC"]
+
+
+def test_a_provider_outage_still_queues_and_says_so(homes, tmp_path, capsys):
+    """Could not ask is not the same as an answer of no. A network blip must not
+    block a legitimate add."""
+
+    def unreachable(symbol: str) -> str:
+        raise ProviderError("Info fetch failed for INTC: connection reset")
+
+    bot = _bot_with(homes, tmp_path, unreachable)
+    bot.handle(message("/add INTC"))
+
+    assert "queued: add INTC" in bot.transport.replies[0]
+    assert [c.symbol for c in pending(homes[0].home)] == ["INTC"]
+    assert "could not verify INTC" in capsys.readouterr().out
+
+
+def test_a_removal_is_never_verified(homes, tmp_path):
+    """Dropping a delisted name is exactly when the provider will not resolve it,
+    and refusing there would trap the name in the universe."""
+    bot = _bot_with(homes, tmp_path, _verifier({}))  # nothing resolves
+
+    bot.handle(message("/rm DELISTED"))
+
+    assert "queued: remove DELISTED" in bot.transport.replies[0]
+    assert [c.symbol for c in pending(homes[0].home)] == ["DELISTED"]
+
+
+def test_the_timing_sentence_matches_the_clock():
+    from trd.notify.bot import _when_applied
+
+    session = datetime(2026, 8, 26, 11, 0)  # Wednesday, mid-session
+    evening = datetime(2026, 8, 25, 17, 23)  # when /add FISERV was actually sent
+    weekend = datetime(2026, 8, 22, 11, 0)  # Saturday
+
+    assert "next scan" in _when_applied(session)
+    assert "next session open" in _when_applied(evening)
+    assert "next session open" in _when_applied(weekend)

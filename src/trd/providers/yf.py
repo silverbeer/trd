@@ -9,7 +9,7 @@ from typing import Any, cast
 import pandas as pd
 import yfinance as yf
 
-from trd.errors import ProviderError
+from trd.errors import ProviderError, SymbolNotFoundError
 from trd.models import DailyBar, EarningsDate, InstrumentInfo, InstrumentType, IntradayBar, Quote
 
 # What yfinance will actually serve, and how far back it serves it. Asking for a
@@ -154,7 +154,7 @@ class YFinanceProvider:
         except Exception as exc:
             raise ProviderError(f"Info fetch failed for {symbol}: {exc}") from exc
         if not info or info.get("quoteType") in (None, "NONE"):
-            raise ProviderError(f"Symbol {symbol} not found")
+            raise SymbolNotFoundError(f"Symbol {symbol} not found")
         return InstrumentInfo(
             symbol=symbol,
             name=info.get("longName") or info.get("shortName"),
