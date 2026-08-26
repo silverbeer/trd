@@ -60,10 +60,24 @@ feature in the way of a trade. Each scan publishes `status.json` and
 `report.json`; the bot reads those. So a read is as fresh as the last scan: up to
 five minutes old during the session, and from the 16:00 pass overnight.
 
+**An add is checked before it is queued.** A ticker the provider does not know is
+refused in the reply, and nothing is written:
+
+```
+/add FISERV
+FISERV — no such symbol. Nothing queued; check the ticker and try again.
+```
+
+A known one is named back, so a typo that happens to be a real ticker is visible
+too: `queued: add INTC (Intel Corporation) → swing, day`. If the provider cannot
+be reached the add is queued anyway and the reply says it could not be verified —
+a network blip must not block a legitimate add. `/rm` is never checked: dropping a
+delisted name is exactly when the provider will not resolve it.
+
 **Writes are queued, not applied.** `/add` and `/rm` drop a file in the engine's
 `commands/` directory and the next scan drains it — within five minutes during the
-session, at 09:30 outside it. The reply confirms the queueing; the change lands on
-the next pass. A name added from chat is in the universe for the very next scan,
+session, at the next open outside it. The reply says which of those applies rather
+than guessing. The change lands on the next pass. A name added from chat is in the universe for the very next scan,
 because the queue is drained *before* the scan rather than after.
 
 `/add` also pulls two years of history for that symbol alone and tells you whether

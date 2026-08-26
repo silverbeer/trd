@@ -7,7 +7,7 @@ import duckdb
 import pytest
 
 from trd.db.connection import connect
-from trd.errors import ProviderError
+from trd.errors import ProviderError, SymbolNotFoundError
 from trd.models import (
     AccountType,
     DailyBar,
@@ -100,7 +100,9 @@ class FakeProvider:
     def get_info(self, symbol: str) -> InstrumentInfo:
         info = self.infos.get(symbol.upper())
         if info is None:
-            raise ProviderError(f"Symbol {symbol} not found")
+            # The same type the real provider raises for an unknown ticker —
+            # a caller that branches on it must be exercised on the branch.
+            raise SymbolNotFoundError(f"Symbol {symbol} not found")
         return info
 
     def get_daily_bars(self, symbol: str, start: date, end: date) -> list[DailyBar]:

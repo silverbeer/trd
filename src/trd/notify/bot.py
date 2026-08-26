@@ -32,12 +32,15 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Protocol
 
-from trd.errors import NotifyError, TrdError
+from trd.errors import NotifyError, ProviderError, SymbolNotFoundError, TrdError
 from trd.services.commands import QUEUE_DIR, CommandKind, enqueue
+from trd.timeframes import SESSION_MINUTES, SESSION_OPEN_MINUTE
 
 API_ROOT = "https://api.telegram.org"
 
@@ -327,6 +330,29 @@ def read_snapshot(home: Path, name: str) -> str | None:
         return None
 
 
+def _when_applied(now: datetime | None = None) -> str:
+    """When the queue will actually be drained, in words that are true.
+
+    The reply used to say "applies on the next scan (<=5 min during the
+    session)" at every hour of the day, which is false for anything typed in the
+    evening — the four commands that prompted this were all sent outside a
+    session, and one of them waited sixteen hours.
+
+    A weekday clock, not a market calendar: this engine has never had one, and a
+    holiday makes the estimate optimistic rather than wrong in a way that
+    matters.
+    """
+    moment = now or datetime.now()
+    minute = moment.hour * 60 + moment.minute
+    in_session = (
+        moment.weekday() < 5
+        and SESSION_OPEN_MINUTE <= minute < SESSION_OPEN_MINUTE + SESSION_MINUTES
+    )
+    if in_session:
+        return "applies on the next scan (<=5 min)"
+    return "applies at the next session open (09:30 ET)"
+
+
 class CommandBot:
     """Poll, authorize, act, reply. Owns no database and no market data."""
 
@@ -336,6 +362,7 @@ class CommandBot:
         engines: list[EngineTarget],
         allowed_user_ids: set[int],
         state_dir: Path,
+        verify_symbol: Callable[[str], str] | None = None,
     ) -> None:
         if not engines:
             raise BotConfigError(
@@ -375,6 +402,10 @@ class CommandBot:
         self.allowed_user_ids = allowed_user_ids
         self.state_dir = state_dir
         self.offset_path = state_dir / ".telegram-offset"
+        # Injected rather than constructed here: the bot must stay buildable
+        # without a market-data provider — the tests run offline, and this is the
+        # one place it touches anything but Telegram and the queue directories.
+        self.verify_symbol = verify_symbol
 
     # ------------------------------------------------------------ offset
 
@@ -554,6 +585,31 @@ class CommandBot:
 
     def _queue(self, command: Command, update_id: int, user_id: int) -> Reply:
         assert command.symbol is not None
+        # Verify an add before writing anything. A typo used to be confirmed
+        # ("queued: add FISERV") and corrected by the engine at the next scan —
+        # 16 hours later, at 09:30 the following morning, long after the ticker
+        # you meant left your head.
+        #
+        # Only `add`: dropping a delisted name is exactly when the provider will
+        # not resolve it, and refusing there would trap the name in the universe.
+        if command.kind == CommandKind.ADD and self.verify_symbol is not None:
+            try:
+                name = self.verify_symbol(command.symbol)
+            except SymbolNotFoundError:
+                return Reply(
+                    f"{command.symbol} — no such symbol. Nothing queued; "
+                    "check the ticker and try again."
+                )
+            except ProviderError as exc:
+                # Could not ask, which is not the same as an answer of no. A
+                # network blip must not block a legitimate add, so this queues
+                # and says the check did not happen.
+                _log(f"could not verify {command.symbol}: {exc}")
+                name = ""
+            else:
+                _log(f"verified {command.symbol} ({name})")
+        else:
+            name = ""
         written = []
         for engine in command.engines:
             enqueue(
@@ -565,10 +621,10 @@ class CommandBot:
             )
             written.append(engine.name)
         verb = "add" if command.kind == CommandKind.ADD else "remove"
+        what = f"{command.symbol} ({name})" if name else command.symbol
         return Reply(
-            f"queued: {verb} {command.symbol} → {', '.join(written)}\n"
-            "applies on the next scan (<=5 min during the session); "
-            "you'll get a confirmation here."
+            f"queued: {verb} {what} → {', '.join(written)}\n"
+            f"{_when_applied()}; you'll get a confirmation here."
         )
 
     def _reply(self, chat_id: str, text: str) -> None:
@@ -646,4 +702,23 @@ def bot_from_env(env: dict[str, str] | None = None) -> CommandBot:
         engines=engines,
         allowed_user_ids=allowed_users_from_env(source),
         state_dir=state,
+        verify_symbol=_yfinance_verifier(),
     )
+
+
+def _yfinance_verifier() -> Callable[[str], str]:
+    """Resolve a ticker to its name, for checking an add before queueing it.
+
+    Imported here rather than at module scope so the bot module stays importable
+    without the provider stack — this is the only thing in it that reaches
+    anything other than Telegram and the queue directories. It still opens no
+    database: that constraint is about DuckDB's single writer, not the network.
+    """
+    from trd.providers.yf import YFinanceProvider
+
+    provider = YFinanceProvider()
+
+    def verify(symbol: str) -> str:
+        return provider.get_info(symbol).name or symbol
+
+    return verify
