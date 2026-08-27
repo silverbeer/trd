@@ -9,7 +9,7 @@
 # The token is resolved in this order and never printed:
 #
 #   1. $TELEGRAM_BOT_TOKEN                   explicit beats implicit
-#   2. 1Password                             op://Personal/Telegram Bot Tokens/trd-engine-bot
+#   2. 1Password                             op://agents/Telegram Bot Tokens/trd-engine-bot
 #   3. the cluster secret                    trd-engine-telegram in namespace trd
 #
 # 1Password before the cluster on purpose: a laptop that can reach the vault does
@@ -17,7 +17,7 @@
 # of the times you most want to ask whether the token still works.
 set -euo pipefail
 
-OP_REF="${TRD_TELEGRAM_OP_REF:-op://Personal/Telegram Bot Tokens/trd-engine-bot}"
+OP_REF="${TRD_TELEGRAM_OP_REF:-op://agents/Telegram Bot Tokens/trd-engine-bot}"
 NAMESPACE="${NAMESPACE:-trd}"
 API="https://api.telegram.org"
 
