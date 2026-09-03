@@ -18,11 +18,14 @@ padded with "—" reads as broken rather than as inapplicable.
 Plain text, no markup — see TelegramNotifier for why.
 """
 
+from collections.abc import Callable
 from datetime import datetime, timedelta
 from decimal import Decimal
 
 from trd.engine import EXIT_REGISTRY
 from trd.engine import REGISTRY as STRATEGIES
+from trd.models import StrategyStat
+from trd.services.daily_report import DailyReport, EngineDay, ExitEvent
 from trd.services.engine import ScanFill, ScanResult
 
 
@@ -234,3 +237,194 @@ def scan_messages(result: ScanResult, label: str | None = None) -> list[str]:
     return [close_message(f, label) for f in result.closed] + [
         open_message(f, label) for f in result.opened
     ]
+
+
+# ------------------------------------------------------------- daily report
+
+# Longest a loss list is allowed to get. Past this the tail is a count: the
+# reader wants the shape of a bad day, not every line of it.
+MAX_LOSS_LINES = 5
+
+# Roughly one phone screen. What gives way first is "what went badly" — its
+# per-trade detail, then the section itself — because scrolling past it to find
+# out whether you are up is how a daily message stops being read. Sections 1, 2
+# and 4 are never trimmed: they are bounded by the number of engines.
+MAX_LINES = 30
+
+# Lines a loss list costs before any loss is in it: the blank, the heading, the
+# worst-strategy line, and "today's losses by exit".
+LOSS_OVERHEAD = 4
+
+# Symbols named inside one exit rule's line. Past this the reader has the shape
+# of it and can get the rest from `trd engine positions --all`.
+MAX_NAMES_PER_RULE = 3
+
+
+def _rate(value: Decimal | None) -> str | None:
+    return f"{float(value):.0f}% win" if value is not None else None
+
+
+def _r(value: Decimal | None) -> str:
+    return f"{float(value):+.2f}R" if value is not None else "—"
+
+
+def _stat_line(stat: StrategyStat) -> str:
+    """A strategy and what it actually did — named, because "the best strategy
+    made +0.6R" is not something anyone can act on."""
+    parts = [f"{_strategy_name(stat.strategy)} {_r(stat.expectancy_r)}", f"{stat.trades} trades"]
+    rate = _rate(stat.win_rate)
+    if rate:
+        parts.append(rate)
+    return " · ".join(parts)
+
+
+def _pad(engines: list[EngineDay]) -> int:
+    return max((len(e.engine) for e in engines), default=5)
+
+
+def daily_report_message(report: DailyReport) -> str:
+    """The post-market report as one message worth reading on a phone.
+
+    Order is deliberate and is the order the questions get asked: am I up, what
+    is working, what is not, and what is still exposed. Money is never a net on
+    its own — realized and unrealized sit beside it, because an engine up only
+    on open positions is a different engine from one up on closed ones.
+    """
+    engines = report.engines
+    width = _pad(engines)
+    both = len(engines) > 1
+
+    def row(name: str, body: str) -> str:
+        return f"{name.ljust(width)}  {body}"
+
+    lines = [f"📊 trd daily — {report.on:%a %b %-d}"]
+
+    # Before any number, not after: a stale mark makes every figure below it
+    # wrong in a way that reads as a result.
+    for engine in engines:
+        if engine.error:
+            lines.append(f"⚠ {engine.engine}: {engine.error}")
+        elif engine.marks_are_stale:
+            marked = f"{engine.marked_at:%b %-d}" if engine.marked_at else "an older session"
+            lines.append(f"⚠ {engine.engine} marks are stale — priced at {marked}, not today")
+    if not report.market_open:
+        lines.append("⚠ no session stored for this date — the market may not have opened")
+
+    live = [e for e in engines if e.error is None]
+    if not live:
+        return "\n".join(lines)
+
+    lines += ["", "TODAY"]
+    for engine in live:
+        count = len(engine.exits_today)
+        detail = f"{count} exit{'' if count == 1 else 's'}" if count else "no exits"
+        lines.append(row(engine.engine, f"{_signed(engine.realized_today)} · {detail}"))
+    if both:
+        lines.append(
+            row(
+                "both",
+                f"{_signed(report.realized_today)} · "
+                f"{report.exits_today} exit{'' if report.exits_today == 1 else 's'}",
+            )
+        )
+
+    lines += ["", "SINCE START"]
+    for engine in live:
+        lines.append(
+            row(
+                engine.engine,
+                f"realized {_signed(engine.realized_all)} · "
+                f"unrealized {_signed(engine.unrealized)} · NET {_signed(engine.net)}",
+            )
+        )
+    if both:
+        lines.append(
+            row(
+                "both",
+                f"realized {_signed(report.realized_all)} · "
+                f"unrealized {_signed(report.unrealized)} · NET {_signed(report.net)}",
+            )
+        )
+
+    lines += ["", f"WORKING ({report.window_days}d)"]
+    for engine in live:
+        best = engine.best
+        lines.append(
+            row(engine.engine, _stat_line(best) if best else "not enough closed trades to say")
+        )
+
+    lines += ["", "OPEN BOOK (now)"]
+    for engine in live:
+        if engine.open_positions == 0:
+            lines.append(row(engine.engine, "flat"))
+            continue
+        lines.append(
+            row(
+                engine.engine,
+                f"{engine.open_positions} open · unrealized {_signed(engine.unrealized)} · "
+                f"at risk {_money(engine.risk_at_stop)}",
+            )
+        )
+    if both:
+        lines.append(row("both", f"at risk {_money(report.risk_at_stop)}"))
+
+    # Built last, sized by what is left of the screen, and spliced back in above
+    # the open book so the reading order is still up/down -> working -> not
+    # working -> exposure. Knowing you are down matters more than knowing which
+    # trade did it, and that detail is one `trd engine positions` away.
+    bad = _losses_section(report, live, row, budget=MAX_LINES - len(lines))
+    if bad:
+        insert = lines.index("OPEN BOOK (now)") - 1
+        lines[insert:insert] = bad
+    return "\n".join(lines)
+
+
+def _losses_section(
+    report: DailyReport,
+    live: list[EngineDay],
+    row: Callable[[str, str], str],
+    budget: int,
+) -> list[str]:
+    """The worst strategy over the window, and today's losing exits by rule.
+
+    Each loss names its `exit_reason` rather than being summed with the rest: a
+    day of stops is a broken thesis, a day of session_close is a day engine that
+    never got paid, and one total cannot tell them apart.
+
+    `budget` is how many lines are left on the screen. Too few for the heading
+    and one loss and the section is dropped whole — a truncated "what went
+    badly" is worse than none, because it looks like the full list.
+    """
+    if budget < LOSS_OVERHEAD + 1:
+        return []
+    lines: list[str] = ["", f"NOT WORKING ({report.window_days}d)"]
+    named = False
+    for engine in live:
+        if engine.worst is None:
+            continue
+        lines.append(row(engine.engine, _stat_line(engine.worst)))
+        named = True
+    if not named:
+        lines.append("no strategy has enough closed trades to blame yet")
+
+    losses = [(e.engine, loss) for e in live for loss in e.losses_today]
+    if not losses:
+        return lines
+    lines.append("today's losses by exit")
+    groups: dict[str, list[ExitEvent]] = {}
+    for _, loss in losses:
+        groups.setdefault(_rule_name(loss.rule) or "closed", []).append(loss)
+    # Worst group first, and one line per rule: five stops is a different day
+    # from five bells, and that is the whole reason these are not summed.
+    ranked = sorted(groups.items(), key=lambda kv: sum(e.pnl for e in kv[1]))
+    shown = max(1, min(MAX_LOSS_LINES, budget - len(lines) - 1))
+    for rule, events in ranked[:shown]:
+        events.sort(key=lambda e: e.pnl)
+        names = " · ".join(f"{e.symbol} {_r(e.r_multiple)}" for e in events[:MAX_NAMES_PER_RULE])
+        if len(events) > MAX_NAMES_PER_RULE:
+            names += f" · +{len(events) - MAX_NAMES_PER_RULE}"
+        total = sum((e.pnl for e in events), Decimal(0))
+        lines.append(f"  {rule} x{len(events)} {_signed(total)} — {names}")
+    if len(ranked) > shown:
+        lines.append(f"  +{len(ranked) - shown} more exit rules")
+    return lines

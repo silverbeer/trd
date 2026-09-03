@@ -104,7 +104,12 @@ class EnginePosition(BaseModel):
     status: PositionStatus = PositionStatus.OPEN
     closed_at: datetime | None = None
     exit_price: Decimal | None = None
+    # What the rule said, and which rule said it. Both, because they answer
+    # different questions: the prose explains one trade, the key is the only
+    # thing a day's exits can be grouped by. NULL on trades closed before
+    # migration 021 — a key guessed from a sentence would read as a recorded one.
     exit_reason: str | None = None
+    exit_rule: str | None = None
     # How much of the original size has been sold, and the cash it booked.
     # `quantity` stays the size taken at entry so the R denominator never moves.
     closed_quantity: Decimal = Decimal(0)

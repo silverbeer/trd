@@ -242,14 +242,15 @@ def export_data(conn: duckdb.DuckDBPyConnection) -> dict:
             "closed_at": _iso(r[13]),
             "exit_price": str(r[14]) if r[14] is not None else None,
             "exit_reason": r[15],
-            "signal_bar_ts": _iso(r[16]),
+            "exit_rule": r[16],
+            "signal_bar_ts": _iso(r[17]),
         }
         for r in rows(
             """
             SELECT a.name, i.symbol, p.strategy, p.opened_at, p.entry_price, p.quantity,
                    p.stop_price, p.target_price, p.atr_at_entry, p.trail_high, p.bars_held,
                    p.last_bar_date, p.status, p.closed_at, p.exit_price, p.exit_reason,
-                   s.bar_ts
+                   p.exit_rule, s.bar_ts
             FROM engine_position p
             JOIN account a ON a.id=p.account_id
             JOIN instrument i ON i.id=p.instrument_id
@@ -542,8 +543,8 @@ def restore_data(conn: duckdb.DuckDBPyConnection, data: dict) -> BackupStats:
             """INSERT INTO engine_position
                  (account_id, instrument_id, signal_id, strategy, opened_at, entry_price,
                   quantity, stop_price, target_price, atr_at_entry, trail_high, bars_held,
-                  last_bar_date, status, closed_at, exit_price, exit_reason)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                  last_bar_date, status, closed_at, exit_price, exit_reason, exit_rule)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             [
                 account_id[position["account"]],
                 instrument_id[position["symbol"]],
@@ -564,6 +565,9 @@ def restore_data(conn: duckdb.DuckDBPyConnection, data: dict) -> BackupStats:
                 datetime.fromisoformat(position["closed_at"]) if position["closed_at"] else None,
                 _dec(position["exit_price"]),
                 position["exit_reason"],
+                # Absent from a backup written before migration 021, which is
+                # every backup the running engines have published so far.
+                position.get("exit_rule"),
             ],
         )
 

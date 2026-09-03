@@ -1,0 +1,19 @@
+-- Which exit RULE closed a trade, as a key.
+--
+-- `exit_reason` has always held the rule's prose — "hit the stop at 359.81 —
+-- thesis broke, lost 1R (14.37/share)". That is the right thing to show a human
+-- about one trade and the wrong thing to group a day's exits by: the numbers are
+-- in the sentence, so every row is unique and nothing can count how many trades
+-- the stop took versus the bell.
+--
+-- The key was never lost by accident — `ExitDecision` carries both `rule` and
+-- `reason`, and the fill pushed to Telegram uses the key. Only the stored row
+-- dropped it, which is why the post-market report could not group exits without
+-- parsing prose written for people. Rules get reworded; their keys do not.
+--
+-- Nullable, and left NULL for every trade closed before this: there is no honest
+-- way to recover a key from a sentence, and a guessed one would be indistinguishable
+-- from a recorded one. Readers show those as plain "closed".
+--
+-- Added bare because DuckDB rejects ALTER TABLE ... ADD COLUMN with a constraint.
+ALTER TABLE engine_position ADD COLUMN exit_rule TEXT;

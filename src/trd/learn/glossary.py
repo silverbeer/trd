@@ -725,6 +725,51 @@ _ENTRIES: list[GlossaryEntry] = [
         used_in=["trd engine init --timeframe", "trd engine status", "trd sync"],
     ),
     GlossaryEntry(
+        key="daily-report",
+        term="Post-market report",
+        category=Category.ENGINE,
+        definition=(
+            "One message after the close, covering every engine, answering four "
+            "questions in this order: am I up or down, what is working, what is not, "
+            "and what is still exposed. A fill alert says a trade happened; only this "
+            "says whether the day was any good.\n\n"
+            "Read the words precisely, because three different periods appear in one "
+            "message. TODAY is cash booked by trades that CLOSED today — a trade still "
+            "running is not in it, however well it is doing. SINCE START is every "
+            "trade the engine has ever taken: realized (booked), unrealized (open "
+            "positions at their last close) and NET, which is the two added up. NET "
+            "never appears alone: an engine up only because of open positions, while "
+            "most of its closed trades lost money, is a different engine from one up "
+            "on both.\n\n"
+            "WORKING and NOT WORKING name the best and worst strategy by expectancy in "
+            "R over a trailing window (30 days by default), not by dollars — R is what "
+            "makes a $200 day trade and a $2,000 swing comparable. A strategy with "
+            "fewer than three closed trades in the window is not named at all: that is "
+            "an expectancy, not evidence.\n\n"
+            "Today's losses are grouped by the EXIT RULE that fired, never summed into "
+            "one number. Three stops is a broken thesis; three session closes is a day "
+            "engine that never got paid; one total cannot tell them apart.\n\n"
+            "OPEN BOOK is *now*, not the close: unrealized and money at risk are "
+            "current, because reconstructing a point-in-time book would need marks the "
+            "engine does not store. When the marks are behind — a symbol that lost the "
+            "09:30 race keeps yesterday's close — the report says so at the top rather "
+            "than printing a confident number, and it stays silent entirely on a date "
+            "no engine has a bar for, so a market holiday never reports as a flat day."
+        ),
+        formula=(
+            "today          = sum(booked P&L of positions closed on the date)\n"
+            "since start    = realized + unrealized  (NET)\n"
+            "working/not    = max/min expectancy in R over the trailing window\n"
+            "money at risk  = sum((mark - stop in force) x remaining qty), floored at 0"
+        ),
+        example=(
+            "'swing +5.17 · 5 exits' — five trades closed today and together booked "
+            "$5.17. The ten still open are not in that figure; they are in OPEN BOOK."
+        ),
+        related=["risk-at-stop", "expectancy", "r-multiple", "paper-trading", "survivorship"],
+        used_in=["trd engine daily-report"],
+    ),
+    GlossaryEntry(
         key="survivorship",
         term="Survivorship bias",
         category=Category.ENGINE,
