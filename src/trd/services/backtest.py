@@ -439,6 +439,7 @@ def simulate(
                 stamp if source.is_intraday else datetime.combine(today, _FILL_TIME)
             )
             position.exit_reason = decision.reason
+            position.exit_rule = decision.rule
             cash += exit_price * sold
             closed.append(position)
             del open_positions[symbol]

@@ -732,7 +732,7 @@ class EngineService:
                 self.positions.touch(
                     position.id, live.trail_high, live.bars_held, source.session(bars[-1])
                 )
-                self.positions.close(position.id, now, price, decision.reason)
+                self.positions.close(position.id, now, price, decision.reason, decision.rule)
                 closed_ids.add(position.id)
             result.closed.append(fill)
         return closed_ids

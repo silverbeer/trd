@@ -1,0 +1,110 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: trd-engine-report
+  namespace: trd
+  labels:
+    app: trd
+    component: report
+spec:
+  # 16:16 ET on weekdays. After the close (16:00) and after the day engine has
+  # flattened (15:55), so the book the report describes is the book the day
+  # ended with. The scan CronJob's entrypoint refuses to run past 16:00, so
+  # nothing holds the writer lock then.
+  #
+  # :16 rather than :15 on purpose: the queue drain fires on the ten-minute grid
+  # every day, and DuckDB has one writer. `connect()` waits out a held lock, but
+  # stepping off the grid means it usually has nothing to wait for.
+  #
+  # timeZone, so DST is handled and this does not silently become 15:16 in
+  # November — an hour when the market is still open and the numbers are not final.
+  schedule: "16 16 * * 1-5"
+  timeZone: "America/New_York"
+
+  # One report, not two. Nothing here writes trades, but a duplicated message
+  # every evening is how a channel stops being read — which is the failure this
+  # whole job exists to fix.
+  concurrencyPolicy: Forbid
+
+  # A report that starts late is still a useful report: unlike a scan, there is
+  # no next tick a few minutes away. An hour of slack covers a node that was
+  # asleep at 16:16.
+  startingDeadlineSeconds: 3600
+
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      # One attempt. A failed report is not worth retrying into the same locked
+      # database, and the command already reports a per-engine failure in the
+      # message rather than exiting non-zero.
+      backoffLimit: 0
+      ttlSecondsAfterFinished: 3600
+      template:
+        metadata:
+          labels:
+            app: trd
+            component: report
+        spec:
+          restartPolicy: Never
+          containers:
+            - name: trd
+              image: trd:latest
+              imagePullPolicy: Never # locally built, imported with ctr
+              # The entrypoint runs whatever trd subcommand it is given, so the
+              # report, the bot and the scan are one image with three arguments.
+              #
+              # Both engines in one invocation: one database is one engine, so
+              # "combined" is two reads summed, and one message covering both is
+              # the entire point — two messages would be the fill alerts again.
+              args:
+                - engine
+                - daily-report
+                - --engines
+                - swing=/engines/swing,day=/engines/day
+                - --notify
+              env:
+                - name: TZ
+                  value: America/New_York
+                - name: NO_COLOR
+                  value: "1" # plain text in kubectl logs
+              envFrom:
+                # TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID. Optional, like the scan's:
+                # without it the report still runs and prints to the pod log.
+                - secretRef:
+                    name: trd-engine-telegram
+                    optional: true
+              resources:
+                requests:
+                  memory: "128Mi"
+                  cpu: "50m"
+                limits:
+                  memory: "512Mi"
+                  cpu: "500m"
+              securityContext:
+                runAsNonRoot: true
+                # Must match the uid that owns the engine homes. The report only
+                # reads, but DuckDB opens its file read-write.
+                runAsUser: 1000
+                allowPrivilegeEscalation: false
+                capabilities:
+                  drop:
+                    - ALL
+              volumeMounts:
+                # The same two homes the bot mounts, under the same names, so the
+                # engine called "day" in chat is the engine called "day" here.
+                - name: swing-home
+                  mountPath: /engines/swing
+                - name: day-home
+                  mountPath: /engines/day
+          volumes:
+            # EDIT these paths for the machine you deploy to — deploy-k3s.sh rewrites
+            # them by the suffix each one already carries.
+            - name: swing-home
+              hostPath:
+                path: /Users/tomdrake/.trd-engine
+                type: DirectoryOrCreate
+            - name: day-home
+              hostPath:
+                path: /Users/tomdrake/.trd-day
+                type: DirectoryOrCreate
