@@ -200,6 +200,99 @@ kubectl run trd-queue-now -n trd --rm -i --restart=Never --image=trd:latest \
   --image-pull-policy=Never --env TRD_QUEUE_FORCE=1 --command -- /app/queue-entrypoint.sh
 ```
 
+## Post-market report — was the day any good
+
+The fill feed says a trade happened. It never says whether the day was good, which
+is how a system that runs every day stops being read. One CronJob fixes that with
+one message after the close, covering both engines:
+
+```bash
+./scripts/deploy-k3s.sh --report      # 16:16 ET, weekdays, swing + day in one message
+```
+
+Run it by hand against the live homes, no schedule and no Telegram:
+
+```bash
+TRD_HOME=~/.trd-engine trd engine daily-report \
+  --engines swing=$HOME/.trd-engine,day=$HOME/.trd-day
+```
+
+Send one now from the cluster:
+
+```bash
+kubectl create job -n trd --from=cronjob/trd-engine-report report-now
+kubectl logs -n trd -l component=report --tail=50
+```
+
+### What it says, and what each word means exactly
+
+```
+📊 trd daily — Thu Sep 3
+
+TODAY
+swing  +5.17 · 5 exits
+day    +0.24 · 10 exits
+both   +5.40 · 15 exits
+
+SINCE START
+swing  realized +89.80 · unrealized +18.68 · NET +108.49
+...
+
+WORKING (30d)
+swing  Pullback +0.13R · 15 trades · 53% win
+
+NOT WORKING (30d)
+swing  Momentum -0.36R · 8 trades · 12% win
+today's losses by exit
+  Stop Loss x3 -18.40 — SNOW -1.10R · AMD -0.98R · INTC -0.31R
+
+OPEN BOOK (now)
+swing  10 open · unrealized +18.68 · at risk 96.27
+day    flat
+```
+
+Three different periods appear in one message, so the words are load-bearing:
+
+- **TODAY** is cash booked by trades that *closed* today. A trade still running is
+  not in it, however well it is doing.
+- **SINCE START** is every trade the engine has taken. NET is realized plus
+  unrealized and never appears without both halves — an engine up only on open
+  positions is a different engine from one up on closed ones.
+- **WORKING / NOT WORKING** rank strategies by expectancy in **R** over a trailing
+  window, not in dollars: R is what makes a $200 day trade and a $2,000 swing
+  comparable. A strategy with fewer than three closed trades in the window is not
+  named — that is an expectancy, not evidence.
+- **today's losses** are grouped by the exit *rule*. Three stops is a broken
+  thesis; three session closes is a day engine that never got paid; one total
+  cannot tell them apart.
+- **OPEN BOOK** is *now*, not the close: reconstructing a point-in-time book would
+  need marks the engine does not store.
+
+`trd learn daily-report` is the same definition list, on the machine.
+
+### When it stays quiet, and when it warns
+
+- **A date no engine has a bar for sends nothing.** No trading calendar is needed:
+  a market holiday is a day nobody stored a session for. A report that posted
+  "flat, nothing happened" every Thanksgiving would train its reader to ignore it.
+- **Stale marks are stated at the top**, above the numbers they would break. A
+  symbol that lost the 09:30 race to publication keeps yesterday's close, and
+  every figure drawn from it — unrealized, risk, NET — is quietly wrong.
+- **An unreadable engine home is named, not fatal.** Losing the swing engine's
+  numbers because the day engine is unmounted is exactly how a daily report stops
+  being trusted. The job still exits 0: a named problem in the message beats a pod
+  that simply failed.
+
+### Why 16:16, and why one job for both engines
+
+The day engine flattens at 15:55 and the scan entrypoint refuses to run past
+16:00, so nothing holds the writer lock by then. The `:16` is deliberate too —
+the queue drain fires on the ten-minute grid, and DuckDB has one writer.
+
+One database is one engine, so "combined" is two reads summed rather than one
+query, and the job mounts both homes exactly as the bot does. Deploying it per
+engine would produce two messages a night, which is the fill feed again.
+
 ## Command bot — driving the engines from chat
 
 The feed above is one-way. `trd bot serve` makes the same bot two-way, so

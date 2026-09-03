@@ -89,6 +89,25 @@ rather than after.
 it clears the engine's warmup — a name in the universe with no bars is skipped
 every pass and reads as a broken engine rather than one warming up.
 
+## What arrives without you asking
+
+Two things push into the chat on their own:
+
+- **A fill**, when a position opens or closes. What happened, what it risked, why
+  the rule fired.
+- **The post-market report, once a day, after the close** — one message covering
+  both engines. Today's booked P&L and how many trades closed, the running
+  realized / unrealized / NET, the best and worst strategy by expectancy in R over
+  the last 30 days, today's losses grouped by which exit rule fired, and what the
+  open book loses if every stop hits.
+
+The report is facts, not judgement: it says the day was down 40 and that three
+stops did it, never whether taking those trades was a mistake. Read the periods
+carefully — "TODAY" is cash booked by trades that *closed* today, while the open
+book is priced *now*. `trd learn daily-report` defines every line, and if the
+marks it is drawing on are stale it says so at the top instead of printing a
+confident number. On a day the market did not open, nothing is sent at all.
+
 ## What it deliberately will not do
 
 **There is no order placement.** The engines trade simulation accounts, and

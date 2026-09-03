@@ -8,6 +8,7 @@
 #   ./scripts/deploy-k3s.sh --test          # apply, then run one scan now (ignores market hours)
 #   ./scripts/deploy-k3s.sh --day           # the day-mode engine (~/.trd-day) instead
 #   ./scripts/deploy-k3s.sh --bot           # the Telegram command bot (one Deployment)
+#   ./scripts/deploy-k3s.sh --report        # the post-market report (one CronJob, both engines)
 #
 # Two engines can run side by side: they share the image, the namespace and the
 # optional Telegram secret, and differ only in which database they mount. The
@@ -30,15 +31,17 @@ SKIP_BUILD=false
 RUN_TEST=false
 DAY_MODE=false
 BOT_MODE=false
+REPORT_MODE=false
 while [[ $# -gt 0 ]]; do
     case $1 in
         --skip-build) SKIP_BUILD=true; shift ;;
         --test) RUN_TEST=true; shift ;;
         --day) DAY_MODE=true; shift ;;
         --bot) BOT_MODE=true; shift ;;
+        --report) REPORT_MODE=true; shift ;;
         *)
             echo "Unknown option: $1"
-            echo "Usage: $0 [--skip-build] [--test] [--day] [--bot]"
+            echo "Usage: $0 [--skip-build] [--test] [--day] [--bot] [--report]"
             exit 1
             ;;
     esac
@@ -175,6 +178,46 @@ render_manifest() {
         -e "s#value: trd-engine\$#value: ${ENGINE_NAME}#" \
         k3s/trd-engine/cronjob.yaml
 }
+
+# --- the post-market report --------------------------------------------------
+# One CronJob covering BOTH engines, because the whole point is one message a day
+# rather than one per engine per fill. It mounts the same two homes the bot does
+# and under the same names, so the engine called "day" in chat is the engine
+# called "day" in the report.
+#
+# Not per-engine, so it is deployed once and does not take --day.
+if [[ "$REPORT_MODE" == true ]]; then
+    SWING_HOME="${SWING_HOME:-$HOME/.trd-engine}"
+    DAY_HOME="${DAY_HOME:-$HOME/.trd-day}"
+
+    for home in "$SWING_HOME" "$DAY_HOME"; do
+        if [[ ! -d "$home" ]]; then
+            echo -e "${RED}✗ ${home} does not exist.${NC} Seed the engine before mounting it."
+            exit 1
+        fi
+    done
+    # Not fatal, unlike the bot: a report with no token still runs and prints to
+    # the pod log, which is a legitimate way to run it while trying it out.
+    if ! kubectl get secret trd-engine-telegram -n "$NAMESPACE" &>/dev/null; then
+        echo -e "${YELLOW}⚠ No trd-engine-telegram secret — the report will log, not send.${NC}"
+    fi
+
+    echo -e "${YELLOW}⚙️  Applying the report CronJob...${NC}"
+    kubectl apply -f k3s/trd-engine/namespace.yaml
+    # Same per-suffix rewrite as the bot, for the same reason: `name: swing-home`
+    # appears twice, so a sed range anchored on the volume name puts both
+    # hostPaths on one engine. Matching the path itself has no such ambiguity.
+    sed -E \
+        -e "s#path: /Users/[^[:space:]]*\.trd-engine#path: ${SWING_HOME}#" \
+        -e "s#path: /Users/[^[:space:]]*\.trd-day#path: ${DAY_HOME}#" \
+        k3s/trd-engine/daily-report-cronjob.yaml | kubectl apply -f -
+    echo -e "${GREEN}✅ Applied${NC} (trd-engine-report, 16:16 ET weekdays → swing=${SWING_HOME}, day=${DAY_HOME})"
+    echo ""
+    echo -e "${BLUE}Send one now (ignores the schedule, not the market calendar):${NC}"
+    echo "    kubectl create job -n trd --from=cronjob/trd-engine-report report-now"
+    echo "    kubectl logs -n trd -l component=report --tail=50"
+    exit 0
+fi
 
 # --- the Telegram command bot ------------------------------------------------
 # A Deployment, not a CronJob: long polling has to stay resident. It shares the

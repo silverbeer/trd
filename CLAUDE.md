@@ -149,6 +149,22 @@ trd engine apply-queue [--notify]     # apply the commands the Telegram bot queu
                                       # them. Runs before the scan, so a name added from chat is in
                                       # the universe for the very next pass. --notify answers
                                       # whoever typed it, in their own chat
+trd engine daily-report [--json] [--date ISO] [--engines swing=/a,day=/b] [--window 30]
+                      [--notify]
+                                      # post-market report, both engines in ONE message: today's
+                                      # realized + exits, since-start realized/unrealized/NET,
+                                      # best and worst strategy by expectancy in R over a trailing
+                                      # window, today's losses GROUPED BY EXIT RULE, and money at
+                                      # risk on the open book. Facts only — no judgement.
+                                      # 'today' is cash booked by trades that CLOSED today; the
+                                      # open book is always *now*, and says so. Stale marks are
+                                      # stated at the top, never averaged into a confident number,
+                                      # and a date no engine has a bar for sends nothing at all
+                                      # (a market holiday must never report as a flat day).
+                                      # One database is one engine, so 'both' is two reads summed;
+                                      # --engines defaults to TRD_BOT_ENGINES, the same variable
+                                      # the bot uses, so chat and the report cannot name engines
+                                      # differently. 'trd learn daily-report' defines every line
 trd bot serve [--passes N]            # Telegram command bot: /add SYM [engines], /rm, /status,
                                       # /book, /report, /engines. Long-polls (no public endpoint,
                                       # cert). User guide: [docs/telegram-bot.md](docs/telegram-bot.md)
@@ -183,6 +199,13 @@ Unattended runs live in two places — use one, never both (DuckDB is single-wri
   the engine scan, and `engine-publish.sh`, which copies the engine's `status.txt` and
   `engine-backup.json` into iCloud. The publisher pairs with *either* runner because it
   only copies files and never opens the database.
+
+The post-market report is its own CronJob (`k3s/trd-engine/daily-report-cronjob.yaml`,
+`./scripts/deploy-k3s.sh --report`): 16:16 ET on weekdays, mounting *both* engine homes
+and sending one message. Deployed once, not per engine — one message covering both is
+the whole point, and two would be the fill alerts again. It runs after the scan
+CronJob's entrypoint has stopped for the day (it refuses past 16:00), and off the
+ten-minute grid the queue drain uses, so it is not waiting on the writer lock.
 
 The Telegram command bot is a **Deployment**, not a CronJob — long polling has to stay
 resident: `k3s/trd-engine/bot-deployment.yaml`. `replicas: 1` and `strategy: Recreate`

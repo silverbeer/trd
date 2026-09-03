@@ -26,7 +26,7 @@ _SIGNAL_COLS = "id, run_id, instrument_id, strategy, bar_ts, fired_at, price, sc
 _POSITION_COLS = (
     "id, account_id, instrument_id, signal_id, strategy, opened_at, entry_price, quantity, "
     "stop_price, target_price, atr_at_entry, trail_high, bars_held, last_bar_date, status, "
-    "closed_at, exit_price, exit_reason, closed_quantity, booked_pnl"
+    "closed_at, exit_price, exit_reason, exit_rule, closed_quantity, booked_pnl"
 )
 _RUN_COLS = "id, started_at, scanned, signals, opened, closed, paper, note"
 
@@ -92,10 +92,11 @@ def _row_to_position(row: tuple) -> EnginePosition:
         closed_at=row[15],
         exit_price=row[16],
         exit_reason=row[17],
+        exit_rule=row[18],
         # Nullable in the schema: DuckDB rejects ADD COLUMN with a constraint, so a
         # row written before migration 016 reads NULL and means 'nothing sold yet'.
-        closed_quantity=row[18] if row[18] is not None else Decimal(0),
-        booked_pnl=row[19] if row[19] is not None else Decimal(0),
+        closed_quantity=row[19] if row[19] is not None else Decimal(0),
+        booked_pnl=row[20] if row[20] is not None else Decimal(0),
     )
 
 
@@ -392,7 +393,12 @@ class EnginePositionRepo:
         )
 
     def close(
-        self, position_id: int, closed_at: datetime, exit_price: Decimal, exit_reason: str
+        self,
+        position_id: int,
+        closed_at: datetime,
+        exit_price: Decimal,
+        exit_reason: str,
+        exit_rule: str | None = None,
     ) -> None:
         """Sell whatever is left and book the result.
 
@@ -409,6 +415,7 @@ class EnginePositionRepo:
             SET status = ?,
                 closed_at = ?,
                 exit_reason = ?,
+                exit_rule = ?,
                 exit_price = CASE
                     WHEN coalesce(closed_quantity, 0) > 0 AND quantity > 0
                         THEN (coalesce(exit_price, 0) * coalesce(closed_quantity, 0)
@@ -424,6 +431,7 @@ class EnginePositionRepo:
                 PositionStatus.CLOSED.value,
                 closed_at,
                 exit_reason,
+                exit_rule,
                 exit_price,
                 exit_price,
                 exit_price,

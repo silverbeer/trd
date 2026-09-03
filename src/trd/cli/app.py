@@ -60,7 +60,13 @@ from trd.engine.bars import DAILY
 from trd.errors import TrdError
 from trd.models import AccountType, BrokerSnapshot, Side, SizingMode
 from trd.notify import label_from_env, scan_messages
-from trd.notify.bot import POLL_TIMEOUT, BotConfigError, bot_from_env
+from trd.notify.bot import (
+    POLL_TIMEOUT,
+    BotConfigError,
+    bot_from_env,
+    engines_from_env,
+)
+from trd.notify.messages import daily_report_message
 from trd.notify.telegram import TelegramNotifier
 from trd.notify.telegram import from_env as notify_from_env
 from trd.providers import YFinanceProvider
@@ -87,6 +93,13 @@ from trd.services import (
 )
 from trd.services.backtest import BacktestService, FillMode
 from trd.services.commands import CommandQueueService
+from trd.services.daily_report import (
+    DEFAULT_WINDOW_DAYS,
+    DailyReport,
+    EngineDay,
+    engine_day,
+    failed_engine,
+)
 from trd.services.engine import (
     DEFAULT_EARNINGS_BLACKOUT_DAYS,
     DEFAULT_ENGINE_ACCOUNT,
@@ -2199,6 +2212,112 @@ def engine_report(as_json: JsonOpt = False) -> None:
         console.print("No trades yet. Run [bold]trd engine scan[/bold] for a while first.")
         return
     console.print(engine_report_table(stats))
+
+
+@engine_app.command("daily-report")
+def engine_daily_report(
+    date_str: Annotated[
+        str | None,
+        typer.Option("--date", "-d", help="Session to report (YYYY-MM-DD). Default: today."),
+    ] = None,
+    engines: Annotated[
+        str | None,
+        typer.Option(
+            "--engines",
+            help="Engines to cover: 'swing=/path,day=/path'. Default: TRD_BOT_ENGINES, "
+            "else this TRD_HOME alone.",
+        ),
+    ] = None,
+    window: Annotated[
+        int,
+        typer.Option("--window", help="Days of closed trades behind 'what is working'."),
+    ] = DEFAULT_WINDOW_DAYS,
+    notify: Annotated[
+        bool, typer.Option("--notify", help="Send the report to the configured chat (Telegram).")
+    ] = False,
+    as_json: JsonOpt = False,
+) -> None:
+    """The post-market report: up or down, what worked, what did not, what is at risk.
+
+    One message a day covering every engine, because a fill alert says a trade
+    happened and never whether the day was good. Facts only — no judgement about
+    whether a decision was right, which needs measurements the engine does not
+    take yet.
+
+    Nothing is sent on a date no engine has a bar for: a report that posts
+    "flat, nothing happened" on Thanksgiving trains its reader to ignore it.
+    """
+    _use_json(as_json)
+    on = (_parse_date(date_str) or datetime.now()).date()
+    try:
+        targets = _report_targets(engines)
+    except TrdError as exc:
+        _fail(exc)
+        return
+
+    days: list[EngineDay] = []
+    for name, home in targets:
+        db_path = home / "trd.duckdb"
+        if not db_path.exists():
+            # Never `connect` a path that is not there: it would create an empty
+            # database in a directory that was probably a typo, and then report
+            # a healthy engine with no trades.
+            days.append(failed_engine(name, f"no database at {db_path}"))
+            continue
+        service = None
+        try:
+            service = EngineService(connect(db_path), YFinanceProvider())
+            days.append(engine_day(service, name, on, window_days=window))
+        except TrdError as exc:
+            days.append(failed_engine(name, str(exc)))
+        finally:
+            if service is not None:
+                service.conn.close()
+
+    report = DailyReport(on=on, window_days=window, engines=days)
+    if as_json:
+        _emit_json(report)
+        return
+
+    message = daily_report_message(report)
+    # Neither markup nor highlighting: an engine named in square brackets is
+    # Rich markup, and the terminal would silently eat '[swing]'.
+    console.print(message, markup=False, highlight=False)
+    if not notify:
+        return
+    if not report.market_open:
+        console.print("[dim]No session stored for this date — nothing sent.[/dim]")
+        return
+    notifier = notify_from_env()
+    if notifier is None:
+        err_console.print(
+            "[yellow]warning:[/yellow] --notify set but TELEGRAM_BOT_TOKEN / "
+            "TELEGRAM_CHAT_ID are not configured — nothing sent."
+        )
+        return
+    try:
+        notifier.send(message)
+    except TrdError as exc:
+        err_console.print(f"[yellow]warning:[/yellow] notification failed: {exc}")
+
+
+def _report_targets(spec: str | None) -> list[tuple[str, Path]]:
+    """Which engines the daily report covers, and where their homes are.
+
+    `--engines` first, then TRD_BOT_ENGINES — the same variable the bot
+    Deployment already sets, so the report job mounts and names the engines
+    exactly as chat does and the two cannot drift. With neither, it reports the
+    single engine this TRD_HOME points at, which is what makes the command
+    runnable by hand.
+    """
+    raw = (spec or "").strip()
+    env = dict(os.environ) if not raw else {"TRD_BOT_ENGINES": raw}
+    targets = engines_from_env(env)
+    if targets:
+        return [(t.name, t.home) for t in targets]
+    # TRD_ENGINE_LABEL, or a neutral name — deliberately not label_from_env(),
+    # whose day/swing fallback reads the rule set, which is not open yet here.
+    return [(os.environ.get("TRD_ENGINE_LABEL", "").strip() or "engine", get_settings().home)]
 
 
 @engine_app.command("runs")
