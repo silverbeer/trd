@@ -47,6 +47,8 @@ from trd.cli.render import (
     indicator_panel,
     lots_table,
     movers_table,
+    outcome_summary_renderables,
+    outcome_trades_table,
     plans_pnl_table,
     positions_table,
     prep_history_table,
@@ -107,6 +109,7 @@ from trd.services.engine import (
     scan_events,
 )
 from trd.services.indicators import seed_defaults
+from trd.services.outcomes import OutcomeService
 from trd.services.plan import PlanStatus
 from trd.services.watchlist import DEFAULT_WATCHLIST
 
@@ -2318,6 +2321,79 @@ def _report_targets(spec: str | None) -> list[tuple[str, Path]]:
     # TRD_ENGINE_LABEL, or a neutral name — deliberately not label_from_env(),
     # whose day/swing fallback reads the rule set, which is not open yet here.
     return [(os.environ.get("TRD_ENGINE_LABEL", "").strip() or "engine", get_settings().home)]
+
+
+@engine_app.command("outcomes")
+def engine_outcomes(
+    backfill: Annotated[
+        bool,
+        typer.Option("--backfill", help="Measure every trade and signal not measured yet."),
+    ] = False,
+    recompute: Annotated[
+        bool,
+        typer.Option("--recompute", help="Re-measure everything, even rows already stored."),
+    ] = False,
+    trades: Annotated[
+        bool, typer.Option("--trades", help="Per-trade detail instead of the averages.")
+    ] = False,
+    limit: Annotated[
+        int, typer.Option("--limit", "-n", help="How many trades to show with --trades.")
+    ] = 25,
+    as_json: JsonOpt = False,
+) -> None:
+    """Did we enter too early, did we exit too early, and what did the signals we
+    passed over go on to do.
+
+    MAE is the heat a trade took before it worked, MFE is the best it ever
+    looked, capture is the share of that it kept, and follow-through is where
+    price went after the exit. All in R, so a $10 day trade and a $100 swing are
+    the same measurement. 'trd learn mae' defines each one.
+
+    The signals table is the uncomfortable one: every signal the engine declined
+    is stored, and this walks them forward against the stop the engine itself
+    would have set. Signals that fired with the book already full are counted
+    separately — they could not have been taken, whatever they did next.
+
+    Nothing here judges a trade. It is arithmetic, so that anything reasoning
+    over it is arguing from measurement rather than from memory.
+    """
+    _use_json(as_json)
+    service = OutcomeService(connect(get_settings().db_path))
+    try:
+        if backfill or recompute:
+            with _spinner("Measuring trades and signals..."):
+                stats = service.backfill(recompute=recompute)
+            if not as_json:
+                console.print(
+                    f"Measured [bold]{stats.trades_measured}[/bold] trade(s) and "
+                    f"[bold]{stats.signals_measured}[/bold] signal(s); "
+                    f"{stats.trades_skipped + stats.signals_skipped} already done or "
+                    "not measurable."
+                )
+        if trades:
+            rows = service.trade_rows(limit=limit)
+            if as_json:
+                _emit_json([o for o, _, _ in rows])
+                return
+            if not rows:
+                console.print(
+                    "Nothing measured yet. Run [bold]trd engine outcomes --backfill[/bold]."
+                )
+                return
+            console.print(outcome_trades_table(rows))
+            return
+        summary = service.summary()
+    except TrdError as exc:
+        _fail(exc)
+        return
+    if as_json:
+        _emit_json(summary)
+        return
+    if summary.measured_trades == 0 and summary.measured_signals == 0:
+        console.print("Nothing measured yet. Run [bold]trd engine outcomes --backfill[/bold].")
+        return
+    for renderable in outcome_summary_renderables(summary):
+        console.print(renderable)
 
 
 @engine_app.command("runs")

@@ -31,10 +31,12 @@ from trd.models.engine import (
     ExitOutlook,
     PositionRow,
     PositionStatus,
+    SignalOutcome,
     SignalRow,
     SizingMode,
     StrategyStat,
     TradeExplanation,
+    TradeOutcome,
 )
 from trd.models.reconcile import (
     QUANTITY_TOLERANCE,
@@ -80,10 +82,12 @@ __all__ = [
     "ReconcileStatus",
     "Reconciliation",
     "Side",
+    "SignalOutcome",
     "SignalRow",
     "SizingMode",
     "StrategyStat",
     "TradeExplanation",
+    "TradeOutcome",
     "Transaction",
     "Watchlist",
 ]
