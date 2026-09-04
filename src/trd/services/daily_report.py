@@ -22,7 +22,7 @@ open book is marked against a stale close, and that travels to the top of the
 message rather than being averaged into a confident number.
 """
 
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 
 from pydantic import BaseModel, computed_field
@@ -44,9 +44,11 @@ MIN_WINDOW_TRADES = 3
 class ExitEvent(BaseModel):
     """One position the engine closed on the session being reported.
 
-    `rule` is the stored `exit_reason`. Kept separate per exit rather than summed,
-    because stop / target / trail / time / session_close mean entirely different
-    things about a trade and lumping them is exactly the signal being looked for.
+    Carries the whole trade, not just its result: what it paid, what it sold for,
+    how long it was on and which rule ended it. The first question a count of
+    exits provokes is which trades they were, and answering that used to mean
+    filtering `engine positions --all --json` by date — a missing command
+    wearing a query's clothes.
     """
 
     symbol: str
@@ -54,12 +56,32 @@ class ExitEvent(BaseModel):
     # The exit rule's key, from `exit_rule` — NULL on trades closed before
     # migration 021, which read as a plain "closed".
     rule: str | None = None
-    # The rule's own words about this trade. Not rendered in the message (the
-    # numbers inside it make every row unique, which is what stops it being
-    # groupable) but carried in --json, where a reader wants the sentence.
+    # The rule's own words about this trade. Not rendered per line (the numbers
+    # inside it make every row unique, which is what stops it being groupable)
+    # but carried in --json, where a reader wants the sentence.
     reason: str | None = None
     pnl: Decimal
     r_multiple: Decimal | None = None
+
+    # -- the legs
+    entry_price: Decimal | None = None
+    exit_price: Decimal | None = None
+    quantity: Decimal | None = None
+    opened_at: datetime | None = None
+    closed_at: datetime | None = None
+    # Sessions, not bars: what the engine counted while the trade was on. On a
+    # 5-minute engine this is bars and reads as noise, which is why the renderer
+    # asks the engine's timeframe before deciding how to say "how long".
+    bars_held: int = 0
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def held_for(self) -> timedelta | None:
+        """Wall-clock time the trade was on, for an intraday engine where
+        "3 sessions" would describe a trade that lasted nineteen minutes."""
+        if self.opened_at is None or self.closed_at is None:
+            return None
+        return self.closed_at - self.opened_at
 
 
 class EngineDay(BaseModel):
@@ -67,6 +89,9 @@ class EngineDay(BaseModel):
 
     engine: str
     account: str = ""
+    # The bar width this engine trades. Here so the renderer can say "10 sessions"
+    # about a swing trade and "49m" about a 5-minute one without a second lookup.
+    timeframe: str = "1d"
     # The newest session this engine has bars for. The market-open test: on a
     # holiday it is the previous trading day, and no engine has today.
     last_session: date | None = None
@@ -205,6 +230,15 @@ def engine_day(
                     reason=position.exit_reason,
                     pnl=position.realized_pnl or Decimal(0),
                     r_multiple=position.realized_r,
+                    entry_price=position.entry_price,
+                    # The quantity-weighted average across every exit this trade
+                    # had, which is the only price that describes the whole trade
+                    # once it has been trimmed.
+                    exit_price=position.exit_price,
+                    quantity=position.quantity,
+                    opened_at=position.opened_at,
+                    closed_at=position.closed_at,
+                    bars_held=position.bars_held,
                 )
             )
         if cutoff < closed_on <= on:
@@ -214,8 +248,12 @@ def engine_day(
     return EngineDay(
         engine=name,
         account=account.name,
+        timeframe=status.timeframe,
         last_session=status.bars_last,
-        exits_today=sorted(exits, key=lambda e: e.pnl),
+        # Best first, worst last, ranked in R rather than dollars: the win of
+        # the day is the top line, and R is what makes two differently sized
+        # trades comparable in the same list.
+        exits_today=sorted(exits, key=_rank, reverse=True),
         # Only trades that closed today. A partial trim taken today on a position
         # still running books real cash and is NOT counted here — it lands in
         # `realized_all` (and so in NET) when it happens, and in this line only
@@ -232,6 +270,15 @@ def engine_day(
         best=best,
         worst=worst,
     )
+
+
+def _rank(event: ExitEvent) -> Decimal:
+    """Where a trade sits in the day. R when the trade has one — a stop that was
+    never reachable leaves none — and dollars scaled far down otherwise, so an
+    unrankable trade sorts among trades of its own sign rather than at the top."""
+    if event.r_multiple is not None:
+        return event.r_multiple
+    return event.pnl / Decimal(1000)
 
 
 def _best_and_worst(

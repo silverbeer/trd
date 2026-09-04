@@ -24,6 +24,7 @@ from decimal import Decimal
 
 from trd.engine import EXIT_REGISTRY
 from trd.engine import REGISTRY as STRATEGIES
+from trd.engine.bars import DAILY
 from trd.models import StrategyStat
 from trd.services.daily_report import DailyReport, EngineDay, ExitEvent
 from trd.services.engine import ScanFill, ScanResult
@@ -245,19 +246,25 @@ def scan_messages(result: ScanResult, label: str | None = None) -> list[str]:
 # reader wants the shape of a bad day, not every line of it.
 MAX_LOSS_LINES = 5
 
-# Roughly one phone screen. What gives way first is "what went badly" — its
-# per-trade detail, then the section itself — because scrolling past it to find
-# out whether you are up is how a daily message stops being read. Sections 1, 2
-# and 4 are never trimmed: they are bounded by the number of engines.
-MAX_LINES = 30
+# About as long as a daily message may get. The two engines that actually ship
+# come in under it with every section; past it the optional ones give way, trade
+# list first and losses summary second, because scrolling past detail to find out
+# whether you are up is how a daily message stops being read. Sections 1, 2 and 4
+# are never trimmed: they are bounded by the number of engines, not by the day.
+MAX_LINES = 42
 
 # Lines a loss list costs before any loss is in it: the blank, the heading, the
 # worst-strategy line, and "today's losses by exit".
 LOSS_OVERHEAD = 4
 
-# Symbols named inside one exit rule's line. Past this the reader has the shape
-# of it and can get the rest from `trd engine positions --all`.
+# Symbols named inside one exit rule's tally. Past this the reader has the shape
+# of it and can get the rest from the trade list below.
 MAX_NAMES_PER_RULE = 3
+
+# Trades named per engine in TODAY'S TRADES. A day engine can close ten in a
+# session; the best few and the worst few are the shape of the day, and the tail
+# is a count. Sorted best-first, so the cut falls in the middle where it belongs.
+MAX_TRADE_LINES = 6
 
 
 def _rate(value: Decimal | None) -> str | None:
@@ -368,14 +375,18 @@ def daily_report_message(report: DailyReport) -> str:
     if both:
         lines.append(row("both", f"at risk {_money(report.risk_at_stop)}"))
 
-    # Built last, sized by what is left of the screen, and spliced back in above
-    # the open book so the reading order is still up/down -> working -> not
-    # working -> exposure. Knowing you are down matters more than knowing which
-    # trade did it, and that detail is one `trd engine positions` away.
+    # Both optional sections are built last, sized by what is left of the screen,
+    # and spliced back in above the open book so the reading order still runs
+    # up/down -> working -> not working -> the trades -> exposure.
+    #
+    # The trade list gives way first and the losses summary second: knowing you
+    # are down matters more than knowing which rule did it, which in turn matters
+    # more than knowing which ticker. Sections 1, 2 and 4 are never cut.
     bad = _losses_section(report, live, row, budget=MAX_LINES - len(lines))
-    if bad:
+    trades = _trades_section(live, budget=MAX_LINES - len(lines) - len(bad))
+    if bad or trades:
         insert = lines.index("OPEN BOOK (now)") - 1
-        lines[insert:insert] = bad
+        lines[insert:insert] = bad + trades
     return "\n".join(lines)
 
 
@@ -415,16 +426,84 @@ def _losses_section(
     for _, loss in losses:
         groups.setdefault(_rule_name(loss.rule) or "closed", []).append(loss)
     # Worst group first, and one line per rule: five stops is a different day
-    # from five bells, and that is the whole reason these are not summed.
+    # from five bells, and that is the whole reason these are not summed. The
+    # symbols are not repeated here — the trade list below names every one.
     ranked = sorted(groups.items(), key=lambda kv: sum(e.pnl for e in kv[1]))
     shown = max(1, min(MAX_LOSS_LINES, budget - len(lines) - 1))
     for rule, events in ranked[:shown]:
-        events.sort(key=lambda e: e.pnl)
-        names = " · ".join(f"{e.symbol} {_r(e.r_multiple)}" for e in events[:MAX_NAMES_PER_RULE])
-        if len(events) > MAX_NAMES_PER_RULE:
-            names += f" · +{len(events) - MAX_NAMES_PER_RULE}"
         total = sum((e.pnl for e in events), Decimal(0))
-        lines.append(f"  {rule} x{len(events)} {_signed(total)} — {names}")
+        lines.append(f"  {rule} x{len(events)} {_signed(total)}")
     if len(ranked) > shown:
         lines.append(f"  +{len(ranked) - shown} more exit rules")
+    return lines
+
+
+def _held(event: ExitEvent, timeframe: str) -> str | None:
+    """How long the trade was on, in the unit the engine thinks in.
+
+    Sessions on a swing engine, because that is what its rules count and what
+    "held 10 sessions and only moved +6.5%" means. Elapsed time on an intraday
+    one, where the same trade is 3 bars and 19 minutes, and only one of those
+    tells a reader anything.
+    """
+    if timeframe != DAILY:
+        return _duration(event.held_for)
+    if event.bars_held <= 0:
+        return None
+    return f"{event.bars_held} session{'' if event.bars_held == 1 else 's'}"
+
+
+def _trade_line(event: ExitEvent, timeframe: str) -> str:
+    """One closed trade, whole: what it made, what it paid and sold for, how long
+    it was on, and which rule ended it."""
+    parts = [f"{event.symbol} {_signed(event.pnl)} ({_r(event.r_multiple)})"]
+    if event.entry_price is not None and event.exit_price is not None:
+        parts.append(f"{_money(event.entry_price)} → {_money(event.exit_price)}")
+    held = _held(event, timeframe)
+    if held:
+        parts.append(held)
+    parts.append(_rule_name(event.rule) or "closed")
+    return "  " + " · ".join(parts)
+
+
+def _trades_section(live: list[EngineDay], budget: int) -> list[str]:
+    """Every exit today, best first, so the win of the day is the top line.
+
+    The count in TODAY provokes exactly one question — which trades? — and until
+    this existed the answer meant filtering `engine positions --all --json` by
+    date. Capped per engine because a day engine closes ten in a session, and the
+    cut falls in the middle of a best-first list, which is where a reader misses
+    it least.
+    """
+    traded = [engine for engine in live if engine.exits_today]
+    if not traded:
+        return []
+    # The blank line, the heading, and one label per engine when there is more
+    # than one to tell apart.
+    overhead = 2 + (len(traded) if len(live) > 1 else 0)
+    room = budget - overhead
+    # Not even one trade each: a list that names one engine's day and silently
+    # omits the other's is worse than no list.
+    if room < len(traded):
+        return []
+    allotment = min(MAX_TRADE_LINES, room // len(traded))
+
+    lines: list[str] = ["", "TODAY'S TRADES"]
+    for engine in traded:
+        if len(live) > 1:
+            lines.append(engine.engine)
+        events = engine.exits_today
+        if len(events) <= allotment:
+            lines += [_trade_line(e, engine.timeframe) for e in events]
+            continue
+        # Both ends, not the top: the list is sorted best-first, so taking a
+        # prefix would hide every loser behind "+5 more" — and "what went badly"
+        # is half of what the report is for. The elision costs a line, so it
+        # comes out of the allotment rather than on top of it.
+        head = max(1, (allotment - 1) - (allotment - 1) // 2)
+        tail = (allotment - 1) - head
+        lines += [_trade_line(e, engine.timeframe) for e in events[:head]]
+        lines.append(f"  +{len(events) - head - tail} more")
+        if tail:
+            lines += [_trade_line(e, engine.timeframe) for e in events[-tail:]]
     return lines

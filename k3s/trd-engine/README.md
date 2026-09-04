@@ -244,7 +244,16 @@ swing  Pullback +0.13R · 15 trades · 53% win
 NOT WORKING (30d)
 swing  Momentum -0.36R · 8 trades · 12% win
 today's losses by exit
-  Stop Loss x3 -18.40 — SNOW -1.10R · AMD -0.98R · INTC -0.31R
+  Stop Loss x3 -18.40
+
+TODAY'S TRADES
+swing
+  COIN +6.46 (+0.59R) · 172.13 → 183.26 · 10 sessions · Time Exit
+  CRWD -6.52 (-0.59R) · 218.40 → 204.15 · 4 sessions · Indicator
+day
+  HOOD +0.41 (+2.24R) · 116.83 → 121.57 · 48m · Profit Target
+  +5 more
+  SNOW -0.42 (-1.10R) · 374.18 → 358.43 · 5h 50m · Stop Loss
 
 OPEN BOOK (now)
 swing  10 open · unrealized +18.68 · at risk 96.27
@@ -265,6 +274,11 @@ Three different periods appear in one message, so the words are load-bearing:
 - **today's losses** are grouped by the exit *rule*. Three stops is a broken
   thesis; three session closes is a day engine that never got paid; one total
   cannot tell them apart.
+- **TODAY'S TRADES** names every exit with its legs: dollars and R, entry → exit,
+  how long it was held, and the rule that ended it. Best first, so the top line is
+  the win of the day. Hold reads in sessions on a swing engine and in elapsed time
+  on an intraday one. A long day is trimmed from the *middle* — a best-first list
+  cut to a prefix would hide every loser behind "+5 more".
 - **OPEN BOOK** is *now*, not the close: reconstructing a point-in-time book would
   need marks the engine does not store.
 
