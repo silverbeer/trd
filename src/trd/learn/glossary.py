@@ -749,6 +749,14 @@ _ENTRIES: list[GlossaryEntry] = [
             "Today's losses are grouped by the EXIT RULE that fired, never summed into "
             "one number. Three stops is a broken thesis; three session closes is a day "
             "engine that never got paid; one total cannot tell them apart.\n\n"
+            "TODAY'S TRADES names every exit: what it made in dollars and in R, what it "
+            "paid and sold for, how long it was on, and which rule ended it. Best first, "
+            "ranked in R, so the top line is the win of the day and the bottom is the "
+            "worst of it. Hold is denominated the way the engine thinks — sessions on a "
+            "swing engine, elapsed time on an intraday one, because the same trade is "
+            "'3 bars' and '19 minutes' and only one of those means anything to its "
+            "reader. A long day is trimmed from the MIDDLE rather than the end: a "
+            "best-first list cut to a prefix would hide every loser behind '+5 more'.\n\n"
             "OPEN BOOK is *now*, not the close: unrealized and money at risk are "
             "current, because reconstructing a point-in-time book would need marks the "
             "engine does not store. When the marks are behind — a symbol that lost the "
@@ -758,6 +766,7 @@ _ENTRIES: list[GlossaryEntry] = [
         ),
         formula=(
             "today          = sum(booked P&L of positions closed on the date)\n"
+            "trade order    = realized R, descending (dollars only break a tie)\n"
             "since start    = realized + unrealized  (NET)\n"
             "working/not    = max/min expectancy in R over the trailing window\n"
             "money at risk  = sum((mark - stop in force) x remaining qty), floored at 0"

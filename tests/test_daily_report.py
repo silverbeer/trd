@@ -71,15 +71,36 @@ def closed(
     return position
 
 
-def event(symbol: str, pnl: str, rule: str | None = "stop", r: str = "-1.00") -> ExitEvent:
+def event(
+    symbol: str,
+    pnl: str,
+    rule: str | None = "stop",
+    r: str = "-1.00",
+    entry: str = "100",
+    exit_: str = "90",
+    bars_held: int = 3,
+    minutes: int = 0,
+) -> ExitEvent:
+    opened = datetime.combine(TODAY, datetime.min.time()).replace(hour=9, minute=31)
     return ExitEvent(
-        symbol=symbol, strategy="momentum", rule=rule, pnl=Decimal(pnl), r_multiple=Decimal(r)
+        symbol=symbol,
+        strategy="momentum",
+        rule=rule,
+        pnl=Decimal(pnl),
+        r_multiple=Decimal(r),
+        entry_price=Decimal(entry),
+        exit_price=Decimal(exit_),
+        quantity=Decimal("10"),
+        opened_at=opened,
+        closed_at=opened + timedelta(minutes=minutes) if minutes else opened + timedelta(days=1),
+        bars_held=bars_held,
     )
 
 
 def day(
     name: str = "swing",
     *,
+    timeframe: str = "1d",
     last_session: date | None = TODAY,
     realized_today: Decimal = Decimal(0),
     exits_today: list[ExitEvent] | None = None,
@@ -92,6 +113,7 @@ def day(
     return EngineDay(
         engine=name,
         account="engine-sim",
+        timeframe=timeframe,
         last_session=last_session,
         realized_today=realized_today,
         exits_today=exits_today or [],
@@ -387,3 +409,107 @@ def test_cli_falls_back_to_this_home_when_no_engines_are_named(
     result = runner.invoke(app, ["engine", "daily-report"])
     assert result.exit_code == 0, result.output
     assert "solo" in result.output
+
+
+# ------------------------------------------------------------- today's trades
+
+
+def test_the_trade_list_names_the_legs_the_hold_and_the_rule() -> None:
+    """The count in TODAY provokes exactly one question — which trades? Until
+    this line existed, answering it meant filtering `engine positions --all
+    --json` by date, which is a missing command wearing a query's clothes."""
+    text = daily_report_message(
+        DailyReport(
+            on=TODAY,
+            engines=[day(exits_today=[event("COIN", "6.46", "time", r="0.59", exit_="183.26")])],
+        )
+    )
+    line = next(line for line in text.splitlines() if "COIN" in line)
+    assert "+6.46" in line and "(+0.59R)" in line
+    assert "100.00 → 183.26" in line
+    assert "3 sessions" in line
+    assert "Time Exit" in line  # the rule's own name, not its key
+
+
+def test_hold_is_sessions_on_a_swing_engine_and_elapsed_time_on_an_intraday_one() -> None:
+    """The same trade is "3 bars" and "19 minutes"; only one of those tells an
+    intraday reader anything, and only the other means something on a daily."""
+    trade = event("HOOD", "0.41", "target", r="2.24", minutes=49)
+    swing = daily_report_message(DailyReport(on=TODAY, engines=[day(exits_today=[trade])]))
+    assert "3 sessions" in swing
+
+    intraday = daily_report_message(
+        DailyReport(on=TODAY, engines=[day(timeframe="5m", exits_today=[trade])])
+    )
+    assert "49m" in intraday
+    assert "sessions" not in intraday.split("TODAY'S TRADES")[1]
+
+
+def test_the_win_of_the_day_is_the_first_line_and_the_worst_is_the_last(
+    engine: EngineService,
+) -> None:
+    """Ranked in R, not dollars: a $10 day trade at +2R beat a $100 swing at
+    +0.5R, and a list sorted by cash would say the opposite."""
+    position = engine.position_rows()[0].position
+    at = datetime.combine(TODAY, datetime.min.time()).replace(hour=16)
+    engine.positions.close(position.id, at, position.stop_price, "hit the stop", "stop")
+
+    report = engine_day(engine, "swing", TODAY)
+    ranks = [e.r_multiple for e in report.exits_today if e.r_multiple is not None]
+    assert ranks == sorted(ranks, reverse=True)
+
+
+def test_a_truncated_trade_list_keeps_both_ends() -> None:
+    """A best-first list cut to a prefix hides every loser behind '+N more', and
+    what went badly is half of what the report is for."""
+    trades = [
+        event(f"W{i}", str(10 - i), "target", r=f"{2 - i * 0.1:.2f}", exit_="110") for i in range(6)
+    ] + [event("LOSER", "-9", "stop", r="-1.40")]
+    text = daily_report_message(DailyReport(on=TODAY, engines=[day(exits_today=trades)]))
+    assert "W0" in text  # the win of the day
+    assert "LOSER" in text  # and the worst of it
+    assert "more" in text
+
+
+def test_the_trade_list_gives_way_before_the_losses_summary() -> None:
+    """Which rule cost you money outranks which ticker did. Both outrank
+    nothing, and both are cut before the four sections that are the report."""
+    crowded = DailyReport(
+        on=TODAY,
+        engines=[
+            day(f"engine-{i}", exits_today=[event(f"S{i}", "-5")], realized_today=Decimal("-5"))
+            for i in range(6)
+        ],
+    )
+    text = daily_report_message(crowded)
+    assert "TODAY'S TRADES" not in text
+    assert "NOT WORKING" in text
+
+
+def test_json_carries_the_legs_so_nothing_has_to_re_derive_them(
+    cli_env: FakeProvider, tmp_path
+) -> None:
+    import json
+
+    home = _home(tmp_path, "swing", cli_env)
+    conn = None
+    try:
+        from trd.db.connection import connect
+
+        conn = connect(home / "trd.duckdb")
+        service = EngineService(conn, cli_env)
+        position = service.position_rows()[0].position
+        service.positions.close(
+            position.id, datetime.now(), position.stop_price, "hit the stop", "stop"
+        )
+    finally:
+        if conn is not None:
+            conn.close()
+
+    result = runner.invoke(app, ["engine", "daily-report", "--engines", f"swing={home}", "--json"])
+    assert result.exit_code == 0, result.output
+    exit_row = json.loads(result.output)["engines"][0]["exits_today"][0]
+    assert Decimal(exit_row["entry_price"]) > 0
+    assert Decimal(exit_row["exit_price"]) > 0
+    assert exit_row["opened_at"] and exit_row["closed_at"]
+    assert exit_row["rule"] == "stop"

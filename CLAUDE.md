@@ -154,8 +154,10 @@ trd engine daily-report [--json] [--date ISO] [--engines swing=/a,day=/b] [--win
                                       # post-market report, both engines in ONE message: today's
                                       # realized + exits, since-start realized/unrealized/NET,
                                       # best and worst strategy by expectancy in R over a trailing
-                                      # window, today's losses GROUPED BY EXIT RULE, and money at
-                                      # risk on the open book. Facts only — no judgement.
+                                      # window, today's losses GROUPED BY EXIT RULE, every exit
+                                      # today with its legs (entry→exit, hold, rule; best first,
+                                      # so line one is the win of the day), and money at risk on
+                                      # the open book. Facts only — no judgement.
                                       # 'today' is cash booked by trades that CLOSED today; the
                                       # open book is always *now*, and says so. Stale marks are
                                       # stated at the top, never averaged into a confident number,

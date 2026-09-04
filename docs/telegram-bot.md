@@ -98,8 +98,9 @@ Two things push into the chat on their own:
 - **The post-market report, once a day, after the close** — one message covering
   both engines. Today's booked P&L and how many trades closed, the running
   realized / unrealized / NET, the best and worst strategy by expectancy in R over
-  the last 30 days, today's losses grouped by which exit rule fired, and what the
-  open book loses if every stop hits.
+  the last 30 days, today's losses grouped by which exit rule fired, every trade
+  that closed today with its legs — entry → exit, how long it was held, and the
+  rule that ended it, best first — and what the open book loses if every stop hits.
 
 The report is facts, not judgement: it says the day was down 40 and that three
 stops did it, never whether taking those trades was a mistake. Read the periods
