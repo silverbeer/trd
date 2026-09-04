@@ -779,6 +779,141 @@ _ENTRIES: list[GlossaryEntry] = [
         used_in=["trd engine daily-report"],
     ),
     GlossaryEntry(
+        key="mae",
+        term="MAE — maximum adverse excursion (heat taken)",
+        category=Category.ENGINE,
+        definition=(
+            "The worst a trade ever looked while it was on, in R. Entry at 100 with the "
+            "stop at 90 is 1R = 10; if price traded down to 94 before turning, the trade "
+            "took -0.6R of heat.\n\n"
+            "It is the answer to 'did we enter too early'. A winner that first ran -0.9R "
+            "was a bad entry that got lucky, and its +2R result cannot tell you that — "
+            "only this can. Across many trades it also sizes the stop: if almost no "
+            "winner ever takes more than -0.5R of heat, a 1R stop is paying for room the "
+            "rule never uses.\n\n"
+            "Measured on bar LOWS, not closes: a trade lives through the whole of every "
+            "bar it is in, and measuring on closes would report a stop-out as a quiet "
+            "-0.4R day."
+        ),
+        formula="MAE = (lowest low while held - entry) / (entry - initial stop)",
+        example=(
+            "entry 100, stop 90, low of 94 on day 2, exited at 118: MAE -0.6R, result "
+            "+1.8R. A good trade that was briefly a worrying one."
+        ),
+        related=["mfe", "capture", "r-multiple", "initial-stop"],
+        used_in=["trd engine outcomes"],
+    ),
+    GlossaryEntry(
+        key="mfe",
+        term="MFE — maximum favourable excursion (best offered)",
+        category=Category.ENGINE,
+        definition=(
+            "The best a trade ever looked, in R, and the bar it happened on. What was on "
+            "the table, as opposed to what was taken off it.\n\n"
+            "The bar index carries half the meaning. A +2R peak on bar 2 of a forty-bar "
+            "hold says the exit rule is far too slow; the same peak on the last bar says "
+            "it is not. Two trades with identical results and opposite lessons.\n\n"
+            "Measured on bar HIGHS, for the same reason MAE uses lows."
+        ),
+        formula="MFE = (highest high while held - entry) / (entry - initial stop)",
+        example=(
+            "entry 100, stop 90, ran to 130 on day 3, exited at 108 on day 9: MFE +3.0R, "
+            "result +0.8R. The entry was right and the exit gave back three quarters of it."
+        ),
+        related=["mae", "capture", "follow-through", "r-multiple"],
+        used_in=["trd engine outcomes"],
+    ),
+    GlossaryEntry(
+        key="capture",
+        term="Capture",
+        category=Category.ENGINE,
+        definition=(
+            "What share of the best it was ever offered a trade actually kept: booked R "
+            "over MFE R. Low capture across many trades is the clearest statement there "
+            "is that the problem is the EXITS, not the entries — the rules are finding "
+            "moves and then not being paid for them.\n\n"
+            "Pooled, never averaged. Averaging per-trade ratios divides by denominators "
+            "that differ by orders of magnitude: a trade that peaked at +0.02R and "
+            "stopped at -1R scores -50 on its own, and a handful of those drag the mean "
+            "to nonsense (-507% on the live book, which looked like a finding and was an "
+            "artefact). Summing both sides first asks the question that matters: of all "
+            "the R this engine was ever offered, what share did it keep?\n\n"
+            "Trades that never traded above their entry are excluded from both sides. "
+            "You cannot give back what you were never offered, and counting them would "
+            "blame the exit for an entry that never worked."
+        ),
+        formula="capture = sum(exit R) / sum(MFE R), over trades whose MFE > 0",
+        example=(
+            "45 swing trades were offered +27R in total and booked -1.4R of it: capture "
+            "-5%. Every move the rules found was handed back."
+        ),
+        related=["mfe", "follow-through", "expectancy"],
+        used_in=["trd engine outcomes"],
+    ),
+    GlossaryEntry(
+        key="follow-through",
+        term="Follow-through (after the exit)",
+        category=Category.ENGINE,
+        definition=(
+            "Where price went AFTER the exit, in R from the exit price. The direct answer "
+            "to 'did we get out too early': positive means the trade kept working without "
+            "us.\n\n"
+            "The horizon is the engine's own timeframe — five sessions on a swing engine, "
+            "one hour on an intraday one, both roughly 'as long again as the trade lived'. "
+            "Five sessions after a twenty-minute day trade is a different market, not a "
+            "verdict on the exit.\n\n"
+            "A trade that closed on the newest stored bar has no follow-through yet, and "
+            "that is reported as unknown rather than as zero: 'it went nowhere' and 'we "
+            "cannot see yet' are different answers, and only one of them belongs in an "
+            "average."
+        ),
+        formula=(
+            "follow-through = (close N bars after the exit - exit price) / risk per share\n"
+            "N = 5 sessions (daily engine) or 60 minutes of bars (intraday)"
+        ),
+        example=(
+            "sold at 110, price closed at 130 two sessions later, 1R = 10: +2.0R of "
+            "follow-through. The exit rule left two more R on the table."
+        ),
+        related=["mfe", "capture", "r-multiple"],
+        used_in=["trd engine outcomes"],
+    ),
+    GlossaryEntry(
+        key="passed-signals",
+        term="Passed signals (the counterfactual)",
+        category=Category.ENGINE,
+        definition=(
+            "Every signal the engine recorded and did not act on, walked forward against "
+            "the stop it would have used. The only measurement in trd that can say "
+            "whether the rules filter junk or discard winners.\n\n"
+            "Two things keep it honest. The counterfactual stop comes from the same "
+            "`plan_entry` the live fill path uses, so a hypothetical R and a real R are "
+            "the same unit. And every passed signal records whether the book was FULL "
+            "when it fired: most of them could not have been taken at all, and counting "
+            "their returns as money left on the table would be fiction. Compare 'taken' "
+            "against 'passed (takeable)', never against 'passed'.\n\n"
+            "The number to read is not the average return but which level came first — "
+            "the 2R target or the 1R stop. An average calls a signal good on a path that "
+            "ran -1.2R first, a path the engine would have stopped out of and never seen "
+            "the end of. A bar that spans both levels is scored as the stop, because bar "
+            "data cannot say which came first and a study that resolves its own ambiguity "
+            "in its favour is worthless."
+        ),
+        formula=(
+            "for each signal: walk the next N bars from the signal price\n"
+            "  stop first  = a low <= price - 1R\n"
+            "  target first = a high >= price + 2R\n"
+            "capacity blocked = open positions at that instant >= max_positions"
+        ),
+        example=(
+            "day engine: 9% of taken signals reached 2R before 1R, against 6% of the "
+            "passed ones that could have been taken. The filter is adding a little, and "
+            "the gap is small enough to be worth watching rather than trusting."
+        ),
+        related=["mae", "mfe", "expectancy", "survivorship"],
+        used_in=["trd engine outcomes"],
+    ),
+    GlossaryEntry(
         key="survivorship",
         term="Survivorship bias",
         category=Category.ENGINE,

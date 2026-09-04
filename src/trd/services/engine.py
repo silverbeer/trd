@@ -208,6 +208,18 @@ class EntryPlan(BaseModel):
 MAX_EXPOSURE_MULTIPLE = Decimal(20)
 
 
+def stop_distance(atr: Decimal, exit_params: dict[str, float]) -> Decimal:
+    """How far below the entry the initial stop sits: ATR times the configured
+    multiple, which is also 1R.
+
+    Its own function because two callers need it and only one of them is filling
+    a trade: `plan_entry` sets a real stop, and the outcome study prices what the
+    stop *would* have been on a signal the engine passed over. A second copy of
+    this line would make a counterfactual R and a real R silently different units.
+    """
+    return atr * Decimal(str(exit_params.get("stop_atr_mult", 2.0)))
+
+
 def plan_entry(
     bars: Sequence[Bar],
     position_size: Decimal,
@@ -239,7 +251,7 @@ def plan_entry(
     if atr is None or atr <= 0:
         return None, "no ATR yet — cannot size the stop"
     atr_dec = Decimal(str(atr))
-    stop = price - atr_dec * Decimal(str(exit_params.get("stop_atr_mult", 2.0)))
+    stop = price - stop_distance(atr_dec, exit_params)
     if stop <= 0:
         return None, None
     risk_per_share = price - stop

@@ -133,6 +133,22 @@ trd engine status [--json]            # what this engine is + whether it's healt
                                       # refuse (a day engine on 1d bars). init can't catch that — the
                                       # engine already exists — and it reads as a flat strategy, not a
                                       # broken one. 'config_refused' in --json
+trd engine outcomes [--backfill] [--recompute] [--trades] [--json]
+                                      # did we enter early, did we exit early, and what did the
+                                      # signals we PASSED OVER do next. MAE (heat taken), MFE
+                                      # (best offered), capture (booked R / offered R, POOLED —
+                                      # averaging ratios produced -507% on the live book and it
+                                      # was an artefact), follow-through (5 sessions, or 60min of
+                                      # bars intraday). All in R. Stored per position/signal
+                                      # (migration 022), --backfill is idempotent
+                                      # The signals table is the uncomfortable one: every unacted
+                                      # signal walked forward against the stop plan_entry WOULD
+                                      # have set, with the ones that fired on a full book counted
+                                      # separately — they could not have been taken. Read '2R
+                                      # first' vs '1R stop first', never the average return
+                                      # Caveats (simulation fills, survivorship, capacity) are
+                                      # printed with the numbers, not left in a doc
+                                      # 'trd learn mae|mfe|capture|follow-through|passed-signals'
 trd engine backtest [--years N] [--fill intrabar|close] [--no-blackout] [--symbols A,B]
 trd engine backtest --regime/--no-regime        # same history with the regime gate on and off —
                                       # the comparison the gate should be judged on, never assumed
@@ -248,6 +264,13 @@ CSV import format (header required): `date,account,symbol,side,quantity,price[,f
 - Broker integration is **agent-side only**: an MCP session reads the brokerage and writes a snapshot file; `trd engine reconcile` does the diff. Nothing under `src/trd` imports or knows about MCP. The committed `.claude/settings.json` (never `settings.local.json`, which is gitignored and would put the gate on one machine only) names all 53 tools the server exposes: 34 reads allowed, 19 denied — the 17 that mutate broker state (order place/cancel, option exercise, watchlist and scan mutations) plus both `review_*_order` tools, which price an order without placing it and are denied anyway because trd decides from its own data. There is no mid-name wildcard, so a tool added later matches neither list and surfaces as an unlisted tool needing an explicit decision. See [docs/robinhood-mcp.md](docs/robinhood-mcp.md).
 - The Telegram command bot ([src/trd/notify/bot.py](src/trd/notify/bot.py)) **never opens the database**. DuckDB is single-writer and the bot is resident while a scan is not, so a connection held there would lock out a scan — putting a chat feature in the trading path. Reads answer from the snapshots the scan publishes (`status.json`, `report.json`, `status.txt`); writes go to a queue of JSON files under `TRD_HOME/commands/` that `trd engine apply-queue` drains inside the scan's process. Queue files are named by Telegram's `update_id` so replay order is the order typed and a redelivered update is recognised, not reapplied. Authorization is a numeric-user-id allowlist checked before anything reads the message text.
 - Static reference data (curated universe, FOMC/macro calendar) lives in [src/trd/data](src/trd/data) as plain Python — no YAML dep. `SundayPrepService` is pure (provider + data, no DuckDB); its briefing narrative is deterministic templates, leaving a seam for a future `--ai` pass.
+- Outcome measurement ([src/trd/services/outcomes.py](src/trd/services/outcomes.py)) is
+  arithmetic and stays that way: no LLM, no judgement, no "this trade was a mistake".
+  It computes MAE/MFE/capture/follow-through per closed trade and the same walk over
+  every *unacted* signal, so anything reasoning about the engine later argues from
+  measurement rather than from memory. The counterfactual stop comes from
+  `plan_entry`'s own `stop_distance`, shared with the live fill path — two copies of
+  that line would make a hypothetical R and a real R quietly different units.
 - Engine rules are code-registry entries, never config: entry strategies in [src/trd/engine/strategies.py](src/trd/engine/strategies.py) (`@register`, mirroring the indicator registry), exit rules in [src/trd/engine/exits.py](src/trd/engine/exits.py). Strategies never reimplement indicator math — they call the indicator registry. Every signal and exit carries a plain-English `reason`; a rule you can't explain doesn't ship.
 - **Every rule lookback is denominated in sessions, never bars.** "20-day" means twenty sessions on every timeframe; `sessions_to_bars` resolves it. Exits do this inline; entries get a `StrategyContext` carrying two series — the engine's own bars for the *trigger*, settled daily bars for the *trend filter*, which has to read daily because 200 sessions of 5-minute bars is 15,600 of them and the provider serves ~4,600. `ctx.daily` never includes the session in progress, on any timeframe: that is the lookahead guarantee for the trend, as the prefix slice is for the bars. A new rule that hardcodes a bar count reintroduces the bug both fixes exist to kill.
 - The engine only ever trades a `simulation` account, and its fills are ordinary `txn` rows — so portfolio/equity/XIRR/drawdown work on it unchanged. `engine_position` stores only what a txn can't: strategy, stop/target, trail high-water mark, exit reason. The initial stop is immutable so closed-trade R-multiples stay meaningful.
