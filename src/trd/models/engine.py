@@ -412,6 +412,103 @@ class TradeExplanation(BaseModel):
     exits: list[ExitOutlook] = []
 
 
+class TradeOutcome(BaseModel):
+    """What one closed trade did while it was on — the shape, not just the result.
+
+    Every ratio is in R, and `risk_per_share` is carried so any of them can be
+    re-derived by hand. The bar indices matter as much as the values: an MFE on
+    bar 2 of a forty-bar hold says the exit rule is slow, while the same MFE on
+    the last bar says it is not.
+    """
+
+    position_id: int
+    computed_at: datetime
+    timeframe: str
+    bars_seen: int
+    risk_per_share: Decimal
+
+    # Worst it ever looked, in R. Negative by construction on a trade that ever
+    # traded below its entry; 0 on one that never did.
+    mae_r: Decimal | None = None
+    mae_at: datetime | None = None
+    mae_bar: int | None = None
+
+    # Best it ever looked, and when.
+    mfe_r: Decimal | None = None
+    mfe_at: datetime | None = None
+    mfe_bar: int | None = None
+
+    exit_r: Decimal | None = None
+    # exit_r / mfe_r. None when nothing was ever offered — you cannot give back
+    # what you never had, and a 0% there would read as an exit that failed.
+    capture: Decimal | None = None
+
+    # Where price went after the exit, in R from the exit price. Positive means
+    # it kept working without us.
+    follow_through_r: Decimal | None = None
+    follow_through_bars: int | None = None
+    # How many bars were actually available. A trade that closed yesterday has no
+    # future yet, and zero bars must never read as zero movement.
+    follow_through_seen: int | None = None
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def gave_back_r(self) -> Decimal | None:
+        """How much of the best was handed back before the exit fired."""
+        if self.mfe_r is None or self.exit_r is None:
+            return None
+        return self.mfe_r - self.exit_r
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def exited_early(self) -> bool | None:
+        """Whether price kept going our way after we left, by a whole R.
+
+        A blunt flag on purpose: one trade proves nothing and the threshold is
+        arbitrary, but across a hundred trades the share of them is exactly the
+        question "are we exiting too early" in a form that can be counted.
+        """
+        if self.follow_through_r is None or not self.follow_through_seen:
+            return None
+        return self.follow_through_r >= Decimal(1)
+
+
+class SignalOutcome(BaseModel):
+    """What a signal did next — including, and especially, the ones not taken.
+
+    `engine_signal` has recorded every signal since the engine existed and
+    nothing has ever read the unacted ones. They are the only rows here that can
+    say whether the rules filter junk or discard winners.
+
+    `capacity_blocked` is what keeps the answer honest: most passed signals could
+    not have been taken, because the book was full. Counting their returns as
+    money left on the table would be fiction.
+    """
+
+    signal_id: int
+    computed_at: datetime
+    timeframe: str
+    acted: bool
+    capacity_blocked: bool
+    open_positions: int | None = None
+    max_positions: int | None = None
+
+    # The stop `plan_entry` would have set at that bar — the same function the
+    # live fill path uses, so the counterfactual R and the real R are one unit.
+    risk_per_share: Decimal | None = None
+    horizon_bars: int
+    bars_seen: int
+
+    mae_r: Decimal | None = None
+    mfe_r: Decimal | None = None
+    mfe_bar: int | None = None
+    forward_r: Decimal | None = None
+    # Which came first inside the horizon: "target", "stop", or "neither". An
+    # average return would call a signal good on a path that ran -1.2R first —
+    # a path the engine would have stopped out of and never seen the end of.
+    resolution: str | None = None
+
+
 class StrategyStat(BaseModel):
     """Closed-trade scorecard for one strategy — the whole point of the dry run."""
 

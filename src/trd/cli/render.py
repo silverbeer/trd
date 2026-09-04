@@ -11,10 +11,12 @@ from trd.engine import REGISTRY as STRATEGIES
 from trd.models import (
     BoardRow,
     EarningsEvent,
+    EnginePosition,
     EngineRun,
     EngineStatus,
     ExitCheckRow,
     ExitStatus,
+    Instrument,
     LotPosition,
     Position,
     PositionRow,
@@ -25,6 +27,7 @@ from trd.models import (
     SignalRow,
     StrategyStat,
     TradeExplanation,
+    TradeOutcome,
 )
 from trd.repos import PrepSnapshotRow
 from trd.services.backtest import BacktestResult as EngineBacktestResult
@@ -35,6 +38,7 @@ from trd.services.engine import ScanResult
 from trd.services.equity_curve import EquityCurve
 from trd.services.history import HistoryResult
 from trd.services.movers import MoverRow
+from trd.services.outcomes import OutcomeSummary
 from trd.services.plan import PlanStatus
 from trd.services.sunday_prep import SundayPrepBriefing
 from trd.timeframes import DAILY, sessions_to_bars
@@ -1416,6 +1420,15 @@ def engine_positions_table(
     return table
 
 
+def fmt_r(value: Decimal | None) -> str:
+    """An R-multiple, coloured by sign. The engine's own unit, so it appears
+    everywhere a number is compared across differently sized trades."""
+    if value is None:
+        return "—"
+    colour = "green" if value >= 0 else "red"
+    return f"[{colour}]{value:+.2f}R[/]"
+
+
 def engine_report_table(stats: list[StrategyStat]) -> Table:
     """The scorecard the dry run exists to produce. Read expectancy first: a 40%
     win rate with +0.5R expectancy beats a 70% win rate that gives it all back."""
@@ -2044,3 +2057,117 @@ def engine_monitor_view(
         feed.add_row("", "[dim]nothing yet — most scans are quiet[/dim]")
     parts.append(feed)
     return Group(*parts)
+
+
+def outcome_summary_renderables(summary: OutcomeSummary) -> list:
+    """What the trades did while they were on, and what the passed signals did next.
+
+    Two tables, deliberately separate. The first is about trades that happened
+    and answers "did we enter early, did we exit early". The second is about
+    signals — taken beside passed — and is the only place that can say whether
+    the rules filter junk or discard winners.
+    """
+    out: list = []
+    t = summary.trades
+    trades = Table(
+        title=f"Trade outcomes — {t.count} of {summary.closed_trades} closed trades, "
+        f"in R on {summary.timeframe} bars",
+        title_justify="left",
+    )
+    trades.add_column("Measure", style="bold")
+    trades.add_column("Average", justify="right")
+    trades.add_column("Reads as")
+    trades.add_row("MAE (heat taken)", fmt_r(t.avg_mae_r), "how far underwater before it worked")
+    trades.add_row("MFE (best offered)", fmt_r(t.avg_mfe_r), "how much was ever on the table")
+    trades.add_row("Exit", fmt_r(t.avg_exit_r), "what was actually booked")
+    trades.add_row(
+        "Capture (pooled)",
+        f"{float(t.capture_pooled) * 100:.0f}%" if t.capture_pooled is not None else "—",
+        "booked R over offered R, across every trade",
+    )
+    trades.add_row(
+        f"Follow-through (+{summary.follow_through_bars} bars)",
+        fmt_r(t.avg_follow_through_r),
+        "where it went after we left",
+    )
+    trades.add_row(
+        "Exited early",
+        f"{t.exited_early}/{t.count}" if t.count else "—",
+        "kept going +1R or more without us",
+    )
+    out.append(trades)
+
+    signals = Table(
+        title=f"Signals — what the ones we passed over did next ({summary.horizon_bars} bars)",
+        title_justify="left",
+    )
+    signals.add_column("Population", style="bold")
+    signals.add_column("Signals", justify="right")
+    signals.add_column("MAE", justify="right")
+    signals.add_column("MFE", justify="right")
+    signals.add_column("At horizon", justify="right")
+    signals.add_column("2R first", justify="right")
+    signals.add_column("1R stop first", justify="right")
+    for group in (summary.taken, summary.passed, summary.passed_takeable):
+        resolved = group.target_first + group.stop_first + group.unresolved
+        signals.add_row(
+            group.label,
+            str(group.count),
+            fmt_r(group.avg_mae_r),
+            fmt_r(group.avg_mfe_r),
+            fmt_r(group.avg_follow_through_r),
+            f"{group.target_first} ({group.target_first_pct:.0f}%)"
+            if group.target_first_pct is not None
+            else "—",
+            f"{group.stop_first}"
+            + (f" ({group.stop_first / resolved * 100:.0f}%)" if resolved else ""),
+        )
+    out.append(signals)
+
+    # Printed, not documented: a number that quietly assumes a fill it never got
+    # is worse than no number, because it reads as a measurement.
+    for caveat in summary.caveats:
+        out.append(f"[dim]· {caveat}[/dim]")
+    return out
+
+
+# Below this much favourable excursion, a per-trade capture ratio is noise: a
+# trade offered +0.02R and stopped at -1R reads as -4054%, which says nothing
+# about the exit rule and swamps the column it sits in. The row still carries the
+# raw value — this is a display floor, not a change to the measurement.
+MIN_MFE_FOR_CAPTURE = Decimal("0.25")
+
+
+def fmt_capture(outcome: TradeOutcome) -> str:
+    if outcome.capture is None or outcome.mfe_r is None or outcome.mfe_r < MIN_MFE_FOR_CAPTURE:
+        return "—"
+    return f"{float(outcome.capture) * 100:.0f}%"
+
+
+def outcome_trades_table(rows: list[tuple[TradeOutcome, EnginePosition, Instrument]]) -> Table:
+    """Per-trade shape, newest first. The bar indices are the point: an MFE on
+    bar 2 of a forty-bar hold is an exit rule that is too slow, and the same MFE
+    on the last bar is one that is not."""
+    table = Table(title="Trade outcomes — per trade", title_justify="left")
+    table.add_column("Symbol", style="bold")
+    table.add_column("Strategy")
+    table.add_column("Bars", justify="right")
+    table.add_column("MAE", justify="right")
+    table.add_column("MFE", justify="right")
+    table.add_column("@bar", justify="right")
+    table.add_column("Exit", justify="right")
+    table.add_column("Capture", justify="right")
+    table.add_column("After", justify="right")
+    for outcome, position, instrument in rows:
+        table.add_row(
+            instrument.symbol,
+            position.strategy,
+            str(outcome.bars_seen),
+            fmt_r(outcome.mae_r),
+            fmt_r(outcome.mfe_r),
+            str(outcome.mfe_bar or "—"),
+            fmt_r(outcome.exit_r),
+            fmt_capture(outcome),
+            fmt_r(outcome.follow_through_r) if outcome.follow_through_seen else "—",
+        )
+    return table
