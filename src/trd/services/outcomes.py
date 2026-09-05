@@ -428,9 +428,15 @@ class OutcomeService:
     def backfill(self, recompute: bool = False, limit: int | None = None) -> BackfillStats:
         """Measure every closed trade and every signal that has none yet.
 
-        Idempotent by key, so this can run after every close and re-run over
-        history without changing an already-measured row. `recompute` is for when
-        the arithmetic itself changes.
+        Idempotent where it can be. A row is skipped only once it is FINAL —
+        once the walk has seen its whole follow-through horizon. A trade that
+        closed this afternoon has no future yet, so tonight's measurement stores
+        `follow_through_seen = 0`; skipping it forever on that basis would make
+        the engine permanently believe nothing ever happened after its exits.
+        Those rows are re-measured each night until their horizon fills in, and
+        then never again.
+
+        `recompute` re-measures everything, for when the arithmetic changes.
         """
         config = self.config()
         source = BarSource(self.prices, config.timeframe)
@@ -442,7 +448,7 @@ class OutcomeService:
         # load is not, and a busy day engine has hundreds of trades in ten names.
         series: dict[int, list[Bar]] = {}
 
-        done = set() if recompute else self.trades.measured_ids()
+        done = set() if recompute else self.trades.final_ids()
         closed = [p for p, _ in self.positions.list_closed(self._account_id(config))]
         for position in closed:
             if position.id in done:
@@ -479,7 +485,7 @@ class OutcomeService:
         recompute: bool,
         limit: int | None,
     ) -> BackfillStats:
-        done = set() if recompute else self.signal_outcomes.measured_ids()
+        done = set() if recompute else self.signal_outcomes.final_ids()
         # Every signal ever recorded. The unacted ones are the point, and there is
         # no cheaper way to ask what they did than to walk them.
         rows = self.signals.list_recent(limit=1_000_000)
