@@ -2248,3 +2248,41 @@ def review_renderables(result: ReviewResult, packs: list[EnginePack]) -> list:
     for caveat in result.caveats:
         out.append(f"[dim]· {caveat}[/dim]")
     return out
+
+
+def ai_review_renderables(run) -> list:
+    """The model's read of the day, printed after the arithmetic it was given.
+
+    Deliberately below the deterministic findings and visually separate: what a
+    detector computed and what a model concluded are different kinds of claim,
+    and a reader has to be able to tell which is which at a glance.
+    """
+    review = run.review
+    out: list = [
+        "",
+        f"[bold]The model's read[/bold]  [dim]({run.usage.model})[/dim]",
+        review.summary,
+    ]
+    if review.nothing_conclusive and not review.findings:
+        out.append("[dim]Nothing conclusive today.[/dim]")
+    for finding in review.findings:
+        label = "[yellow]HYPOTHESIS[/yellow]" if finding.hypothesis else "[green]FINDING[/green]"
+        lines = [
+            f"\n{label} [bold]{finding.headline}[/bold]",
+            f"  {finding.engine} · {finding.scope}: {finding.subject} · n={finding.trades}",
+            f"  {finding.rationale}",
+        ]
+        if finding.rests_on:
+            lines.append("  rests on: " + " · ".join(finding.rests_on))
+        lines.append(f"  test: [cyan]{finding.test}[/cyan]")
+        out.append("\n".join(lines))
+    if review.watch_next:
+        out.append("\n[bold]Watch next[/bold]\n" + "\n".join(f"  · {w}" for w in review.watch_next))
+    cost = run.usage.cost_usd
+    out.append(
+        f"[dim]{run.usage.input_tokens:,} in / {run.usage.output_tokens:,} out over "
+        f"{run.usage.requests} request(s)"
+        + (f" · ${float(cost):.4f}" if cost is not None else " · set TRD_AI_PRICE_IN/_OUT for cost")
+        + "[/dim]"
+    )
+    return out
