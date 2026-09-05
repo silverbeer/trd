@@ -104,6 +104,17 @@ if ! trd engine scan >> "$LOG" 2>&1; then
     exit 0
 fi
 
+# --- measure what today's trades actually did ---------------------------------
+# Last pass only, and never fatal — same reasoning as the k3s entrypoint: the
+# follow-through window does not exist yet for a trade that closed minutes ago,
+# and a statistic that could not be computed must not report a good scan as a
+# failed job. Re-measures only rows whose horizon has not filled in.
+if [ "${now:-0}" -ge 1555 ]; then
+    if ! trd engine outcomes --backfill >> "$LOG" 2>&1; then
+        echo "outcome backfill failed (the scan itself succeeded)" >> "$LOG"
+    fi
+fi
+
 # --- publish a readable snapshot ----------------------------------------------
 # A few KB of text, not a DuckDB file — safe to put in iCloud on every pass.
 if [ -n "$ICLOUD_TRD" ]; then

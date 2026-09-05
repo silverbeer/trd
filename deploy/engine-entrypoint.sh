@@ -108,6 +108,25 @@ fi
 # token configured it degrades to a warning, so an unconfigured cluster still scans.
 trd engine scan --ndjson --notify
 
+# --- measure what today's trades actually did ---------------------------------
+# Only on the last pass of the day. The measurement walks the bars a trade lived
+# through, so running it mid-session would measure trades that are still
+# happening — and the follow-through window (where price went AFTER the exit)
+# does not exist yet at 10:05 for a trade that closed at 10:00.
+#
+# Cheap and safe to repeat: the backfill re-measures only rows whose
+# follow-through horizon has not filled in yet, and skips every row that is
+# final. A swing trade closed today keeps being re-measured for the next five
+# sessions and is then left alone forever.
+#
+# Never fatal. Measurement is not the trading path, and a scan that succeeded
+# must not be reported as failed because a statistic could not be computed.
+if [ "${TRD_ENGINE_FORCE:-0}" = "1" ] || [ "${now:-0}" -ge 1555 ]; then
+    if ! trd engine outcomes --backfill; then
+        echo "outcome backfill failed (the scan itself succeeded)"
+    fi
+fi
+
 # --- publish a host-readable snapshot -----------------------------------------
 # Written next to the database, NOT to iCloud: this pod runs in a Linux VM and
 # cannot see a macOS FileProvider path. deploy/engine-publish.sh (a launchd job

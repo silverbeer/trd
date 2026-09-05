@@ -200,6 +200,26 @@ kubectl run trd-queue-now -n trd --rm -i --restart=Never --image=trd:latest \
   --image-pull-policy=Never --env TRD_QUEUE_FORCE=1 --command -- /app/queue-entrypoint.sh
 ```
 
+## Outcome measurement — after the close, not during
+
+The last scan of the day (15:55 or later) runs `trd engine outcomes --backfill`
+before it publishes its snapshots. Nothing else has to be scheduled.
+
+It is deliberately not run mid-session. The measurement walks the bars a trade
+lived through, and the follow-through window — where price went *after* the exit
+— does not exist yet at 10:05 for a trade that closed at 10:00. Measuring then
+and skipping it later on the grounds that a row exists would make the engine
+permanently believe nothing ever happened after any exit it took.
+
+So a row is skipped only once it is **final**: once the walk has seen its whole
+horizon. A swing trade closed today is re-measured on each of the next five
+sessions as its future fills in, and then never again. That is why the pass is
+cheap to repeat and why `--backfill` is safe to run by hand at any time.
+
+Failure is logged, never fatal. Measurement is not the trading path, and a scan
+that worked must not be reported as failed because a statistic could not be
+computed.
+
 ## Post-market report — was the day any good
 
 The fill feed says a trade happened. It never says whether the day was good, which

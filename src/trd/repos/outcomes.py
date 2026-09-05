@@ -106,6 +106,24 @@ class TradeOutcomeRepo:
         rows = self.conn.execute("SELECT position_id FROM trade_outcome").fetchall()
         return {int(r[0]) for r in rows}
 
+    def final_ids(self) -> set[int]:
+        """Rows that will never change again, and so may be skipped.
+
+        A measurement is only final once it has seen its whole follow-through
+        horizon. A trade that closed this afternoon has no future yet: measured
+        tonight it stores `follow_through_seen = 0`, and a backfill that skipped
+        every id it had already written would freeze that zero forever — the
+        engine would permanently believe nothing happened after any exit it took
+        on the day it was measured.
+        """
+        rows = self.conn.execute(
+            """
+            SELECT position_id FROM trade_outcome
+            WHERE follow_through_seen >= follow_through_bars
+            """
+        ).fetchall()
+        return {int(r[0]) for r in rows}
+
     def list_all(self) -> list[TradeOutcome]:
         rows = self.conn.execute(
             f"SELECT {_TRADE_COLS} FROM trade_outcome ORDER BY position_id"
@@ -173,6 +191,16 @@ class SignalOutcomeRepo:
 
     def measured_ids(self) -> set[int]:
         rows = self.conn.execute("SELECT signal_id FROM signal_outcome").fetchall()
+        return {int(r[0]) for r in rows}
+
+    def final_ids(self) -> set[int]:
+        """Signals whose whole horizon has already been walked. Same reasoning as
+        the trade side: a signal that fired an hour ago has not finished
+        happening, and freezing its half-walked numbers would be worse than not
+        having measured it at all."""
+        rows = self.conn.execute(
+            "SELECT signal_id FROM signal_outcome WHERE bars_seen >= horizon_bars"
+        ).fetchall()
         return {int(r[0]) for r in rows}
 
     def list_all(self) -> list[SignalOutcome]:
