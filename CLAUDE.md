@@ -148,6 +148,11 @@ trd engine outcomes [--backfill] [--recompute] [--trades] [--json]
                                       # first' vs '1R stop first', never the average return
                                       # Caveats (simulation fills, survivorship, capacity) are
                                       # printed with the numbers, not left in a doc
+                                      # The last scan of the day runs --backfill itself. A row is
+                                      # skipped only once FINAL (its follow-through horizon filled
+                                      # in); a trade closed today is re-measured for the next five
+                                      # sessions, then never again — measuring once at 10:05 would
+                                      # freeze 'nothing happened after the exit' forever
                                       # 'trd learn mae|mfe|capture|follow-through|passed-signals'
 trd engine backtest [--years N] [--fill intrabar|close] [--no-blackout] [--symbols A,B]
 trd engine backtest --regime/--no-regime        # same history with the regime gate on and off —

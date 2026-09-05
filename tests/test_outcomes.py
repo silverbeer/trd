@@ -294,22 +294,80 @@ def engine(conn: duckdb.DuckDBPyConnection, provider: FakeProvider) -> EngineSer
     return service
 
 
-def test_backfill_is_idempotent(engine: EngineService, conn: duckdb.DuckDBPyConnection) -> None:
-    """It runs after every close and over all history. Running it twice must
-    measure nothing the second time, or 'stored, not recomputed' is a lie."""
-    trade = engine.position_rows()[0].position
-    engine.positions.close(
-        trade.id, trade.opened_at + timedelta(days=3), trade.stop_price, "stopped", "stop"
+def in_series(
+    engine: EngineService, opened: datetime, closed: datetime, exit_price: Decimal
+) -> int:
+    """A closed trade whose dates sit inside the stored bar series.
+
+    The scan fixture opens at wall-clock now, which is years past the last stored
+    bar, so a trade taken that way has no bars to walk. Placing one inside the
+    series is what makes "the horizon is available" testable at all.
+    """
+    account = engine.account()
+    instrument = engine.instruments.get_by_symbol("AAA")
+    assert instrument is not None
+    trade = engine.positions.open(
+        account_id=account.id,
+        instrument_id=instrument.id,
+        signal_id=None,
+        strategy="momentum",
+        opened_at=opened,
+        entry_price=Decimal("100"),
+        quantity=Decimal("10"),
+        stop_price=Decimal("90"),
+        target_price=Decimal("120"),
+        atr_at_entry=Decimal("5"),
+        last_bar_date=opened.date(),
+    )
+    engine.positions.close(trade.id, closed, exit_price, "target reached", "target")
+    return trade.id
+
+
+def test_a_finished_measurement_is_measured_once_and_then_skipped(
+    engine: EngineService, conn: duckdb.DuckDBPyConnection
+) -> None:
+    """The idempotence that matters: this runs after every close and over all
+    history, and a row whose horizon is complete must never be rewritten."""
+    in_series(
+        engine,
+        datetime(2024, 3, 1, 15, 0),
+        datetime(2024, 3, 8, 16, 0),  # far inside the series, so 5 bars follow it
+        Decimal("110"),
     )
     service = OutcomeService(conn)
 
-    first = service.backfill()
-    assert first.trades_measured == 1
+    assert service.backfill().trades_measured == 1
+    stored = service.trades.list_all()[0]
+    assert stored.follow_through_seen == stored.follow_through_bars  # final
 
-    second = service.backfill()
-    assert second.trades_measured == 0
-    assert second.trades_skipped >= 1
+    assert service.backfill().trades_measured == 0
     assert len(service.trades.list_all()) == 1  # not duplicated
+
+
+def test_an_unfinished_measurement_is_re_measured_until_its_horizon_fills(
+    engine: EngineService, conn: duckdb.DuckDBPyConnection
+) -> None:
+    """A trade that closed on the newest stored bar has no future yet. Skipping
+    it forever because a row exists would make the engine permanently believe
+    nothing ever happened after the exits it took that day — the follow-through
+    column would read zero for every recent trade, which is the one direction
+    this measurement must not be wrong in.
+    """
+    last = max(b.date for b in engine.prices.daily_bars(1))
+    in_series(
+        engine,
+        datetime(2024, 3, 1, 15, 0),
+        datetime.combine(last, datetime.min.time()).replace(hour=16),
+        Decimal("110"),
+    )
+    service = OutcomeService(conn)
+
+    assert service.backfill().trades_measured == 1
+    assert service.trades.list_all()[0].follow_through_seen == 0
+
+    # Still not final, so the next pass measures it again rather than skipping.
+    assert service.backfill().trades_measured == 1
+    assert len(service.trades.list_all()) == 1
 
 
 def test_the_summary_states_its_own_caveats(engine: EngineService, conn) -> None:
