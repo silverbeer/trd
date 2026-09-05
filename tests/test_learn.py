@@ -80,8 +80,9 @@ def test_engine_rule_entries_are_generated_from_the_registries() -> None:
         assert entry.definition == rule.description
 
     # The order the rules actually run in is part of what a reader needs.
-    assert "exit rule 1 of 6" in GLOSSARY["exit-stop"].term
-    assert "exit rule 6 of 6" in GLOSSARY["exit-session-close"].term
+    assert f"exit rule 1 of {len(EXIT_RULES)}" in GLOSSARY["exit-stop"].term
+    last = len(EXIT_RULES)
+    assert f"exit rule {last} of {last}" in GLOSSARY["exit-session-close"].term
 
 
 def test_underscored_keys_resolve_as_trd_prints_them() -> None:

@@ -42,7 +42,7 @@ from trd.engine import REGISTRY as STRATEGIES
 from trd.engine import evaluate_exits, regime
 from trd.engine.bars import DAILY, BarSource
 from trd.engine.base import StrategyContext
-from trd.engine.exits import RULES, ExitDecision
+from trd.engine.exits import RULES, ExitDecision, exit_quantity
 from trd.errors import TrdError
 from trd.models import Bar, DailyBar, EnginePosition, PositionStatus, SizingMode, StrategyStat
 from trd.repos import EarningsRepo, InstrumentRepo, PriceRepo, WatchlistRepo
@@ -59,7 +59,14 @@ CAVEAT = (
 # Rules that compare price to a level the position already carries. These are the
 # only rules that can honestly be checked against a bar's open/low/high — OHLC
 # says a level traded, but not what the indicators looked like when it did.
-_LEVEL_RULES = ("stop", "trail", "target")
+# The rules that fire at a PRICE, and so can be probed against a bar's extremes
+# rather than only its close. `scale_out` belongs here for the same reason
+# `target` does — it triggers at the target level — and leaving it out made the
+# whole feature a no-op in the backtest: the target fired on the high probe and
+# closed the trade before the close probe could ever see the scale-out. Three
+# runs at 0%, 50% and 70% came back byte-identical, which is the only reason it
+# was caught.
+_LEVEL_RULES = ("stop", "trail", "scale_out", "target")
 
 # A daily bar has no clock of its own. Noon for evaluation, the bell for fills —
 # far enough apart that a same-bar entry and exit still order correctly. Intraday
@@ -431,9 +438,31 @@ def simulate(
             exit_price, decision = hit
             # Booked through the model so the backtest and the live engine score a
             # trade the same way — including a scaled-out one, where R must weigh
-            # each piece against the size taken at entry.
-            sold = position.remaining_quantity
+            # each piece against the size taken at entry. The size comes from the
+            # same helper the live scanner calls, for the same reason.
+            sold = exit_quantity(position, decision)
             position.book_exit(sold, exit_price)
+            if decision.partial:
+                # A runner: cash and part of the R are booked, the trade stays
+                # open on its original stop and trail, and it keeps its slot. It
+                # is not a closed trade and must not be scored as one — doing so
+                # would let a scale-out inflate the trade count and report each
+                # piece as a separate win.
+                cash += exit_price * sold
+                position.trail_high = max(position.trail_high, bar.close)
+                # The runner is then re-probed against the SAME bar. Deliberately
+                # pessimistic, in keeping with the rest of the fill model: bar
+                # data cannot say whether the spike into the target came before or
+                # after a reversal through the stop, and a study of whether
+                # runners pay must not resolve that ambiguity in the runner's
+                # favour. `scale_out` and `target` both decline a partial
+                # position, so only a stop, trail, thesis or time exit can fire.
+                again = _check_exit(position, bars, i, exit_params, now, fill, timeframe)
+                if again is None:
+                    continue
+                exit_price, decision = again
+                sold = exit_quantity(position, decision)
+                position.book_exit(sold, exit_price)
             position.status = PositionStatus.CLOSED
             position.closed_at = (
                 stamp if source.is_intraday else datetime.combine(today, _FILL_TIME)
@@ -626,6 +655,7 @@ class BacktestService:
         position_size: Decimal | None = None,
         capital: Decimal | None = None,
         regime_filter: bool | None = None,
+        scale_out_pct: float | None = None,
     ) -> BacktestResult:
         config = self.configs.get()
         if config is None:
@@ -684,6 +714,12 @@ class BacktestService:
         if regime_filter is False:
             params["regime_sma"] = 0.0
             params["regime_vix_max"] = 0.0
+        # Same idea for the runner: replay the identical history with the scale-out
+        # on and off. It ships off, and the only thing that should switch it on is
+        # this comparison coming back in its favour — the 2026-08-02 regime work
+        # is the precedent for shipping on the number rather than on the idea.
+        if scale_out_pct is not None:
+            params["scale_out_pct"] = float(scale_out_pct)
 
         regime_series: dict[str, list[DailyBar]] = {}
         if regime.is_configured(params):

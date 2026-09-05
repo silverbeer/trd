@@ -68,6 +68,9 @@ def test_registries_are_populated():
     assert [rule.key for rule in EXIT_RULES] == [
         "stop",
         "trail",
+        # Before the target: it sells part of the position at the very level the
+        # target would close all of.
+        "scale_out",
         "target",
         "indicator",
         "time",

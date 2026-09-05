@@ -15,10 +15,10 @@ the original risk.
 from abc import ABC, abstractmethod
 from collections.abc import Sequence
 from datetime import datetime
-from decimal import Decimal
+from decimal import ROUND_DOWN, Decimal
 from typing import ClassVar
 
-from pydantic import BaseModel
+from pydantic import BaseModel, computed_field
 
 from trd.engine.base import indicator, last, prior
 from trd.models import Bar, EnginePosition
@@ -37,6 +37,11 @@ DEFAULT_EXIT_PARAMS: dict[str, float] = {
     "target_r": 2.0,  # profit target = entry + N x initial risk
     "trail_atr_mult": 3.0,  # chandelier stop = highest close since entry - N x ATR
     "max_sessions": 10.0,  # give up on a trade that has gone nowhere in N sessions
+    # Percent of the position sold when the target is reached, leaving the rest
+    # to ride the trail. 0 is off, and off is the default: the idea that a runner
+    # beats closing flat is a hypothesis, and this engine has already reverted one
+    # change that read more principled and cost money at every size.
+    "scale_out_pct": 0.0,
     "rsi_exit": 80.0,  # blow-off exit when RSI runs this hot and rolls over
     "indicator_grace_sessions": 3.0,  # let a new entry breathe before indicator exits apply
     # Flat-by-the-bell, as HHMM in the engine's local time. 0 disables it, which is
@@ -62,6 +67,20 @@ class ExitDecision(BaseModel):
     # subtly wrong twice. Also what makes execution slippage measurable — the
     # difference between where the rule said to get out and where the fill landed.
     level: Decimal | None = None
+    # How much of what is still held this decision sells. 1 is all of it, which
+    # is what every rule but `scale_out` returns and what the field defaults to,
+    # so adding it moved nothing. A fraction is what makes "take most at the
+    # target and let a runner ride" expressible as a rule rather than as a
+    # special case threaded through both execution paths.
+    fraction: Decimal = Decimal(1)
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def partial(self) -> bool:
+        """Whether this leaves the trade open. A partial exit books cash and a
+        piece of the R; it does not end the trade, set an exit reason, or free
+        the slot."""
+        return self.fraction < 1
 
 
 class ExitRule(ABC):
@@ -179,6 +198,13 @@ class ProfitTarget(ExitRule):
         now: datetime,
         timeframe: str,
     ) -> ExitDecision | None:
+        # A position that has already scaled out at this level is a runner, and
+        # the target is not what ends it — it leaves on the trail, a stop, a
+        # broken thesis or time. Gated on the scale-out being switched ON so that
+        # with it off (the default) nothing about this rule changes, and a manual
+        # `trd engine trim` keeps behaving exactly as it always has.
+        if params.get("scale_out_pct", 0.0) > 0 and position.is_partial:
+            return None
         if price < position.target_price:
             return None
         r = params.get("target_r", 2.0)
@@ -186,6 +212,51 @@ class ProfitTarget(ExitRule):
             rule=self.key,
             level=position.target_price,
             reason=f"hit the {r:.0f}R target at {position.target_price:.2f} — took the win",
+        )
+
+
+class ScaleOut(ExitRule):
+    key = "scale_out"
+    name = "Scale Out"
+    description = (
+        "At the profit target, sell most of the position and let the rest ride on "
+        "the trailing stop instead of closing flat. Off unless scale_out_pct is "
+        "set. The remainder is a runner, not a slower exit: the target stops "
+        "applying to it, so it leaves on the trail, a stop, a broken thesis or "
+        "time — whichever comes first.\n\n"
+        "Judge it on expectancy in R, never on win rate. Scaling out raises the "
+        "win rate almost by construction while it may lower expectancy, which is "
+        "the classic way this idea flatters itself."
+    )
+
+    def check(
+        self,
+        position: EnginePosition,
+        bars: Sequence[Bar],
+        settled: Sequence[Bar],
+        price: Decimal,
+        params: dict[str, float],
+        now: datetime,
+        timeframe: str,
+    ) -> ExitDecision | None:
+        pct = params.get("scale_out_pct", 0.0)
+        if pct <= 0 or pct >= 100:
+            return None
+        # Once already scaled, this trade is a runner and this rule is done with
+        # it. Without the guard it would sell a further 70% of the remainder on
+        # every pass price sat above the target — a slow bleed dressed as a rule.
+        if position.is_partial:
+            return None
+        if price < position.target_price:
+            return None
+        return ExitDecision(
+            rule=self.key,
+            level=position.target_price,
+            fraction=Decimal(str(pct)) / Decimal(100),
+            reason=(
+                f"took {pct:.0f}% at the {position.target_price:.2f} target — "
+                "the rest rides the trail"
+            ),
         )
 
 
@@ -345,6 +416,9 @@ class SessionClose(ExitRule):
 RULES: list[ExitRule] = [
     StopLoss(),
     TrailingStop(),
+    # Before the target, which would otherwise close the whole position at the
+    # very level this rule exists to only partly sell.
+    ScaleOut(),
     ProfitTarget(),
     IndicatorExit(),
     TimeExit(),
@@ -358,7 +432,13 @@ REGISTRY: dict[str, ExitRule] = {rule.key: rule for rule in RULES}
 # consulted, so a day engine quietly behaves like a swing engine and carries the
 # overnight risk its configuration exists to forbid. Only meaningful when the
 # param is switched on; a `flat_at_minute` of 0 needs no rule.
-PARAM_RULES: dict[str, str] = {"flat_at_minute": "session_close"}
+PARAM_RULES: dict[str, str] = {
+    "flat_at_minute": "session_close",
+    # An engine configured to scale out, run by a build without the rule, would
+    # close every winner flat at the target and report it as the strategy's
+    # result. Silent, and wrong in the direction that looks like a finding.
+    "scale_out_pct": "scale_out",
+}
 
 
 def missing_rules(params: dict[str, float]) -> list[tuple[str, str]]:
@@ -368,6 +448,29 @@ def missing_rules(params: dict[str, float]) -> list[tuple[str, str]]:
         for param, rule in PARAM_RULES.items()
         if float(params.get(param, 0)) > 0 and rule not in REGISTRY
     ]
+
+
+# Below this, a remainder is dust rather than a runner: a fraction that would
+# leave less than the quantisation step behind sells the lot instead. Otherwise a
+# position lingers at a millionth of a share, holds a slot and reports an
+# R-multiple on nothing.
+QUANTITY_STEP = Decimal("0.000001")
+
+
+def exit_quantity(position: EnginePosition, decision: ExitDecision) -> Decimal:
+    """How much of what is still held this decision sells.
+
+    Shared by the live scanner and the backtest, for the same reason `plan_entry`
+    is: the two must score an identical scaled-out trade identically, and a second
+    copy of this rounding is how they would quietly stop doing so.
+    """
+    remaining = position.remaining_quantity
+    if decision.fraction >= 1:
+        return remaining
+    sold = (remaining * decision.fraction).quantize(QUANTITY_STEP, rounding=ROUND_DOWN)
+    if sold <= 0 or remaining - sold < QUANTITY_STEP:
+        return remaining
+    return sold
 
 
 def evaluate(

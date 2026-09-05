@@ -34,6 +34,7 @@ from trd.engine.bars import (
     validate_timeframe,
 )
 from trd.engine.base import StrategyContext, indicator, last
+from trd.engine.exits import exit_quantity
 from trd.engine.regime import REGIME_SYMBOLS
 from trd.errors import ProviderError, TrdError
 from trd.learn import GLOSSARY
@@ -704,15 +705,19 @@ class EngineService:
                 )
                 continue
 
-            pnl = live.pnl_at(price)
+            # How much this decision sells. Every rule but `scale_out` sells the
+            # remainder; that one takes most of it at the target and leaves a
+            # runner. Sized by the shared helper the backtest also calls, so the
+            # two cannot round a scaled-out trade differently.
+            sold = exit_quantity(live, decision)
+            pnl = (price - position.entry_price) * sold
             # The signal this trade was opened on — the setup, in the words the
             # rule used at entry. One lookup per close, and closes are rare.
             signal = self.signals.by_id(position.signal_id) if position.signal_id else None
             fill = ScanFill(
                 symbol=instrument.symbol,
                 strategy=position.strategy,
-                # What is still on. A trimmed position sells only its remainder.
-                quantity=live.remaining_quantity,
+                quantity=sold,
                 price=price,
                 reason=decision.reason,
                 rule=decision.rule,
@@ -735,7 +740,7 @@ class EngineService:
                     account_id=account.id,
                     instrument_id=instrument.id,
                     side=Side.SELL,
-                    quantity=live.remaining_quantity,
+                    quantity=sold,
                     price=price,
                     fees=Decimal(0),
                     executed_at=now,
@@ -744,8 +749,14 @@ class EngineService:
                 self.positions.touch(
                     position.id, live.trail_high, live.bars_held, source.session(bars[-1])
                 )
-                self.positions.close(position.id, now, price, decision.reason, decision.rule)
-                closed_ids.add(position.id)
+                if decision.partial:
+                    # The trade is not over: cash and part of the R are booked,
+                    # the stop, target and trail are untouched, and the slot stays
+                    # occupied. No exit reason is written, because nothing ended.
+                    self.positions.trim(position.id, sold, price)
+                else:
+                    self.positions.close(position.id, now, price, decision.reason, decision.rule)
+                    closed_ids.add(position.id)
             result.closed.append(fill)
         return closed_ids
 
