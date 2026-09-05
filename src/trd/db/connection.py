@@ -48,6 +48,31 @@ def connect(db_path: Path) -> duckdb.DuckDBPyConnection:
     raise AssertionError("unreachable")  # pragma: no cover
 
 
+def connect_read_only(db_path: Path) -> duckdb.DuckDBPyConnection:
+    """Open an existing database without the ability to write to it.
+
+    For read paths that must be provably read-only — the decision review reaches
+    into both engines' databases, and "it only reads" should be enforced by the
+    connection rather than promised by the code above it.
+
+    No migrations, because it could not run them: a database behind this build
+    raises when the missing table is read, and the caller says which command
+    would bring it forward. Same lock retry as `connect`, since a scan holding
+    the writer lock keeps readers out too.
+    """
+    waits = _backoff()
+    for attempt in range(len(waits) + 1):
+        try:
+            return duckdb.connect(str(db_path), read_only=True)
+        except duckdb.IOException as exc:
+            if "lock" not in str(exc).lower():
+                raise
+            if attempt == len(waits):
+                raise DatabaseBusyError() from exc
+            time.sleep(waits[attempt])
+    raise AssertionError("unreachable")  # pragma: no cover
+
+
 def apply_migrations(conn: duckdb.DuckDBPyConnection) -> list[str]:
     """Apply numbered .sql migrations not yet recorded. Returns filenames applied."""
     conn.execute(
