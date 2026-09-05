@@ -40,6 +40,7 @@ from trd.services.history import HistoryResult
 from trd.services.movers import MoverRow
 from trd.services.outcomes import OutcomeSummary
 from trd.services.plan import PlanStatus
+from trd.services.review import MIN_TRADES_FOR_FINDING, EnginePack, ReviewResult
 from trd.services.sunday_prep import SundayPrepBriefing
 from trd.timeframes import DAILY, sessions_to_bars
 
@@ -2171,3 +2172,79 @@ def outcome_trades_table(rows: list[tuple[TradeOutcome, EnginePosition, Instrume
             fmt_r(outcome.follow_through_r) if outcome.follow_through_seen else "—",
         )
     return table
+
+
+def review_renderables(result: ReviewResult, packs: list[EnginePack]) -> list:
+    """The review as a human reads it: what happened, then what it means.
+
+    "Nothing conclusive" is rendered as a real answer rather than an empty
+    table. It is the expected output on most days, and a page that looks broken
+    when nothing was found trains its reader to distrust the days it does find
+    something.
+    """
+    out: list = []
+    for pack in packs:
+        header = Table(
+            title=f"{pack.engine} — {pack.on:%a %b %-d} · {pack.config.timeframe} · "
+            f"{len(pack.trades)} closed, {len(pack.signals)} signals fired",
+            title_justify="left",
+        )
+        header.add_column("Symbol", style="bold")
+        header.add_column("Strategy")
+        header.add_column("R", justify="right")
+        header.add_column("MAE", justify="right")
+        header.add_column("MFE", justify="right")
+        header.add_column("Kept", justify="right")
+        header.add_column("After", justify="right")
+        header.add_column("Exit rule")
+        for trade in pack.trades:
+            outcome = trade.outcome
+            header.add_row(
+                trade.symbol,
+                trade.strategy,
+                fmt_r(trade.r_multiple),
+                fmt_r(outcome.mae_r) if outcome else "—",
+                fmt_r(outcome.mfe_r) if outcome else "—",
+                fmt_capture(outcome) if outcome else "—",
+                fmt_r(outcome.follow_through_r) if outcome and outcome.follow_through_seen else "—",
+                trade.rule_name or "—",
+            )
+        if pack.trades:
+            out.append(header)
+        else:
+            out.append(f"[bold]{pack.engine}[/bold] — no trades closed on {pack.on}")
+
+    if result.quiet:
+        # Deliberately a sentence, not an empty table. Most days are like this.
+        out.append(
+            "\n[bold]Nothing conclusive.[/bold] No population crossed a threshold on the "
+            f"{packs[0].window_days if packs else 30}-day window."
+        )
+    else:
+        for finding in result.findings:
+            label = (
+                "[yellow]HYPOTHESIS[/yellow]" if finding.hypothesis else "[green]FINDING[/green]"
+            )
+            lines = [
+                f"\n{label} [bold]{finding.headline}[/bold]",
+                f"  {finding.engine} · {finding.scope}: {finding.subject} · "
+                f"n={finding.n} over {finding.window_days}d",
+                f"  {finding.detail}",
+            ]
+            if finding.evidence:
+                lines.append(
+                    "  evidence: "
+                    + " · ".join(f"{k} {v}" for k, v in sorted(finding.evidence.items()))
+                )
+            if finding.test:
+                lines.append(f"  test: [cyan]{finding.test}[/cyan]")
+            if finding.hypothesis:
+                lines.append(
+                    f"  [dim]Fewer than the {MIN_TRADES_FOR_FINDING} trades this would need to "
+                    "act on. Run the test before believing it.[/dim]"
+                )
+            out.append("\n".join(lines))
+
+    for caveat in result.caveats:
+        out.append(f"[dim]· {caveat}[/dim]")
+    return out
