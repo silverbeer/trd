@@ -154,6 +154,29 @@ trd engine outcomes [--backfill] [--recompute] [--trades] [--json]
                                       # sessions, then never again — measuring once at 10:05 would
                                       # freeze 'nothing happened after the exit' forever
                                       # 'trd learn mae|mfe|capture|follow-through|passed-signals'
+trd engine review-pack [--date ISO] [--engines ...] [--window 30] [--json]
+                                      # one document per session: every closed trade with its
+                                      # SB-994 outcome, every signal fired (taken AND passed) with
+                                      # the reason recorded at the time, each rule QUOTED with its
+                                      # own stated intent, the config in force, and the day's P&L
+                                      # from the same code the Telegram report reads.
+                                      # A document, not a set of queries: an agent is only
+                                      # reproducible if its input is
+trd engine review [--date ISO] [--engines ...] [--window 30] [--snapshot] [--json]
+                                      # findings over the pack — statistics, no judgement, no LLM.
+                                      # Scoped to a RULE / STRATEGY / FILTER, never a trade; each
+                                      # carries n, its evidence, and the backtest that would settle
+                                      # it. Under 20 trades = HYPOTHESIS (labelled); under 5 = not
+                                      # reported. 'Nothing conclusive' is a real and expected
+                                      # answer — a reviewer that finds something daily fits noise.
+                                      # Detectors: low capture, exits price runs past, peak-early
+                                      # holds, a stop no winner uses, and taken-vs-takeable-passed
+                                      # signal quality (the filter's actual edge, n = the SMALLER
+                                      # side — 2,000 passed signals must not dress up a conclusion
+                                      # resting on thirty taken ones)
+                                      # READ-ONLY by connection, not by promise; --snapshot is the
+                                      # one writing step (migration 023, per engine, dated, so a
+                                      # claim made Tuesday can be scored on Friday)
 trd engine backtest [--years N] [--fill intrabar|close] [--no-blackout] [--symbols A,B]
 trd engine backtest --regime/--no-regime        # same history with the regime gate on and off —
                                       # the comparison the gate should be judged on, never assumed
@@ -269,6 +292,13 @@ CSV import format (header required): `date,account,symbol,side,quantity,price[,f
 - Broker integration is **agent-side only**: an MCP session reads the brokerage and writes a snapshot file; `trd engine reconcile` does the diff. Nothing under `src/trd` imports or knows about MCP. The committed `.claude/settings.json` (never `settings.local.json`, which is gitignored and would put the gate on one machine only) names all 53 tools the server exposes: 34 reads allowed, 19 denied — the 17 that mutate broker state (order place/cancel, option exercise, watchlist and scan mutations) plus both `review_*_order` tools, which price an order without placing it and are denied anyway because trd decides from its own data. There is no mid-name wildcard, so a tool added later matches neither list and surfaces as an unlisted tool needing an explicit decision. See [docs/robinhood-mcp.md](docs/robinhood-mcp.md).
 - The Telegram command bot ([src/trd/notify/bot.py](src/trd/notify/bot.py)) **never opens the database**. DuckDB is single-writer and the bot is resident while a scan is not, so a connection held there would lock out a scan — putting a chat feature in the trading path. Reads answer from the snapshots the scan publishes (`status.json`, `report.json`, `status.txt`); writes go to a queue of JSON files under `TRD_HOME/commands/` that `trd engine apply-queue` drains inside the scan's process. Queue files are named by Telegram's `update_id` so replay order is the order typed and a redelivered update is recognised, not reapplied. Authorization is a numeric-user-id allowlist checked before anything reads the message text.
 - Static reference data (curated universe, FOMC/macro calendar) lives in [src/trd/data](src/trd/data) as plain Python — no YAML dep. `SundayPrepService` is pure (provider + data, no DuckDB); its briefing narrative is deterministic templates, leaving a seam for a future `--ai` pass.
+- The decision review ([src/trd/services/review.py](src/trd/services/review.py)) is the
+  deterministic half of the daily agent, and the split is deliberate: the pack is the
+  agent's *input contract* (so a model's answer can be re-run and diffed), and the
+  findings are statistics (so most of what a review does is testable). A model, when it
+  arrives, consumes the pack and adds prose — it never replaces a detector. Every
+  threshold is a module constant, because a detector with a tuned threshold is a model
+  with extra steps.
 - Outcome measurement ([src/trd/services/outcomes.py](src/trd/services/outcomes.py)) is
   arithmetic and stays that way: no LLM, no judgement, no "this trade was a mistake".
   It computes MAE/MFE/capture/follow-through per closed trade and the same walk over

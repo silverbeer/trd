@@ -7,6 +7,7 @@ from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Annotated, Any
 
+import duckdb
 import typer
 from pydantic import ValidationError
 from rich.console import Console
@@ -53,11 +54,12 @@ from trd.cli.render import (
     positions_table,
     prep_history_table,
     reconcile_renderables,
+    review_renderables,
     sunday_prep_markdown,
     sunday_prep_renderables,
 )
 from trd.config import DEFAULT_ACCOUNT, get_settings
-from trd.db.connection import connect
+from trd.db.connection import connect, connect_read_only
 from trd.engine.bars import DAILY
 from trd.errors import TrdError
 from trd.models import AccountType, BrokerSnapshot, Side, SizingMode
@@ -73,6 +75,7 @@ from trd.notify.telegram import TelegramNotifier
 from trd.notify.telegram import from_env as notify_from_env
 from trd.providers import YFinanceProvider
 from trd.repos import AccountRepo
+from trd.repos.review_snapshot import ReviewSnapshotRepo, ReviewSnapshotRow
 from trd.services import (
     DashboardService,
     DcaDetailService,
@@ -111,6 +114,14 @@ from trd.services.engine import (
 from trd.services.indicators import seed_defaults
 from trd.services.outcomes import OutcomeService
 from trd.services.plan import PlanStatus
+from trd.services.review import (
+    DEFAULT_REVIEW_WINDOW,
+    EnginePack,
+    ReviewPack,
+    ReviewResult,
+    engine_pack,
+    review,
+)
 from trd.services.watchlist import DEFAULT_WATCHLIST
 
 app = typer.Typer(
@@ -2394,6 +2405,193 @@ def engine_outcomes(
         return
     for renderable in outcome_summary_renderables(summary):
         console.print(renderable)
+
+
+ReviewDateOpt = Annotated[
+    str | None,
+    typer.Option("--date", "-d", help="Session to review (YYYY-MM-DD). Default: today."),
+]
+ReviewEnginesOpt = Annotated[
+    str | None,
+    typer.Option(
+        "--engines",
+        help="Engines to cover: 'swing=/path,day=/path'. Default: TRD_BOT_ENGINES, "
+        "else this TRD_HOME alone.",
+    ),
+]
+ReviewWindowOpt = Annotated[
+    int, typer.Option("--window", help="Days of closed trades a finding may be drawn from.")
+]
+
+
+def _packs(engines: str | None, on: date, window: int) -> tuple[list[EnginePack], list[str]]:
+    """Build one pack per engine, each on its own short-lived connection.
+
+    Read-only, and enforced by the connection rather than promised: this reaches
+    into both engines' databases, and a review is never a reason to write to one.
+    The snapshot is a separate, explicit step that opens its own writable
+    connection only when `--snapshot` asks for it.
+    """
+    packs: list[EnginePack] = []
+    problems: list[str] = []
+    for name, home in _report_targets(engines):
+        db_path = home / "trd.duckdb"
+        if not db_path.exists():
+            problems.append(f"{name}: no database at {db_path}")
+            continue
+        conn = None
+        try:
+            conn = connect_read_only(db_path)
+            packs.append(
+                engine_pack(
+                    EngineService(conn, YFinanceProvider()),
+                    OutcomeService(conn),
+                    name,
+                    on,
+                    window_days=window,
+                )
+            )
+        except TrdError as exc:
+            problems.append(f"{name}: {exc}")
+        except duckdb.Error as exc:
+            # Usually a database written by an older build, which a read-only
+            # connection cannot bring forward. Name the command that can.
+            problems.append(
+                f"{name}: {str(exc).splitlines()[0]} — run 'trd engine outcomes --backfill' "
+                "against this home first, which migrates it."
+            )
+        finally:
+            if conn is not None:
+                conn.close()
+    return packs, problems
+
+
+@engine_app.command("review-pack")
+def engine_review_pack(
+    date_str: ReviewDateOpt = None,
+    engines: ReviewEnginesOpt = None,
+    window: ReviewWindowOpt = DEFAULT_REVIEW_WINDOW,
+    as_json: JsonOpt = False,
+) -> None:
+    """Everything a reviewer needs about one session, as one document.
+
+    Every trade that closed with its outcome metrics, every signal that fired —
+    taken and passed over — with the reason recorded at the time, the rule that
+    fired quoted with its own stated intent, the config in force, and the day's
+    P&L from the same code the Telegram report reads.
+
+    A document rather than a set of queries, because an agent is only
+    reproducible if its input is: this is what `trd engine review` and anything
+    reasoning over it consume, and it can be saved, diffed and replayed.
+    """
+    _use_json(as_json)
+    on = (_parse_date(date_str) or datetime.now()).date()
+    packs, problems = _packs(engines, on, window)
+    pack = ReviewPack(on=on, generated_at=datetime.now(), build=build_version(), engines=packs)
+    if as_json:
+        _emit_json(pack)
+        return
+    for problem in problems:
+        err_console.print(f"[yellow]warning:[/yellow] {problem}")
+    if not packs:
+        console.print("No engine could be read.")
+        return
+    for engine in packs:
+        console.print(
+            f"[bold]{engine.engine}[/bold] {engine.on} — {len(engine.trades)} closed, "
+            f"{len(engine.signals)} signals, {len(engine.window_trades)} measured trades "
+            f"in the {engine.window_days}d window"
+        )
+        for caveat in engine.caveats:
+            console.print(f"[dim]· {caveat}[/dim]")
+    console.print("[dim]--json emits the whole document.[/dim]")
+
+
+@engine_app.command("review")
+def engine_review(
+    date_str: ReviewDateOpt = None,
+    engines: ReviewEnginesOpt = None,
+    window: ReviewWindowOpt = DEFAULT_REVIEW_WINDOW,
+    snapshot: Annotated[
+        bool,
+        typer.Option("--snapshot", help="Store the review, dated, in each engine's database."),
+    ] = False,
+    as_json: JsonOpt = False,
+) -> None:
+    """What the day's decisions say about the rules — statistics, no judgement.
+
+    Findings are about a rule, a strategy or the entry filter, never about one
+    trade: "SOFI stopped out, consider a wider stop" written forty times a month
+    buries the one real finding. Each carries the population it was drawn from
+    and the backtest that would settle it.
+
+    A pattern drawn from fewer than 20 trades is labelled a HYPOTHESIS. Below 5
+    it is not reported at all. And "nothing conclusive" is a real answer — it is
+    the expected one on most days, because two engines and a handful of trades
+    are mostly noise.
+    """
+    _use_json(as_json)
+    on = (_parse_date(date_str) or datetime.now()).date()
+    packs, problems = _packs(engines, on, window)
+    result = review(packs, on)
+    result.caveats.extend(problems)
+
+    if snapshot:
+        _store_review(engines, on, result, packs)
+
+    if as_json:
+        _emit_json(result)
+        return
+    for problem in problems:
+        err_console.print(f"[yellow]warning:[/yellow] {problem}")
+    if not packs:
+        console.print("No engine could be read.")
+        return
+    for renderable in review_renderables(result, packs):
+        console.print(renderable, markup=True, highlight=False)
+
+
+def _store_review(
+    engines: str | None, on: date, result: ReviewResult, packs: list[EnginePack]
+) -> None:
+    """Write each engine its own slice of the review, dated.
+
+    Per engine, because one database is one engine: half a review stored in each
+    would make either one alone a lie. The point of storing it at all is that a
+    claim made on Tuesday can be scored on Friday against what happened — which
+    is also the only way to find out whether the reviewer is any good.
+    """
+    by_engine = {p.engine: p for p in packs}
+    for name, home in _report_targets(engines):
+        pack = by_engine.get(name)
+        if pack is None:
+            continue
+        findings = [f for f in result.findings if f.engine == name]
+        conn = None
+        try:
+            conn = connect(home / "trd.duckdb")
+            ReviewSnapshotRepo(conn).save(
+                ReviewSnapshotRow(
+                    snapshot_date=on,
+                    generated_at=result.generated_at,
+                    build=result.build,
+                    engine=name,
+                    trades_closed=len(pack.trades),
+                    signals_fired=len(pack.signals),
+                    findings=sum(1 for f in findings if not f.hypothesis),
+                    hypotheses=sum(1 for f in findings if f.hypothesis),
+                    quiet=not findings,
+                ),
+                payload={
+                    "review": result.model_dump(mode="json"),
+                    "pack": pack.model_dump(mode="json"),
+                },
+            )
+        except TrdError as exc:
+            err_console.print(f"[yellow]warning:[/yellow] could not store {name}'s review: {exc}")
+        finally:
+            if conn is not None:
+                conn.close()
 
 
 @engine_app.command("runs")
