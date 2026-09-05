@@ -1772,6 +1772,16 @@ def engine_init(
             help="Block new entries while VIX closes above this level. 0 = off.",
         ),
     ] = 0.0,
+    scale_out_pct: Annotated[
+        float,
+        typer.Option(
+            "--scale-out",
+            help=(
+                "Percent of the position to sell at the target, leaving the rest to "
+                "ride the trail. 0 = off (close flat at the target)."
+            ),
+        ),
+    ] = 0.0,
 ) -> None:
     """Set up the engine: a simulation account, a 10-name universe, and the rule set."""
     service = _engine_service()
@@ -1798,6 +1808,7 @@ def engine_init(
                     "flat_at_minute": float(flat_at),
                     "regime_sma": float(regime_sma),
                     "regime_vix_max": float(regime_vix_max),
+                    "scale_out_pct": float(scale_out_pct),
                 }.items()
                 if v
             }
@@ -2829,6 +2840,15 @@ def engine_backtest(
             "compare the same history with it on and off.",
         ),
     ] = None,
+    scale_out: Annotated[
+        float | None,
+        typer.Option(
+            "--scale-out",
+            help="Override the scale-out percentage for this run — the point is to "
+            "replay the same history closing flat at the target and letting a "
+            "runner ride, and compare expectancy in R.",
+        ),
+    ] = None,
     as_json: Annotated[bool, typer.Option("--json", help="Emit the result as JSON.")] = False,
 ) -> None:
     """Replay the engine's rules against stored history. Same rules, same
@@ -2855,6 +2875,7 @@ def engine_backtest(
             position_size=_parse_decimal(size, "size") if size else None,
             capital=_parse_decimal(capital, "capital") if capital else None,
             regime_filter=regime_filter,
+            scale_out_pct=scale_out,
         )
     except TrdError as exc:
         _fail(exc)

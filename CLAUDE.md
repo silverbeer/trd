@@ -189,6 +189,12 @@ trd engine review [--date ISO] [--engines ...] [--window 30] [--snapshot] [--ai]
                                       # set — a price table in source goes stale silently and would
                                       # be wrong in the flattering direction
 trd engine backtest [--years N] [--fill intrabar|close] [--no-blackout] [--symbols A,B]
+trd engine backtest --scale-out N      # replay with the runner on and off. MEASURED 2026-09-05 over
+                                      # 8y / 62 names / ~3,000 trades: expectancy 0.112R flat vs
+                                      # 0.117R at 50% and 0.116R at 70% — noise — while max drawdown
+                                      # went -31.5% → -39.5% → -42.1%. Same return, materially worse
+                                      # drawdown, so scale_out_pct stays 0. Re-measure before
+                                      # switching it on; do not switch it on because it sounds right
 trd engine backtest --regime/--no-regime        # same history with the regime gate on and off —
                                       # the comparison the gate should be judged on, never assumed
                                       # replay the rules against stored history — same scorecard as
@@ -328,6 +334,12 @@ CSV import format (header required): `date,account,symbol,side,quantity,price[,f
   measurement rather than from memory. The counterfactual stop comes from
   `plan_entry`'s own `stop_distance`, shared with the live fill path — two copies of
   that line would make a hypothetical R and a real R quietly different units.
+- An exit rule may sell PART of a position: `ExitDecision.fraction` (1 = all, the default
+  every rule but `scale_out` returns) and the shared `exit_quantity` both the live scanner
+  and the backtest size from — a second copy of that rounding is how the two would quietly
+  stop scoring a scaled-out trade the same. A partial books cash and part of the R through
+  `book_exit`, leaves the stop/target/trail untouched, writes no exit reason and keeps its
+  slot. `scale_out` is off by default and the measurement says leave it off.
 - Engine rules are code-registry entries, never config: entry strategies in [src/trd/engine/strategies.py](src/trd/engine/strategies.py) (`@register`, mirroring the indicator registry), exit rules in [src/trd/engine/exits.py](src/trd/engine/exits.py). Strategies never reimplement indicator math — they call the indicator registry. Every signal and exit carries a plain-English `reason`; a rule you can't explain doesn't ship.
 - **Every rule lookback is denominated in sessions, never bars.** "20-day" means twenty sessions on every timeframe; `sessions_to_bars` resolves it. Exits do this inline; entries get a `StrategyContext` carrying two series — the engine's own bars for the *trigger*, settled daily bars for the *trend filter*, which has to read daily because 200 sessions of 5-minute bars is 15,600 of them and the provider serves ~4,600. `ctx.daily` never includes the session in progress, on any timeframe: that is the lookahead guarantee for the trend, as the prefix slice is for the bars. A new rule that hardcodes a bar count reintroduces the bug both fixes exist to kill.
 - The engine only ever trades a `simulation` account, and its fills are ordinary `txn` rows — so portfolio/equity/XIRR/drawdown work on it unchanged. `engine_position` stores only what a txn can't: strategy, stop/target, trail high-water mark, exit reason. The initial stop is immutable so closed-trade R-multiples stay meaningful.
