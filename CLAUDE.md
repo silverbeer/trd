@@ -162,7 +162,7 @@ trd engine review-pack [--date ISO] [--engines ...] [--window 30] [--json]
                                       # from the same code the Telegram report reads.
                                       # A document, not a set of queries: an agent is only
                                       # reproducible if its input is
-trd engine review [--date ISO] [--engines ...] [--window 30] [--snapshot] [--json]
+trd engine review [--date ISO] [--engines ...] [--window 30] [--snapshot] [--ai] [--model M] [--json]
                                       # findings over the pack — statistics, no judgement, no LLM.
                                       # Scoped to a RULE / STRATEGY / FILTER, never a trade; each
                                       # carries n, its evidence, and the backtest that would settle
@@ -177,6 +177,17 @@ trd engine review [--date ISO] [--engines ...] [--window 30] [--snapshot] [--jso
                                       # READ-ONLY by connection, not by promise; --snapshot is the
                                       # one writing step (migration 023, per engine, dated, so a
                                       # claim made Tuesday can be scored on Friday)
+                                      # --ai adds a model's read ON TOP of the arithmetic, never
+                                      # instead of it: the detectors run first and are handed over
+                                      # as input, so a provider outage costs the commentary and not
+                                      # the review. Needs the optional extra (uv sync --extra ai);
+                                      # without it the deterministic review still prints.
+                                      # Model: --model, else TRD_AI_MODEL, else anthropic:claude-
+                                      # opus-5. Key from ANTHROPIC_API_KEY (laptop: op read from
+                                      # the agents vault; cluster: same secret pattern as Telegram).
+                                      # Cost per run is reported only when TRD_AI_PRICE_IN/_OUT are
+                                      # set — a price table in source goes stale silently and would
+                                      # be wrong in the flattering direction
 trd engine backtest [--years N] [--fill intrabar|close] [--no-blackout] [--symbols A,B]
 trd engine backtest --regime/--no-regime        # same history with the regime gate on and off —
                                       # the comparison the gate should be judged on, never assumed
@@ -292,6 +303,17 @@ CSV import format (header required): `date,account,symbol,side,quantity,price[,f
 - Broker integration is **agent-side only**: an MCP session reads the brokerage and writes a snapshot file; `trd engine reconcile` does the diff. Nothing under `src/trd` imports or knows about MCP. The committed `.claude/settings.json` (never `settings.local.json`, which is gitignored and would put the gate on one machine only) names all 53 tools the server exposes: 34 reads allowed, 19 denied — the 17 that mutate broker state (order place/cancel, option exercise, watchlist and scan mutations) plus both `review_*_order` tools, which price an order without placing it and are denied anyway because trd decides from its own data. There is no mid-name wildcard, so a tool added later matches neither list and surfaces as an unlisted tool needing an explicit decision. See [docs/robinhood-mcp.md](docs/robinhood-mcp.md).
 - The Telegram command bot ([src/trd/notify/bot.py](src/trd/notify/bot.py)) **never opens the database**. DuckDB is single-writer and the bot is resident while a scan is not, so a connection held there would lock out a scan — putting a chat feature in the trading path. Reads answer from the snapshots the scan publishes (`status.json`, `report.json`, `status.txt`); writes go to a queue of JSON files under `TRD_HOME/commands/` that `trd engine apply-queue` drains inside the scan's process. Queue files are named by Telegram's `update_id` so replay order is the order typed and a redelivered update is recognised, not reapplied. Authorization is a numeric-user-id allowlist checked before anything reads the message text.
 - Static reference data (curated universe, FOMC/macro calendar) lives in [src/trd/data](src/trd/data) as plain Python — no YAML dep. `SundayPrepService` is pure (provider + data, no DuckDB); its briefing narrative is deterministic templates, leaving a seam for a future `--ai` pass.
+- **The only code in trd that calls a model lives in [src/trd/agents](src/trd/agents)**, is
+  reached through an optional `trd[ai]` extra, and is imported lazily by the CLI — so the
+  engine, the scan image and every test stay runnable on a machine with no API key, no
+  network and no LLM SDK. Nothing under `services/` imports it, the same rule that keeps
+  Typer out. Its tools are all reads and return pydantic models (trd's read surface is
+  already typed, so a tool wrapping the pack needs no adaptation); its output is a
+  validated model, which is what makes "works with several providers" a real claim rather
+  than a hope — a weaker model that drifts fails validation instead of emitting plausible
+  prose. There is no tool that moves a stop, edits config or places an order: read-only is
+  a property of the tool surface, not of the prompt. Tests drive it through pydantic-ai's
+  test models with `ALLOW_MODEL_REQUESTS = False`; the suite never reaches a provider.
 - The decision review ([src/trd/services/review.py](src/trd/services/review.py)) is the
   deterministic half of the daily agent, and the split is deliberate: the pack is the
   agent's *input contract* (so a model's answer can be re-run and diffed), and the
