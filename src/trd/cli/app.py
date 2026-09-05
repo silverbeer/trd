@@ -16,6 +16,7 @@ from rich.table import Table
 
 from trd.build import build_version
 from trd.cli.render import (
+    ai_review_renderables,
     backtest_table,
     board_table,
     dashboard_allocation_table,
@@ -2516,6 +2517,14 @@ def engine_review(
         bool,
         typer.Option("--snapshot", help="Store the review, dated, in each engine's database."),
     ] = False,
+    ai: Annotated[
+        bool,
+        typer.Option("--ai", help="Also ask a model what the numbers mean (needs the 'ai' extra)."),
+    ] = False,
+    model: Annotated[
+        str | None,
+        typer.Option("--model", help="Model to reason with. Default: TRD_AI_MODEL, else Opus 5."),
+    ] = None,
     as_json: JsonOpt = False,
 ) -> None:
     """What the day's decisions say about the rules — statistics, no judgement.
@@ -2536,11 +2545,20 @@ def engine_review(
     result = review(packs, on)
     result.caveats.extend(problems)
 
+    # The model runs on top of the arithmetic, never instead of it: the
+    # deterministic findings are computed first and handed over as input, so a
+    # provider outage costs the judgement and not the review.
+    judged = _ai_review(packs, result, on, model) if ai and packs else None
+
     if snapshot:
-        _store_review(engines, on, result, packs)
+        _store_review(engines, on, result, packs, judged)
 
     if as_json:
-        _emit_json(result)
+        _emit_json(
+            {"review": result.model_dump(mode="json"), "ai": judged.model_dump(mode="json")}
+            if judged
+            else result
+        )
         return
     for problem in problems:
         err_console.print(f"[yellow]warning:[/yellow] {problem}")
@@ -2549,10 +2567,46 @@ def engine_review(
         return
     for renderable in review_renderables(result, packs):
         console.print(renderable, markup=True, highlight=False)
+    if judged is not None:
+        for renderable in ai_review_renderables(judged):
+            console.print(renderable, markup=True, highlight=False)
+
+
+def _ai_review(packs: list[EnginePack], result: ReviewResult, on: date, model: str | None):
+    """Ask a model what the day meant, or explain why it could not be asked.
+
+    Imported here rather than at module scope: `trd.agents.review_agent` imports
+    pydantic-ai, and every other command in this CLI must keep working on a
+    machine that has never installed it.
+    """
+    try:
+        from trd.agents.review_agent import run_ai_review
+    except ImportError:
+        err_console.print(
+            "[yellow]warning:[/yellow] --ai needs the optional extra: "
+            "[bold]uv sync --extra ai[/bold] (or pip install 'trd[ai]'). "
+            "The deterministic review above is unaffected."
+        )
+        return None
+    pack = ReviewPack(on=on, generated_at=result.generated_at, build=result.build, engines=packs)
+    try:
+        with _spinner("Reading the day..."):
+            return run_ai_review(pack, result, model=model)
+    except TrdError as exc:
+        err_console.print(f"[yellow]warning:[/yellow] {exc}")
+    except Exception as exc:
+        # Never fatal. The arithmetic is the review; the model is commentary on
+        # it, and a bad night at the provider must not cost the day's numbers.
+        err_console.print(f"[yellow]warning:[/yellow] the model could not be reached: {exc}")
+    return None
 
 
 def _store_review(
-    engines: str | None, on: date, result: ReviewResult, packs: list[EnginePack]
+    engines: str | None,
+    on: date,
+    result: ReviewResult,
+    packs: list[EnginePack],
+    judged: Any = None,
 ) -> None:
     """Write each engine its own slice of the review, dated.
 
@@ -2585,6 +2639,9 @@ def _store_review(
                 payload={
                     "review": result.model_dump(mode="json"),
                     "pack": pack.model_dump(mode="json"),
+                    # Stored beside the arithmetic it was given, so a claim the
+                    # model made can be read back next to the numbers it saw.
+                    "ai": judged.model_dump(mode="json") if judged else None,
                 },
             )
         except TrdError as exc:

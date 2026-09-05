@@ -14,6 +14,13 @@ dependencies = [
     "lxml>=6.1.1",
 ]
 
+# The judgement half of the decision review, and the only part of trd that talks
+# to a model. Optional on purpose: the engine, the scan CronJob and every read
+# command must stay installable — and testable — on a machine with no API key and
+# no network, and the scan image should not grow an LLM SDK to place a trade.
+[project.optional-dependencies]
+ai = ["pydantic-ai-slim[anthropic]>=2.40"]
+
 [project.scripts]
 trd = "trd.cli.app:main"
 
@@ -23,6 +30,9 @@ dev = [
     "pytest-cov>=6",
     "ruff>=0.9",
     "ty",
+    # In dev, not in the runtime install: the review agent's tests must run in CI,
+    # and they run against pydantic-ai's own test models — never a provider.
+    "pydantic-ai-slim[anthropic]>=2.40",
 ]
 
 [build-system]
