@@ -183,11 +183,28 @@ trd engine review [--date ISO] [--engines ...] [--window 30] [--snapshot] [--ai]
                                       # the review. Needs the optional extra (uv sync --extra ai);
                                       # without it the deterministic review still prints.
                                       # Model: --model, else TRD_AI_MODEL, else anthropic:claude-
-                                      # opus-5. Key from ANTHROPIC_API_KEY (laptop: op read from
-                                      # the agents vault; cluster: same secret pattern as Telegram).
+                                      # opus-5. Any pydantic-ai 'provider:model' passes through;
+                                      # trd adds 'claude-code:<opus|sonnet>' (the local claude
+                                      # binary on the subscription — no key, no per-token bill,
+                                      # nothing to install: the DEV LOOP) and 'vertex:<model>'
+                                      # (--extra vertex, gcloud ADC, TRD_AI_VERTEX_PROJECT). Key
+                                      # from ANTHROPIC_API_KEY (laptop: op read from the agents
+                                      # vault; cluster: same secret pattern as Telegram).
+                                      # MEASURED 2026-09-06 on the stored 2026-09-03 pack: $1.08-
+                                      # 1.38/run before (200-260k input, 8-10 requests, nothing
+                                      # cached) → ~$0.20/run after (4-5 requests, ~85% of input
+                                      # read from cache, tool rows trimmed to what a judgement
+                                      # uses), same findings. The cache split is printed on every
+                                      # run: a zero cache read means the prefix is varying and
+                                      # the caching is theatre. Turns of tool use are capped at
+                                      # MAX_REQUESTS; past it a call is refused (not withdrawn —
+                                      # withdrawing tools invalidates the cache) and the model
+                                      # answers with what it has.
                                       # Cost per run is reported only when TRD_AI_PRICE_IN/_OUT are
                                       # set — a price table in source goes stale silently and would
-                                      # be wrong in the flattering direction
+                                      # be wrong in the flattering direction. Cache lanes default
+                                      # to Anthropic's ratios (read 0.1x, write 1.25x); override
+                                      # per MTok with TRD_AI_PRICE_CACHE_READ/_WRITE
 trd engine backtest [--years N] [--fill intrabar|close] [--no-blackout] [--symbols A,B]
 trd engine backtest --scale-out N      # replay with the runner on and off. MEASURED 2026-09-05 over
                                       # 8y / 62 names / ~3,000 trades: expectancy 0.112R flat vs
@@ -320,6 +337,12 @@ CSV import format (header required): `date,account,symbol,side,quantity,price[,f
   prose. There is no tool that moves a stop, edits config or places an order: read-only is
   a property of the tool surface, not of the prompt. Tests drive it through pydantic-ai's
   test models with `ALLOW_MODEL_REQUESTS = False`; the suite never reaches a provider.
+  Tools return **projections** (`TradeBrief`, `SignalBrief`, `WindowSummary`), never the
+  storage models: the fields a judgement uses, at two places. Which backend runs is decided
+  in `resolve_model` alone — pydantic-ai strings pass through, `claude-code:` shells out to
+  the local binary ([src/trd/agents/claude_code.py](src/trd/agents/claude_code.py), which
+  strips ANTHROPIC_API_KEY from the child so the subscription is billed, not the key) and
+  `vertex:` wraps the Anthropic model in a Vertex client. Nothing else learns which.
 - The decision review ([src/trd/services/review.py](src/trd/services/review.py)) is the
   deterministic half of the daily agent, and the split is deliberate: the pack is the
   agent's *input contract* (so a model's answer can be re-run and diffed), and the

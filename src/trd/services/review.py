@@ -417,7 +417,12 @@ def _by_strategy(pack: EnginePack) -> dict[str, list[TradeOutcome]]:
     return out
 
 
-def _capture(outcomes: list[TradeOutcome]) -> Decimal | None:
+def pooled_capture(outcomes: list[TradeOutcome]) -> Decimal | None:
+    """Booked R over offered R, pooled over the trades that were ever offered
+    anything. A trade whose MFE is zero never had anything to keep, so it is in
+    neither the numerator nor the denominator — which is why this can read +4%
+    on a strategy whose booked total is negative. One definition, shared with
+    the agent's window summary: two would hand a model a contradiction."""
     offered = [o for o in outcomes if o.mfe_r and o.mfe_r > 0 and o.exit_r is not None]
     total = sum((o.mfe_r or Decimal(0) for o in offered), Decimal(0))
     if not offered or total <= 0:
@@ -462,7 +467,7 @@ def capture_findings(pack: EnginePack) -> list[Finding]:
     for strategy, outcomes in sorted(_by_strategy(pack).items()):
         if len(outcomes) < MIN_TRADES_TO_SPEAK:
             continue
-        capture = _capture(outcomes)
+        capture = pooled_capture(outcomes)
         if capture is None or capture >= LOW_CAPTURE:
             continue
         offered = sum((o.mfe_r or Decimal(0) for o in outcomes), Decimal(0))

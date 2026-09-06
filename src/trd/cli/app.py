@@ -2534,7 +2534,12 @@ def engine_review(
     ] = False,
     model: Annotated[
         str | None,
-        typer.Option("--model", help="Model to reason with. Default: TRD_AI_MODEL, else Opus 5."),
+        typer.Option(
+            "--model",
+            help="Model to reason with: any pydantic-ai 'provider:model', 'claude-code:opus' "
+            "(the local binary, on the subscription) or 'vertex:<model>'. "
+            "Default: TRD_AI_MODEL, else Opus 5.",
+        ),
     ] = None,
     as_json: JsonOpt = False,
 ) -> None:

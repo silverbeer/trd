@@ -2278,10 +2278,15 @@ def ai_review_renderables(run) -> list:
         out.append("\n".join(lines))
     if review.watch_next:
         out.append("\n[bold]Watch next[/bold]\n" + "\n".join(f"  · {w}" for w in review.watch_next))
-    cost = run.usage.cost_usd
+    usage = run.usage
+    cost = usage.cost_usd
+    # The cache split is printed, not folded into the total: the cost argument
+    # rests on it, and a run reading zero from the cache is paying full price
+    # for its own history whatever the settings say.
     out.append(
-        f"[dim]{run.usage.input_tokens:,} in / {run.usage.output_tokens:,} out over "
-        f"{run.usage.requests} request(s)"
+        f"[dim]{usage.input_tokens:,} in ({usage.cache_read_tokens:,} cached, "
+        f"{usage.cache_write_tokens:,} written to cache) / {usage.output_tokens:,} out over "
+        f"{usage.requests} request(s)"
         + (f" · ${float(cost):.4f}" if cost is not None else " · set TRD_AI_PRICE_IN/_OUT for cost")
         + "[/dim]"
     )
