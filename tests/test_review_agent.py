@@ -14,6 +14,7 @@ output on a real day would tell you.
 
 from datetime import date, datetime, timedelta
 from decimal import Decimal
+from typing import Any, ClassVar
 
 import pytest
 from typer.testing import CliRunner
@@ -33,6 +34,7 @@ from trd.agents.review_agent import (
     AiUsage,
     ReviewDeps,
     build_agent,
+    build_toolset,
     run_ai_review,
 )
 from trd.cli.app import app
@@ -108,8 +110,7 @@ def planted_pack(strategy: str = "breakout", n: int = 40) -> ReviewPack:
 def test_every_tool_is_a_read() -> None:
     """Read-only is a property of the tool surface, not of the instructions. A
     model cannot move a stop it has no tool for, however it is prompted."""
-    agent = build_agent(model=TestModel())
-    names = set(agent._function_toolset.tools)
+    names = set(build_toolset().tools)
     assert names == {
         "deterministic_findings",
         "trades_closed",
@@ -324,3 +325,341 @@ def test_cli_without_the_extra_keeps_the_deterministic_review(
     assert result.exit_code == 0, result.output
     assert "uv sync --extra ai" in result.output
     assert "Nothing conclusive" in result.output  # the review itself still ran
+
+
+# ------------------------------------------------------------------ the seam
+
+
+def test_provider_strings_pass_straight_through(monkeypatch: pytest.MonkeyPatch) -> None:
+    """pydantic-ai's own `provider:model` strings are the seam: thirty-odd
+    providers for free, and trd never learns which one it got."""
+    from trd.agents.review_agent import resolve_model
+
+    assert resolve_model("anthropic:claude-opus-5") == "anthropic:claude-opus-5"
+    assert resolve_model("xai:grok-4") == "xai:grok-4"
+    monkeypatch.setenv("TRD_AI_MODEL", "  openai:gpt-5  ")
+    assert resolve_model(None) == "openai:gpt-5"
+    monkeypatch.delenv("TRD_AI_MODEL")
+    assert resolve_model(None) == DEFAULT_MODEL
+    model = TestModel()
+    assert resolve_model(model) is model
+
+
+def test_claude_code_scheme_resolves_to_the_subscription_adapter() -> None:
+    from trd.agents.claude_code import ClaudeCodeModel
+    from trd.agents.review_agent import resolve_model
+
+    model = resolve_model("claude-code:sonnet")
+    assert isinstance(model, ClaudeCodeModel)
+    assert model.model_name == "claude-code:sonnet"
+    default = resolve_model("claude-code")  # a bare scheme gets the default alias
+    assert isinstance(default, ClaudeCodeModel) and default.model_name == "claude-code:opus"
+
+
+def test_the_scheme_resolves_from_the_environment_too(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The nightly sets TRD_AI_MODEL and passes nothing; the first version
+    resolved the scheme only for an explicit argument and ran the env string
+    straight into pydantic-ai, which had never heard of it."""
+    from trd.agents.claude_code import ClaudeCodeModel
+    from trd.agents.review_agent import resolve_model
+
+    monkeypatch.setenv("TRD_AI_MODEL", "claude-code:sonnet")
+    assert isinstance(resolve_model(None), ClaudeCodeModel)
+
+
+def test_vertex_scheme_needs_a_project_and_a_model(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A half-configured backend fails at build time with the variable named,
+    not at 02:00 in a cluster with a stack trace."""
+    from trd.agents.review_agent import resolve_model
+    from trd.errors import TrdError
+
+    pytest.importorskip("google.auth", reason="the vertex extra is not installed")
+    monkeypatch.delenv("TRD_AI_VERTEX_PROJECT", raising=False)
+    monkeypatch.delenv("GOOGLE_CLOUD_PROJECT", raising=False)
+    with pytest.raises(TrdError, match="TRD_AI_VERTEX_PROJECT"):
+        resolve_model("vertex:claude-opus-5")
+    monkeypatch.setenv("TRD_AI_VERTEX_PROJECT", "proj")
+    with pytest.raises(TrdError, match="model name"):
+        resolve_model("vertex:")
+
+
+# ------------------------------------------------------------ the claude-code adapter
+
+
+def canned_claude_code(replies: list[dict]) -> Any:
+    """A ClaudeCodeModel whose binary is a list of reports, consumed in order.
+    Records the system prompt and transcript of every turn."""
+    from trd.agents.claude_code import ClaudeCodeModel
+
+    class Canned(ClaudeCodeModel):
+        turns: ClassVar[list[tuple[str, str, dict]]] = []
+
+        async def _run(self, system: str, prompt: str, schema: dict) -> dict:
+            self.turns.append((system, prompt, schema))
+            return replies[len(self.turns) - 1]
+
+    return Canned("opus")
+
+
+def test_claude_code_adapter_drives_the_tool_loop_and_answers_typed() -> None:
+    """The whole point of the adapter: pydantic-ai's loop, trd's tools, and a
+    validated answer — with the binary emulated so the test stays offline."""
+    answer = {
+        "summary": "breakout finds moves and gives them back.",
+        "nothing_conclusive": False,
+        "findings": [],
+        "watch_next": [],
+    }
+    usage = {"input_tokens": 100, "output_tokens": 20, "cache_read_input_tokens": 40}
+    model = canned_claude_code(
+        [
+            {
+                "structured_output": {"calls": [{"tool": "trades_closed", "args": {}}]},
+                "usage": usage,
+            },
+            {
+                "structured_output": {"calls": [{"tool": "final_result", "args": answer}]},
+                "usage": usage,
+            },
+        ]
+    )
+    pack = planted_pack()
+    run = run_ai_review(pack, review(pack.engines, ON), agent=build_agent(model=model))
+    assert run.review.summary == answer["summary"]
+    assert run.usage.model == "claude-code:opus"
+    assert run.usage.requests == 2
+    assert run.usage.cache_read_tokens == 80
+    assert run.usage.input_tokens == 280  # the binary's input excludes cache lanes; ours includes
+
+    system, _, schema = model.turns[0]
+    # Instructions and the tool catalogue travel in the system prompt...
+    assert "mechanical trading engine" in system
+    assert "### trades_closed" in system and "### final_result" in system
+    # ...the reply is constrained to known tools...
+    assert set(schema["properties"]["calls"]["items"]["properties"]["tool"]["enum"]) >= {
+        "trades_closed",
+        "final_result",
+    }
+    # ...and the second turn re-renders the transcript with the tool result in it.
+    _, second_prompt, _ = model.turns[1]
+    assert "[you called trades_closed" in second_prompt
+    assert "[result of trades_closed" in second_prompt
+    assert "Session under review" in second_prompt
+
+
+def test_claude_code_adapter_never_hands_the_child_an_api_key(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    """With ANTHROPIC_API_KEY in its environment the binary bills the key,
+    silently — the exact cost this adapter exists to avoid."""
+    import asyncio
+
+    from trd.agents.claude_code import ClaudeCodeModel
+
+    fake = tmp_path / "claude"
+    fake.write_text(
+        "#!/bin/sh\n"
+        'printf \'{"structured_output":{"calls":[]},"result":"%s","usage":{}}\' '
+        '"key=${ANTHROPIC_API_KEY:-absent} nested=${CLAUDECODE:-absent}"\n'
+    )
+    fake.chmod(0o755)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-should-not-leak")
+    monkeypatch.setenv("CLAUDECODE", "1")
+    model = ClaudeCodeModel("opus", binary=str(fake))
+    report = asyncio.run(model._run("sys", "prompt", {"type": "object"}))
+    assert report["result"] == "key=absent nested=absent"
+
+
+def test_claude_code_adapter_reports_a_missing_binary_plainly() -> None:
+    import asyncio
+
+    from trd.agents.claude_code import ClaudeCodeModel
+    from trd.errors import TrdError
+
+    with pytest.raises(TrdError, match="not on PATH"):
+        asyncio.run(ClaudeCodeModel("opus", binary="no-such-claude")._run("s", "p", {}))
+
+
+# ------------------------------------------------------------------ the bound
+
+
+def test_the_round_trips_are_bounded_and_the_bound_still_answers() -> None:
+    """A model that would call tools forever is made to answer instead: past
+    the last permitted turn its calls come back refused, with the tool set —
+    and so the cached prefix — untouched. The night's review survives its own
+    ceiling."""
+    from trd.agents.review_agent import MAX_REQUESTS
+
+    seen: list[tuple[int, str]] = []
+
+    def greedy(messages, info: AgentInfo) -> ModelResponse:
+        last = messages[-1].parts[-1]
+        returned = str(getattr(last, "content", ""))
+        seen.append((len(info.function_tools), returned))
+        if "No turns left" not in returned:
+            return ModelResponse(parts=[ToolCallPart("rule_book", {})])
+        return ModelResponse(
+            parts=[
+                ToolCallPart(
+                    info.output_tools[0].name,
+                    {"summary": "Out of turns.", "nothing_conclusive": True, "findings": []},
+                )
+            ]
+        )
+
+    pack = planted_pack()
+    run = run_ai_review(
+        pack, review(pack.engines, ON), agent=build_agent(model=FunctionModel(greedy))
+    )
+    assert run.usage.requests == MAX_REQUESTS + 1
+    assert all(n > 0 for n, _ in seen)  # the tools were never withdrawn
+    assert "No turns left" in seen[-1][1]
+    assert run.review.nothing_conclusive is True
+
+
+# ------------------------------------------------------------- the payloads
+
+
+def test_tool_payloads_carry_what_a_judgement_uses_and_no_more() -> None:
+    """The first version returned the storage model whole and cost $1.38 a run.
+    A trade row is symbol, strategy, rule, R, MAE, MFE, capture, follow-through
+    and the entry reason — not prices, quantities, timestamps, or eight places."""
+    from trd.agents.review_agent import SignalBrief, TradeBrief, WindowSummary
+
+    trade_fields = set(TradeBrief.model_fields)
+    assert trade_fields == {
+        "symbol",
+        "strategy",
+        "rule",
+        "bars_held",
+        "r",
+        "mae_r",
+        "mfe_r",
+        "capture",
+        "after_r",
+        "entry_reason",
+    }
+    assert not trade_fields & {"entry_price", "exit_price", "quantity", "opened_at", "closed_at"}
+    assert set(SignalBrief.model_fields) == {
+        "symbol",
+        "strategy",
+        "acted",
+        "blocked",
+        "score",
+        "resolution",
+        "forward_r",
+        "mfe_r",
+        "mae_r",
+    }
+    assert set(WindowSummary.model_fields) == {"window_days", "by_strategy", "signals"}
+
+
+def test_projections_round_to_two_places() -> None:
+    from trd.agents.review_agent import TradeBrief
+    from trd.services.review import TradeReview
+
+    trade = TradeReview(
+        symbol="AAA",
+        strategy="breakout",
+        strategy_name="Breakout",
+        strategy_intent="x",
+        opened_at=datetime(2026, 9, 1, 9, 30),
+        entry_price=Decimal("100.12345678"),
+        quantity=Decimal("10"),
+        stop_price=Decimal("98"),
+        target_price=Decimal("104"),
+        r_multiple=Decimal("0.123456789"),
+        outcome=TradeOutcome(
+            position_id=1,
+            computed_at=datetime(2026, 9, 3, 16, 0),
+            timeframe="1d",
+            bars_seen=3,
+            risk_per_share=Decimal("2"),
+            mae_r=Decimal("-0.987654321"),
+            mfe_r=Decimal("1.5"),
+            exit_r=Decimal("0.123456789"),
+            capture=Decimal("0.0823045"),
+            follow_through_r=Decimal("0.7"),
+            follow_through_seen=0,  # no future yet: must read as unknown, not 0.7
+        ),
+    )
+    brief = TradeBrief.of(trade)
+    assert brief.r == Decimal("0.12")
+    assert brief.mae_r == Decimal("-0.99")
+    assert brief.capture == Decimal("0.08")
+    assert brief.after_r is None
+
+
+def test_the_brief_carries_the_findings_and_the_window() -> None:
+    """Two round trips the model made every night — fetching the findings and
+    the per-strategy window — are folded into the prompt it starts with."""
+    from trd.agents.review_agent import _brief
+
+    pack = planted_pack()
+    deps = ReviewDeps(pack=pack, computed=review(pack.engines, ON))
+    brief = _brief(deps)
+    assert "swing/breakout over 30d: 40 trades" in brief
+    assert "capture 10%" in brief
+    assert "FINDING swing/strategy breakout (n=40)" in brief
+
+
+# ----------------------------------------------------------- cache accounting
+
+
+def test_cache_lanes_are_priced_and_uncached_input_is_what_is_left(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """input_tokens is the provider's total; the cache lanes are the part of it
+    that went through the cache. Read at a tenth, written at a quarter more."""
+    monkeypatch.setenv("TRD_AI_PRICE_IN", "5")
+    monkeypatch.setenv("TRD_AI_PRICE_OUT", "25")
+    monkeypatch.delenv("TRD_AI_PRICE_CACHE_READ", raising=False)
+    monkeypatch.delenv("TRD_AI_PRICE_CACHE_WRITE", raising=False)
+    usage = AiUsage(
+        model="m",
+        input_tokens=1_000_000,
+        cache_read_tokens=800_000,
+        cache_write_tokens=100_000,
+        output_tokens=0,
+    )
+    assert usage.uncached_input_tokens == 100_000
+    # 100k at $5 + 800k at $0.50 + 100k at $6.25 = 0.5 + 0.4 + 0.625
+    assert usage.cost_usd == Decimal("1.525")
+
+    monkeypatch.setenv("TRD_AI_PRICE_CACHE_READ", "0.25")  # a model with a different read rate
+    assert usage.cost_usd == Decimal("1.325")
+
+
+# -------------------------------------------------------------- the render
+
+
+def test_the_render_prints_the_cache_split_not_a_total(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A run reading nothing from the cache is paying full price for its own
+    history whatever the settings claim; the line that would show it must not
+    be folded into one input number."""
+    from rich.console import Console
+
+    from trd.agents.review_agent import AiReviewRun
+    from trd.cli.render import ai_review_renderables
+
+    monkeypatch.setenv("TRD_AI_PRICE_IN", "5")
+    monkeypatch.setenv("TRD_AI_PRICE_OUT", "25")
+    run = AiReviewRun(
+        review=AiReview(summary="Quiet.", nothing_conclusive=True),
+        usage=AiUsage(
+            model="anthropic:claude-opus-5",
+            input_tokens=50_000,
+            cache_read_tokens=40_000,
+            cache_write_tokens=9_000,
+            output_tokens=3_000,
+            requests=4,
+        ),
+    )
+    console = Console(record=True, width=200)
+    for renderable in ai_review_renderables(run):
+        console.print(renderable, markup=True, highlight=False)
+    text = console.export_text()
+    assert "40,000 cached" in text and "9,000 written to cache" in text
+    assert "4 request(s)" in text
+    # 1k at $5 + 40k at $0.50 + 9k at $6.25 + 3k at $25 = 0.005 + 0.02 + 0.05625 + 0.075
+    assert "$0.1562" in text

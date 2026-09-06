@@ -20,6 +20,10 @@ dependencies = [
 # no network, and the scan image should not grow an LLM SDK to place a trade.
 [project.optional-dependencies]
 ai = ["pydantic-ai-slim[anthropic]>=2.40"]
+# 'vertex:<model>' in TRD_AI_MODEL: the same Anthropic model class over a Google
+# Cloud project, authenticated by gcloud ADC. 'claude-code:<model>' needs no
+# extra at all — only the claude binary on PATH.
+vertex = ["pydantic-ai-slim[anthropic]>=2.40", "anthropic[vertex]>=1.4"]
 
 [project.scripts]
 trd = "trd.cli.app:main"
