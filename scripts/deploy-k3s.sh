@@ -9,6 +9,7 @@
 #   ./scripts/deploy-k3s.sh --day           # the day-mode engine (~/.trd-day) instead
 #   ./scripts/deploy-k3s.sh --bot           # the Telegram command bot (one Deployment)
 #   ./scripts/deploy-k3s.sh --report        # the post-market report (one CronJob, both engines)
+#   ./scripts/deploy-k3s.sh --review        # the nightly decision review (one CronJob, both engines)
 #
 # Two engines can run side by side: they share the image, the namespace and the
 # optional Telegram secret, and differ only in which database they mount. The
@@ -32,6 +33,7 @@ RUN_TEST=false
 DAY_MODE=false
 BOT_MODE=false
 REPORT_MODE=false
+REVIEW_MODE=false
 while [[ $# -gt 0 ]]; do
     case $1 in
         --skip-build) SKIP_BUILD=true; shift ;;
@@ -39,9 +41,10 @@ while [[ $# -gt 0 ]]; do
         --day) DAY_MODE=true; shift ;;
         --bot) BOT_MODE=true; shift ;;
         --report) REPORT_MODE=true; shift ;;
+        --review) REVIEW_MODE=true; shift ;;
         *)
             echo "Unknown option: $1"
-            echo "Usage: $0 [--skip-build] [--test] [--day] [--bot] [--report]"
+            echo "Usage: $0 [--skip-build] [--test] [--day] [--bot] [--report] [--review]"
             exit 1
             ;;
     esac
@@ -216,6 +219,46 @@ if [[ "$REPORT_MODE" == true ]]; then
     echo -e "${BLUE}Send one now (ignores the schedule, not the market calendar):${NC}"
     echo "    kubectl create job -n trd --from=cronjob/trd-engine-report report-now"
     echo "    kubectl logs -n trd -l component=report --tail=50"
+    exit 0
+fi
+
+# --- the nightly decision review ---------------------------------------------
+# One CronJob covering BOTH engines, like the report and for the same reason:
+# one message a night. It runs `trd engine review --ai --snapshot --notify` at
+# 16:31 ET — the arithmetic, then the model's read, stored per engine and sent.
+# The model needs ANTHROPIC_API_KEY in a secret named trd-engine-ai; without it
+# the deterministic review still runs, snapshots and sends.
+if [[ "$REVIEW_MODE" == true ]]; then
+    SWING_HOME="${SWING_HOME:-$HOME/.trd-engine}"
+    DAY_HOME="${DAY_HOME:-$HOME/.trd-day}"
+
+    for home in "$SWING_HOME" "$DAY_HOME"; do
+        if [[ ! -d "$home" ]]; then
+            echo -e "${RED}✗ ${home} does not exist.${NC} Seed the engine before mounting it."
+            exit 1
+        fi
+    done
+    if ! kubectl get secret trd-engine-telegram -n "$NAMESPACE" &>/dev/null; then
+        echo -e "${YELLOW}⚠ No trd-engine-telegram secret — the review will log, not send.${NC}"
+    fi
+    if ! kubectl get secret trd-engine-ai -n "$NAMESPACE" &>/dev/null; then
+        echo -e "${YELLOW}⚠ No trd-engine-ai secret — the model's read is skipped; the arithmetic still runs.${NC}"
+        echo "  Create it from the agents vault, never from a pasted value:"
+        echo "    kubectl create secret generic trd-engine-ai -n trd \\"
+        echo "      --from-literal=ANTHROPIC_API_KEY=\"\$(op read 'op://agents/anthropic_key/password')\""
+    fi
+
+    echo -e "${YELLOW}⚙️  Applying the review CronJob...${NC}"
+    kubectl apply -f k3s/trd-engine/namespace.yaml
+    sed -E \
+        -e "s#path: /Users/[^[:space:]]*\.trd-engine#path: ${SWING_HOME}#" \
+        -e "s#path: /Users/[^[:space:]]*\.trd-day#path: ${DAY_HOME}#" \
+        k3s/trd-engine/review-cronjob.yaml | kubectl apply -f -
+    echo -e "${GREEN}✅ Applied${NC} (trd-engine-review, 16:31 ET weekdays → swing=${SWING_HOME}, day=${DAY_HOME})"
+    echo ""
+    echo -e "${BLUE}Run one now (ignores the schedule, not the market calendar):${NC}"
+    echo "    kubectl create job -n trd --from=cronjob/trd-engine-review review-now"
+    echo "    kubectl logs -n trd -l component=review --tail=80 -f"
     exit 0
 fi
 

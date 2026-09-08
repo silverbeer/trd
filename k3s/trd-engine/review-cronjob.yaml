@@ -1,0 +1,123 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: trd-engine-review
+  namespace: trd
+  labels:
+    app: trd
+    component: review
+spec:
+  # 16:31 ET on weekdays: after the 16:16 report, and off the ten-minute grid the
+  # queue drain uses, so the two never wait on one writer lock. The day engine
+  # flattened at 15:55 and the last scan backfilled outcomes before 16:16, so the
+  # pack this reads is the day's final pack.
+  #
+  # timeZone, so DST is handled and this does not become 15:31 in November.
+  schedule: "31 16 * * 1-5"
+  timeZone: "America/New_York"
+
+  # One review, not two. Nothing here writes trades — --snapshot writes one
+  # dated row per engine — but a duplicated message every evening is how a
+  # channel stops being read.
+  concurrencyPolicy: Forbid
+
+  # A review that starts late is still a review: the pack is the same at 18:00.
+  startingDeadlineSeconds: 3600
+
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      # One attempt. The model is commentary on the arithmetic, never the
+      # review: a provider outage costs the commentary, the command still exits
+      # 0 with the deterministic findings printed and sent.
+      backoffLimit: 0
+      ttlSecondsAfterFinished: 3600
+      template:
+        metadata:
+          labels:
+            app: trd
+            component: review
+        spec:
+          restartPolicy: Never
+          containers:
+            - name: trd
+              image: trd:latest
+              imagePullPolicy: Never # locally built, imported with ctr
+              # The entrypoint runs whatever trd subcommand it is given, so the
+              # report, the bot and the scan are one image with three arguments.
+              #
+              # Both engines in one invocation: one database is one engine, so
+              # "combined" is two reads summed, and one message covering both is
+              # the entire point — two messages would be the fill alerts again.
+              # The deterministic review over both engines, then the model's
+              # read on top of it, snapshotted per engine (dated, so a claim
+              # made Tuesday can be scored Friday) and sent as one message.
+              args:
+                - engine
+                - review
+                - --engines
+                - swing=/engines/swing,day=/engines/day
+                - --ai
+                - --snapshot
+                - --notify
+              env:
+                - name: TZ
+                  value: America/New_York
+                - name: NO_COLOR
+                  value: "1" # plain text in kubectl logs
+                # A pinned model, so two nights' reviews are comparable; and the
+                # prices that put the cost on the artefact. Measured 2026-09-06:
+                # ~$0.20 a night at these rates (SB-1013). Update the prices when
+                # Anthropic does — a stale one is wrong in the flattering direction.
+                - name: TRD_AI_MODEL
+                  value: anthropic:claude-opus-5
+                - name: TRD_AI_PRICE_IN
+                  value: "5"
+                - name: TRD_AI_PRICE_OUT
+                  value: "25"
+              envFrom:
+                # TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID. Optional, like the report's:
+                # without it the review still runs and prints to the pod log.
+                - secretRef:
+                    name: trd-engine-telegram
+                    optional: true
+                # ANTHROPIC_API_KEY. Optional too: without it --ai prints a warning
+                # and the deterministic review is still sent. See secret.example.yaml.
+                - secretRef:
+                    name: trd-engine-ai
+                    optional: true
+              resources:
+                requests:
+                  memory: "256Mi"
+                  cpu: "100m"
+                limits:
+                  memory: "1Gi"
+                  cpu: "1000m"
+              securityContext:
+                runAsNonRoot: true
+                # Must match the uid that owns the engine homes: --snapshot writes
+                # one dated row per engine.
+                runAsUser: 1000
+                allowPrivilegeEscalation: false
+                capabilities:
+                  drop:
+                    - ALL
+              volumeMounts:
+                # The same two homes the bot mounts, under the same names, so the
+                # engine called "day" in chat is the engine called "day" here.
+                - name: swing-home
+                  mountPath: /engines/swing
+                - name: day-home
+                  mountPath: /engines/day
+          volumes:
+            # EDIT these paths for the machine you deploy to — deploy-k3s.sh rewrites
+            # them by the suffix each one already carries.
+            - name: swing-home
+              hostPath:
+                path: /Users/tomdrake/.trd-engine
+                type: DirectoryOrCreate
+            - name: day-home
+              hostPath:
+                path: /Users/tomdrake/.trd-day
+                type: DirectoryOrCreate

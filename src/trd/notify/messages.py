@@ -21,6 +21,7 @@ Plain text, no markup — see TelegramNotifier for why.
 from collections.abc import Callable
 from datetime import datetime, timedelta
 from decimal import Decimal
+from typing import Any
 
 from trd.engine import EXIT_REGISTRY
 from trd.engine import REGISTRY as STRATEGIES
@@ -28,6 +29,7 @@ from trd.engine.bars import DAILY
 from trd.models import StrategyStat
 from trd.services.daily_report import DailyReport, EngineDay, ExitEvent
 from trd.services.engine import ScanFill, ScanResult
+from trd.services.review import EnginePack, ReviewResult
 
 
 def _money(value: float | Decimal | None) -> str:
@@ -507,3 +509,95 @@ def _trades_section(live: list[EngineDay], budget: int) -> list[str]:
         if tail:
             lines += [_trade_line(e, engine.timeframe) for e in events[-tail:]]
     return lines
+
+
+# ---------------------------------------------------------------- the review
+
+# Telegram rejects a message over 4096 characters outright — the whole thing,
+# not the tail. A review with six findings and their rationales can get there,
+# so the message is built to a budget and says when it was cut.
+REVIEW_MESSAGE_BUDGET = 3900
+REVIEW_MAX_FINDINGS = 6
+REVIEW_MAX_WATCH = 4
+
+
+def _clip(text: str, limit: int) -> str:
+    text = " ".join(text.split())
+    return text if len(text) <= limit else text[: limit - 1].rstrip() + "…"
+
+
+def review_message(result: ReviewResult, packs: list[EnginePack], judged: Any | None = None) -> str:
+    """The nightly decision review as one message worth reading on a phone.
+
+    The arithmetic first and the model's read below it, visually separate, the
+    same order the terminal prints them: what a detector computed and what a
+    model concluded are different kinds of claim, and a reader has to be able
+    to tell which is which at a glance. `judged` is the agent's `AiReviewRun`,
+    typed loosely here on purpose — this module must import nothing from
+    `trd.agents`, which lives behind an optional extra.
+
+    "Nothing conclusive" is written out as a real answer. It is the expected one
+    on most days, and a message that looked broken on a quiet day would train
+    its reader to ignore the day it says something.
+    """
+    lines = [f"🔍 trd review — {result.on:%a %b %-d}"]
+    width = max((len(p.engine) for p in packs), default=0)
+    for pack in packs:
+        day = pack.day
+        lines.append(
+            f"{pack.engine.ljust(width)}  {pack.config.timeframe} · {len(pack.trades)} closed, "
+            f"{len(pack.signals)} signals · {_signed(day.realized_today)}"
+        )
+    for caveat in result.caveats:
+        if "stale" in caveat or "no outcome measured" in caveat:
+            lines.append(f"⚠ {_clip(caveat, 160)}")
+
+    findings = result.findings
+    if findings:
+        hyp = result.hypotheses
+        head = f"{len(findings)} finding{'' if len(findings) == 1 else 's'}"
+        if hyp:
+            head += f", {hyp} of them hypotheses"
+        lines += ["", f"ARITHMETIC — {head}"]
+        for finding in findings[:REVIEW_MAX_FINDINGS]:
+            label = "HYPOTHESIS" if finding.hypothesis else "FINDING"
+            lines.append(
+                f"{label} {finding.engine}/{finding.subject} · {_clip(finding.headline, 120)} "
+                f"(n={finding.n} over {finding.window_days}d)"
+            )
+            if finding.evidence:
+                evidence = " · ".join(f"{k} {v}" for k, v in finding.evidence.items())
+                lines.append(f"  {_clip(evidence, 140)}")
+        if len(findings) > REVIEW_MAX_FINDINGS:
+            lines.append(f"  … and {len(findings) - REVIEW_MAX_FINDINGS} more in trd engine review")
+    else:
+        lines += ["", "ARITHMETIC — nothing conclusive today"]
+
+    if judged is not None:
+        review = judged.review
+        usage = judged.usage
+        cost = getattr(usage, "cost_usd", None)
+        tag = usage.model + (f" · ${float(cost):.2f}" if cost is not None else "")
+        lines += ["", f"THE MODEL'S READ ({tag})", _clip(review.summary, 600)]
+        if review.nothing_conclusive and not review.findings:
+            lines.append("Nothing conclusive today.")
+        for finding in review.findings[:REVIEW_MAX_FINDINGS]:
+            label = "HYPOTHESIS" if finding.hypothesis else "FINDING"
+            lines.append(
+                f"{label} {_clip(finding.headline, 200)} — {finding.engine} · "
+                f"{finding.scope}: {_clip(finding.subject, 40)} · n={finding.trades}"
+            )
+            if finding.rests_on:
+                lines.append(f"  rests on: {_clip(' · '.join(finding.rests_on), 200)}")
+            lines.append(f"  test: {_clip(finding.test, 160)}")
+        if review.watch_next:
+            lines += ["", "WATCH NEXT"]
+            lines += [f" · {_clip(w, 200)}" for w in review.watch_next[:REVIEW_MAX_WATCH]]
+
+    text = "\n".join(lines)
+    if len(text) > REVIEW_MESSAGE_BUDGET:
+        text = (
+            text[: REVIEW_MESSAGE_BUDGET - 40].rstrip()
+            + "\n… cut; the rest is in trd engine review"
+        )
+    return text
