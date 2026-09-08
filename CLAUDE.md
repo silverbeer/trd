@@ -176,7 +176,7 @@ trd engine review-pack [--date ISO] [--engines ...] [--window 30] [--json]
                                       # from the same code the Telegram report reads.
                                       # A document, not a set of queries: an agent is only
                                       # reproducible if its input is
-trd engine review [--date ISO] [--engines ...] [--window 30] [--snapshot] [--ai] [--model M] [--json]
+trd engine review [--date ISO] [--engines ...] [--window 30] [--snapshot] [--ai] [--model M] [--notify] [--json]
                                       # findings over the pack — statistics, no judgement, no LLM.
                                       # Scoped to a RULE / STRATEGY / FILTER, never a trade; each
                                       # carries n, its evidence, and the backtest that would settle
@@ -219,6 +219,12 @@ trd engine review [--date ISO] [--engines ...] [--window 30] [--snapshot] [--ai]
                                       # be wrong in the flattering direction. Cache lanes default
                                       # to Anthropic's ratios (read 0.1x, write 1.25x); override
                                       # per MTok with TRD_AI_PRICE_CACHE_READ/_WRITE
+                                      # --notify sends ONE Telegram message: the arithmetic, then
+                                      # the model's read below it. A date no engine has a bar for
+                                      # sends nothing (a holiday must never post "nothing
+                                      # conclusive"). Nightly: k3s/trd-engine/review-cronjob.yaml
+                                      # (./scripts/deploy-k3s.sh --review), 16:31 ET, both engines,
+                                      # --ai --snapshot --notify; key in secret trd-engine-ai
 trd engine backtest [--years N] [--fill intrabar|close] [--no-blackout] [--symbols A,B]
                                       # --fill defaults to intrabar on daily bars and CLOSE on
                                       # intraday ones. MEASURED 2026-09-08 (SB-1030): the day
@@ -307,6 +313,11 @@ and sending one message. Deployed once, not per engine — one message covering 
 the whole point, and two would be the fill alerts again. It runs after the scan
 CronJob's entrypoint has stopped for the day (it refuses past 16:00), and off the
 ten-minute grid the queue drain uses, so it is not waiting on the writer lock.
+
+The nightly decision review is the third CronJob (`k3s/trd-engine/review-cronjob.yaml`,
+`./scripts/deploy-k3s.sh --review`): 16:31 ET weekdays, both homes, `trd engine review
+--ai --snapshot --notify`. Same shape as the report and deployed once for the same reason.
+The image carries the `ai` extra for it; the scan never imports it.
 
 The Telegram command bot is a **Deployment**, not a CronJob — long polling has to stay
 resident: `k3s/trd-engine/bot-deployment.yaml`. `replicas: 1` and `strategy: Recreate`

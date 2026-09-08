@@ -433,3 +433,141 @@ def test_cli_stores_the_review_dated(cli_env: FakeProvider, tmp_path) -> None:
         assert payload["pack"]["engine"] == "swing"
     finally:
         conn.close()
+
+
+# -------------------------------------------------------------- the message
+
+
+def test_the_review_message_puts_the_arithmetic_before_the_model() -> None:
+    """One Telegram message a night: what a detector computed, then what a
+    model concluded, visibly separate — different kinds of claim."""
+    from types import SimpleNamespace
+
+    from trd.notify.messages import review_message
+
+    packs = [pack(window("momentum", 40, mfe="2.0", exit_r="0.2"))]
+    result = review(packs, ON)
+    assert result.findings, "the fixture is meant to plant a low-capture finding"
+
+    judged = SimpleNamespace(
+        review=SimpleNamespace(
+            summary="Today said little; the window says the exits are slow.",
+            nothing_conclusive=False,
+            findings=[
+                SimpleNamespace(
+                    headline="momentum keeps a tenth of what it is offered",
+                    engine="swing",
+                    scope="strategy",
+                    subject="momentum",
+                    rests_on=["capture 0.10 over 40 trades"],
+                    trades=40,
+                    hypothesis=False,
+                    test="trd engine backtest --years 5",
+                )
+            ],
+            watch_next=["whether capture recovers with a trail"],
+        ),
+        usage=SimpleNamespace(model="anthropic:claude-opus-5", cost_usd=Decimal("0.2036")),
+    )
+    text = review_message(result, packs, judged)
+    assert text.startswith("🔍 trd review — Thu Sep 3")
+    assert "ARITHMETIC — 2 findings" in text
+    assert "FINDING swing/momentum" in text and "n=40 over 30d" in text
+    assert "THE MODEL'S READ (anthropic:claude-opus-5 · $0.20)" in text
+    assert text.index("ARITHMETIC") < text.index("THE MODEL'S READ")
+    assert "rests on: capture 0.10 over 40 trades" in text
+    assert "WATCH NEXT" in text
+    assert len(text) <= 4096
+
+
+def test_the_review_message_says_nothing_conclusive_out_loud() -> None:
+    from trd.notify.messages import review_message
+
+    packs = [pack(window("momentum", 3))]
+    text = review_message(review(packs, ON), packs, None)
+    assert "ARITHMETIC — nothing conclusive today" in text
+    assert "MODEL" not in text  # no model ran, no section pretending one did
+
+
+def test_the_review_message_stays_under_telegrams_limit() -> None:
+    """Telegram rejects a message over 4096 characters whole, not the tail."""
+    from types import SimpleNamespace
+
+    from trd.notify.messages import REVIEW_MESSAGE_BUDGET, review_message
+
+    packs = [pack(window("momentum", 40, mfe="2.0", exit_r="0.2"))]
+    long = SimpleNamespace(
+        headline="x" * 300,
+        engine="swing",
+        scope="strategy",
+        subject="momentum",
+        rests_on=["y" * 300] * 5,
+        trades=40,
+        hypothesis=False,
+        test="z" * 300,
+    )
+    judged = SimpleNamespace(
+        review=SimpleNamespace(
+            summary="s" * 2000,
+            nothing_conclusive=False,
+            findings=[long] * 12,
+            watch_next=["w" * 500] * 8,
+        ),
+        usage=SimpleNamespace(model="m", cost_usd=None),
+    )
+    text = review_message(review(packs, ON), packs, judged)
+    assert len(text) <= REVIEW_MESSAGE_BUDGET
+    assert text.endswith("the rest is in trd engine review")
+
+
+# ------------------------------------------------------------------- notify
+
+
+def test_cli_notify_sends_nothing_on_a_date_with_no_session(
+    cli_env: FakeProvider, tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A holiday must never post "nothing conclusive" — it trains the reader to
+    ignore the message on the day it says something."""
+    import trd.cli.app as cli
+
+    home = _home(tmp_path, "swing", cli_env)
+    sent: list[str] = []
+
+    class Spy:
+        def send(self, text: str) -> None:
+            sent.append(text)
+
+    monkeypatch.setattr(cli, "notify_from_env", lambda: Spy())
+    holiday = (ON + timedelta(days=200)).isoformat()  # no bar anywhere near it
+    result = runner.invoke(
+        app, ["engine", "review", "--engines", f"swing={home}", "--date", holiday, "--notify"]
+    )
+    assert result.exit_code == 0, result.output
+    assert "nothing sent" in result.output
+    assert sent == []
+
+
+def test_cli_notify_sends_the_review_when_the_session_traded(
+    cli_env: FakeProvider, tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import trd.cli.app as cli
+
+    home = _home(tmp_path, "swing", cli_env)
+    sent: list[str] = []
+
+    class Spy:
+        def send(self, text: str) -> None:
+            sent.append(text)
+
+    monkeypatch.setattr(cli, "notify_from_env", lambda: Spy())
+    # The session that "traded" is the last bar the fixture stored, not ON: the
+    # market_open rule is "some engine has a bar for this date", same as the report.
+    traded = make_bars(uptrend())[-1].date.isoformat()
+    result = runner.invoke(
+        app,
+        ["engine", "review", "--engines", f"swing={home}", "--date", traded, "--notify"],
+    )
+    assert result.exit_code == 0, result.output
+    assert len(sent) == 1
+    assert sent[0].startswith("🔍 trd review")
+    assert "ARITHMETIC" in sent[0]

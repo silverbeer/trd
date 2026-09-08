@@ -20,7 +20,10 @@ WORKDIR /app
 # LICENSE is not optional here: pyproject declares `license = { file = "LICENSE" }`,
 # so hatchling fails metadata generation without it and the image cannot build.
 COPY pyproject.toml uv.lock README.md LICENSE ./
-RUN uv export --no-dev --frozen --no-hashes > requirements.txt && \
+# --extra ai: the nightly review CronJob runs `trd engine review --ai` from this
+# same image. The trading path does not import it (see CLAUDE.md); it is only
+# reached through the lazy import behind --ai, so a scan is unchanged by its presence.
+RUN uv export --no-dev --frozen --no-hashes --extra ai > requirements.txt && \
     pip install --no-cache-dir -r requirements.txt
 
 # Then the package itself, for the `trd` console script.

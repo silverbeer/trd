@@ -202,6 +202,36 @@ kubectl run trd-queue-now -n trd --rm -i --restart=Never --image=trd:latest \
   --image-pull-policy=Never --env TRD_QUEUE_FORCE=1 --command -- /app/queue-entrypoint.sh
 ```
 
+## The nightly decision review — one message, both engines
+
+```bash
+./scripts/deploy-k3s.sh --review      # 16:31 ET, weekdays, swing + day in one message
+kubectl create job -n trd --from=cronjob/trd-engine-review review-now
+kubectl logs -n trd -l component=review --tail=80
+```
+
+`trd engine review --engines swing=…,day=… --ai --snapshot --notify`: the deterministic
+findings over both engines' packs, the model's read on top of them, one dated
+`review_snapshot` row per engine (so a claim made Tuesday can be scored Friday), and
+one Telegram message — the arithmetic first, the model's read below it, visually
+separate, because a detector's number and a model's conclusion are different kinds of
+claim. Deployed once, like the report; it does not take `--day`.
+
+- **16:31**, after the 16:16 report and off the ten-minute queue grid, so it never waits
+  on the writer lock. The last scan backfilled outcomes before either.
+- **A holiday sends nothing.** A date no engine has a bar for is skipped, same rule as
+  the report: a review that posted "nothing conclusive" every Thanksgiving would train
+  its reader to ignore it.
+- **The model needs `ANTHROPIC_API_KEY`** in a secret named `trd-engine-ai`
+  (`secret.example.yaml` has the one-liner that reads it from the agents vault).
+  Without it the arithmetic still runs, snapshots and sends; `--ai` prints a warning.
+  The image carries the `ai` extra for this job; nothing in the scan imports it.
+- **Cost is on the artefact.** `TRD_AI_MODEL` pins the model and `TRD_AI_PRICE_IN/_OUT`
+  put dollars in the message: measured ~$0.20 a night at Opus 5 (SB-1013), most of the
+  input read from the cache. A cache read of zero in the log means the prefix is varying.
+- **One message, not two.** `concurrencyPolicy: Forbid`, one attempt, and the command
+  exits 0 when the provider is down — the review is the arithmetic; the model is a remark.
+
 ## Outcome measurement — after the close, not during
 
 The last scan of the day (15:55 or later) runs `trd engine outcomes --backfill`

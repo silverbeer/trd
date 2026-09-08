@@ -71,7 +71,7 @@ from trd.notify.bot import (
     bot_from_env,
     engines_from_env,
 )
-from trd.notify.messages import daily_report_message
+from trd.notify.messages import daily_report_message, review_message
 from trd.notify.telegram import TelegramNotifier
 from trd.notify.telegram import from_env as notify_from_env
 from trd.providers import YFinanceProvider
@@ -2549,6 +2549,14 @@ def engine_review(
             "Default: TRD_AI_MODEL, else Opus 5.",
         ),
     ] = None,
+    notify: Annotated[
+        bool,
+        typer.Option(
+            "--notify",
+            help="Send the review to the configured chat (Telegram). Nothing is sent on a "
+            "date no engine has a bar for.",
+        ),
+    ] = False,
     as_json: JsonOpt = False,
 ) -> None:
     """What the day's decisions say about the rules — statistics, no judgement.
@@ -2594,6 +2602,31 @@ def engine_review(
     if judged is not None:
         for renderable in ai_review_renderables(judged):
             console.print(renderable, markup=True, highlight=False)
+    if notify:
+        _notify_review(result, packs, judged, on)
+
+
+def _notify_review(result: ReviewResult, packs: list[EnginePack], judged: Any, on: date) -> None:
+    """One message, the arithmetic then the model's read — or nothing at all.
+
+    The same rule as the daily report: a date no engine has a bar for is a
+    holiday or a sync that has not landed, and a review that posted "nothing
+    conclusive" every Thanksgiving would train its reader to ignore it.
+    """
+    if not any(pack.day.last_session == on for pack in packs):
+        console.print("[dim]No session stored for this date — nothing sent.[/dim]")
+        return
+    notifier = notify_from_env()
+    if notifier is None:
+        err_console.print(
+            "[yellow]warning:[/yellow] --notify set but TELEGRAM_BOT_TOKEN / "
+            "TELEGRAM_CHAT_ID are not configured — nothing sent."
+        )
+        return
+    try:
+        notifier.send(review_message(result, packs, judged))
+    except TrdError as exc:
+        err_console.print(f"[yellow]warning:[/yellow] notification failed: {exc}")
 
 
 def _ai_review(packs: list[EnginePack], result: ReviewResult, on: date, model: str | None):
