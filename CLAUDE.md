@@ -220,6 +220,13 @@ trd engine review [--date ISO] [--engines ...] [--window 30] [--snapshot] [--ai]
                                       # to Anthropic's ratios (read 0.1x, write 1.25x); override
                                       # per MTok with TRD_AI_PRICE_CACHE_READ/_WRITE
 trd engine backtest [--years N] [--fill intrabar|close] [--no-blackout] [--symbols A,B]
+                                      # --fill defaults to intrabar on daily bars and CLOSE on
+                                      # intraday ones. MEASURED 2026-09-08 (SB-1030): the day
+                                      # engine's 105 live stops averaged -1.34R, 24% worse than
+                                      # -1.5R; the close replay gave -1.32R / 21%, the intrabar
+                                      # replay -1.02R / 2%. A stop is honoured at the next scan,
+                                      # not at the level, and intrabar on 5m bars is a fill the
+                                      # day engine has never received. The result records which
 trd engine backtest --scale-out N      # replay with the runner on and off. MEASURED 2026-09-05 over
                                       # 8y / 62 names / ~3,000 trades: expectancy 0.112R flat vs
                                       # 0.117R at 50% and 0.116R at 70% — noise — while max drawdown

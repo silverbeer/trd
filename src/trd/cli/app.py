@@ -2809,13 +2809,15 @@ def engine_backtest(
     ] = None,
     end: Annotated[str | None, typer.Option("--end", help="Last date to replay (ISO).")] = None,
     fill: Annotated[
-        str,
+        str | None,
         typer.Option(
             "--fill",
             help="Exit fill model: 'intrabar' checks stops/targets against each bar's "
-            "range (gaps fill at the open); 'close' only ever fills at the close.",
+            "range (gaps fill at the open); 'close' only ever fills at the close. "
+            "Default: intrabar on daily bars, close on intraday ones — the model that "
+            "reproduces the live engine's own stop fills on each.",
         ),
-    ] = "intrabar",
+    ] = None,
     blackout: Annotated[
         bool,
         typer.Option(
@@ -2870,7 +2872,7 @@ def engine_backtest(
     settings = get_settings()
     service = BacktestService(connect(settings.db_path))
     try:
-        fill_mode = FillMode(fill)
+        fill_mode = FillMode(fill) if fill else None
     except ValueError:
         err_console.print(f"[red]error:[/red] --fill must be 'intrabar' or 'close', not {fill!r}")
         raise typer.Exit(code=1) from None
