@@ -167,7 +167,14 @@ def follow_through_bars(timeframe: str) -> int:
     return max(1, FOLLOW_THROUGH_MINUTES // minutes)
 
 
-def excursion(bars: Sequence[Bar], entry: Decimal, risk: Decimal, source: BarSource) -> Excursion:
+def excursion(
+    bars: Sequence[Bar],
+    entry: Decimal,
+    risk: Decimal,
+    source: BarSource,
+    exit_price: Decimal | None = None,
+    exit_at: datetime | None = None,
+) -> Excursion:
     """How far the path ran either way from `entry`, in units of `risk`.
 
     Lows for the adverse side and highs for the favourable one, because a trade
@@ -177,8 +184,16 @@ def excursion(bars: Sequence[Bar], entry: Decimal, risk: Decimal, source: BarSou
     The entry bar is deliberately NOT in `bars`: the engine fills at that bar's
     close, so its low already happened and counting it would credit the trade
     with an excursion it was never exposed to.
+
+    The exit is a point on the path, not a bar, and it is folded in as one: the
+    trade certainly visited `exit_price`, at `exit_at`. That matters on an
+    intraday engine, where `window` leaves the bar the exit landed in OUT of
+    `bars` — a 5-minute bar whose low printed after a 12:00:14 exit is not heat
+    the trade took, and counting it once scored GOOGL at -7.5R on a trade that
+    left at -1.8R. What happened inside that bar before the exit cannot be
+    known from bar data; the exit price is the honest lower bound.
     """
-    if risk <= 0 or not bars:
+    if risk <= 0 or (not bars and exit_price is None):
         return Excursion(bars_seen=len(bars))
     worst = best = None
     worst_i = best_i = 0
@@ -187,16 +202,23 @@ def excursion(bars: Sequence[Bar], entry: Decimal, risk: Decimal, source: BarSou
             worst, worst_i = bar.low, i
         if best is None or bar.high > best:
             best, best_i = bar.high, i
+    worst_at = source.stamp(bars[worst_i]) if bars else None
+    best_at = source.stamp(bars[best_i]) if bars else None
+    if exit_price is not None:
+        if worst is None or exit_price < worst:
+            worst, worst_i, worst_at = exit_price, len(bars), exit_at
+        if best is None or exit_price > best:
+            best, best_i, best_at = exit_price, len(bars), exit_at
     assert worst is not None and best is not None
     return Excursion(
         # Clamped at zero on the sides that never happened: a trade that only
         # ever traded above its entry has no adverse excursion, and reporting a
         # positive MAE would invert the sign the column is read with.
         mae_r=min(Decimal(0), (worst - entry) / risk),
-        mae_at=source.stamp(bars[worst_i]),
+        mae_at=worst_at,
         mae_bar=worst_i + 1,
         mfe_r=max(Decimal(0), (best - entry) / risk),
-        mfe_at=source.stamp(bars[best_i]),
+        mfe_at=best_at,
         mfe_bar=best_i + 1,
         bars_seen=len(bars),
     )
@@ -236,11 +258,34 @@ def window(
     5-minute engine belongs to the 10:05 bucket. Comparing raw timestamps would
     put the entry bar inside the trade on one timeframe and outside it on the
     other.
+
+    Which side of the line the EXIT bar falls on depends on the timeframe. A
+    daily engine exits at the bell, after the whole bar has traded, so that bar
+    was lived through. An intraday engine exits at a scan instant a few seconds
+    into a five-minute bar, and the rest of that bar — most of it — is after the
+    trade. So on intraday bars the exit bar is the first bar AFTER the trade:
+    its low is follow-through, not heat, and its close is where "what happened
+    next" starts. The exit price itself is folded in by `excursion`.
     """
     start = _bar_instant(after, source)
     end = _bar_instant(until, source) if until else None
-    lived = [b for b in bars if source.stamp(b) > start and (end is None or source.stamp(b) <= end)]
-    forward = [b for b in bars if end is not None and source.stamp(b) > end]
+    lived_through_exit_bar = source.minutes is None
+    lived = [
+        b
+        for b in bars
+        if source.stamp(b) > start
+        and (
+            end is None
+            or source.stamp(b) < end
+            or (lived_through_exit_bar and source.stamp(b) == end)
+        )
+    ]
+    forward = [
+        b
+        for b in bars
+        if end is not None
+        and (source.stamp(b) > end or (not lived_through_exit_bar and source.stamp(b) == end))
+    ]
     return lived, forward
 
 
@@ -263,7 +308,9 @@ def trade_outcome(
     if risk <= 0 or position.closed_at is None:
         return None
     lived, forward = window(bars, source, position.opened_at, position.closed_at)
-    ex = excursion(lived, position.entry_price, risk, source)
+    ex = excursion(
+        lived, position.entry_price, risk, source, position.exit_price, position.closed_at
+    )
 
     exit_r = position.realized_r
     capture = None

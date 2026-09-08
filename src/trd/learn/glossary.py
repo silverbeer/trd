@@ -793,9 +793,18 @@ _ENTRIES: list[GlossaryEntry] = [
             "rule never uses.\n\n"
             "Measured on bar LOWS, not closes: a trade lives through the whole of every "
             "bar it is in, and measuring on closes would report a stop-out as a quiet "
-            "-0.4R day."
+            "-0.4R day.\n\n"
+            "Which bars count is a timeframe question. The entry bar never does: the "
+            "fill is at its close, so its low already happened. On daily bars the exit "
+            "bar does, because the exit is at the bell. On intraday bars it does NOT: "
+            "an exit at 12:00:14 has not lived through the 12:00 bar, and counting its "
+            "low once scored a clean -1.8R stop-out as -7.5R because the crash came "
+            "after the exit. The exit price itself is folded in as a point on the path, "
+            "since the trade certainly got there. Bad prints — a single bar whose low "
+            "sits far below both its neighbours — still land here, because the walk "
+            "cannot tell a bad tick from a real one."
         ),
-        formula="MAE = (lowest low while held - entry) / (entry - initial stop)",
+        formula="MAE = (min(lowest low while held, exit) - entry) / (entry - initial stop)",
         example=(
             "entry 100, stop 90, low of 94 on day 2, exited at 118: MAE -0.6R, result "
             "+1.8R. A good trade that was briefly a worrying one."
