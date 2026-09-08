@@ -94,7 +94,15 @@ trd engine init [--account NAME] [--size 1000] [--max 5] [--symbols A,B,...] [--
                                                  # ('trd engine status' shows the gate either way)
                                       # monitor-mode trading engine: paper-trades a 10-name universe
                                       # on a simulation account. Needs 'trd sync --full' (200 bars)
-trd engine scan [--paper/--no-paper] [--json]   # one pass: exits first, then best-ranked entries
+trd engine scan [--paper/--no-paper] [--json] [--exits-only]
+                                      # one pass: exits first, then best-ranked entries.
+                                      # --exits-only manages the book and ranks but buys nothing:
+                                      # the entrypoint passes it when a scan is FORCED outside the
+                                      # session (a deploy check). On Sunday 2026-08-16 a forced
+                                      # scan opened five day positions on Friday's quotes and
+                                      # carried them into a -3R Monday gap past a stop that had no
+                                      # scan to fire in. A forced scan proves the deploy; it never
+                                      # takes a position
 trd engine monitor [--interval 60] [--passes N] # live view on a terminal: book stays still, clock/
                                       # capacity/activity move. Piped or --ndjson falls back to scrolling
 trd engine positions [--all]          # open trades: entry, stop (↑ = trailing in force), risk, target, R
@@ -136,6 +144,12 @@ trd engine status [--json]            # what this engine is + whether it's healt
 trd engine outcomes [--backfill] [--recompute] [--trades] [--json]
                                       # did we enter early, did we exit early, and what did the
                                       # signals we PASSED OVER do next. MAE (heat taken), MFE
+                                      # On intraday bars the bar the exit landed in is AFTER the
+                                      # trade, not inside it — an exit at 12:00:14 does not live
+                                      # through the 12:00 bar's low, and counting it scored a
+                                      # -1.8R stop-out as -7.5R. The exit price itself is folded
+                                      # in as a point on the path (SB-1030). Daily bars are lived
+                                      # through whole: the exit is at the bell
                                       # (best offered), capture (booked R / offered R, POOLED —
                                       # averaging ratios produced -507% on the live book and it
                                       # was an artefact), follow-through (5 sessions, or 60min of

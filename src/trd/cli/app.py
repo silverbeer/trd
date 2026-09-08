@@ -2025,12 +2025,20 @@ def engine_scan(
     notify: Annotated[
         bool, typer.Option("--notify", help="Push fills to the configured chat (Telegram).")
     ] = False,
+    exits_only: Annotated[
+        bool,
+        typer.Option(
+            "--exits-only",
+            help="Manage exits and rank, but take no new entries — for a pass forced "
+            "outside the session, where a fill would sit on a stale quote until Monday.",
+        ),
+    ] = False,
 ) -> None:
     """Run one scan pass: manage exits, then take the best new entries."""
     try:
         quotes = _prefetched_quotes(lambda s: s.quote_symbols())
         service = _engine_service()
-        result = service.scan(paper=paper, quotes=quotes)
+        result = service.scan(paper=paper, quotes=quotes, entries=not exits_only)
     except TrdError as exc:
         _fail(exc)
         return

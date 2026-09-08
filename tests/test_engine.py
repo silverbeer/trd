@@ -1738,3 +1738,26 @@ def test_the_budget_is_off_by_default(engine, provider, conn):
 def test_a_negative_budget_is_refused(engine):
     with pytest.raises(TrdError, match="Max entries per day"):
         engine.init(symbols=["AAA"], max_entries_per_day=-1)
+
+
+def test_an_exits_only_scan_manages_the_book_and_buys_nothing(engine, provider, conn):
+    """A scan forced outside the session — a Sunday deploy check — must not
+    enter. On 2026-08-16 one opened five day positions on Friday's quotes and
+    carried them over the weekend into a -3R gap. Exits still run."""
+    bars = make_bars(uptrend())
+    entry = float(bars[-1].close)
+    provider.add_symbol("AAA", price=str(entry))
+    seed(conn, "AAA", bars)
+    engine.init(symbols=["AAA"], strategies=["momentum"], position_size=Decimal("10000"))
+
+    quiet = engine.scan(at=datetime(2024, 9, 15, 11, 46), entries=False)  # a Sunday
+    assert quiet.opened == []
+    assert any("exits only" in line for line in quiet.skipped)
+    assert engine.position_rows(open_only=True) == []
+
+    engine.scan(at=datetime(2024, 9, 16, 10, 0))
+    position = engine.position_rows(open_only=True)[0].position
+    provider.add_symbol("AAA", price=str(float(position.stop_price) - 1))
+    forced = engine.scan(at=datetime(2024, 9, 21, 11, 46), entries=False)
+    assert [fill.rule for fill in forced.closed] == ["stop"]
+    assert forced.opened == []
