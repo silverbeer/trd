@@ -22,7 +22,9 @@ trades, so deploying to the wrong cluster is not a no-op. Then it:
 2. Builds the image and imports it into k3s.
 3. Applies the namespace and CronJob, **rewriting the hostPath to this machine's
    home** — no hand-editing the manifest per user.
-4. With `--test`, runs one scan immediately, market-hours guard bypassed.
+4. With `--test`, runs one scan immediately, market-hours guard bypassed — **exits
+   only**: outside the session a forced scan manages the book and ranks the universe but
+   takes no entries, because a fill on a stale weekend quote sits unguarded until Monday.
 
 ### Running more than one engine
 

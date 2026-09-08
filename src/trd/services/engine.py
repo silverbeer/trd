@@ -603,6 +603,7 @@ class EngineService:
         paper: bool = True,
         at: datetime | None = None,
         quotes: dict[str, Quote] | None = None,
+        entries: bool = True,
     ) -> ScanResult:
         """One pass: manage exits first (freeing capacity), then take new entries.
 
@@ -610,6 +611,12 @@ class EngineService:
         opened, which keeps a multi-second network round trip out of the window
         where this process holds DuckDB's single writer lock. Omitted, the scan
         fetches them itself and behaves exactly as before.
+
+        `entries=False` runs the exits and the ranking but takes nothing new.
+        It exists for a scan forced outside the session — a deploy check on a
+        Sunday — which on 2026-08-16 opened five day-engine positions on stale
+        quotes, carried them over the weekend, and gapped them open Monday at an
+        average -3R against a stop that was never given a chance to fire.
         """
         config = self.config()
         self._verify_rules(config)
@@ -647,9 +654,23 @@ class EngineService:
         just_closed = {
             instrument.id for position, instrument in open_positions if position.id in closed_ids
         }
-        self._run_entries(
-            config, account, universe, quotes, today, now, paper, held, just_closed, run.id, result
-        )
+        if entries:
+            self._run_entries(
+                config,
+                account,
+                universe,
+                quotes,
+                today,
+                now,
+                paper,
+                held,
+                just_closed,
+                run.id,
+                result,
+            )
+        else:
+            result.capacity = max(0, config.max_positions - len(held))
+            result.skipped.append("exits only: no new entries this pass")
 
         result.open_positions = len(self.positions.list_open(account.id))
         self.runs.finish(

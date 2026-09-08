@@ -22,6 +22,14 @@ What a daily bar cannot express, this module decides explicitly:
   touches both stop and target the stop wins — pessimistic, same order the live
   rules run in. Path-dependent rules (indicator, time) run once per bar at the
   close, on settled data. `--fill close` collapses everything to close-only.
+- Which of the two is the DEFAULT depends on the timeframe, because it is a claim
+  about how the live engine fills. A daily engine scans on the forming bar all
+  session and a stop fires near its level: intrabar. An intraday engine scans
+  once per bar and honours a stop only at the next scan, five minutes on: close.
+  Measured 2026-09-08 on the day engine, 105 live stop exits averaged -1.34R with
+  24% worse than -1.5R; the close-fill replay of the same rules gave -1.32R and
+  21%, the intrabar replay -1.02R and 2%. Intrabar on 5-minute bars is a fill
+  the day engine has never once received (SB-1030).
 - Day-mode configs need an intraday timeframe. The walk is keyed on each bar's
   *instant*, so on a 5-minute series `now` carries a real clock and session_close
   fires at the bell exactly as it does live. On daily bars there is no clock, so
@@ -78,6 +86,14 @@ _FILL_TIME = time(16, 0)
 class FillMode(StrEnum):
     INTRABAR = "intrabar"
     CLOSE = "close"
+
+
+def default_fill(timeframe: str) -> FillMode:
+    """The fill model that reproduces how the live engine on this timeframe
+    actually fills. Daily: intrabar. Intraday: close, because a stop is honoured
+    at the next scan, not at the level — see the module docstring for the
+    measurement. Pass `--fill` to override either way; the result records which."""
+    return FillMode.CLOSE if BarSource.stamper(timeframe).is_intraday else FillMode.INTRABAR
 
 
 class BacktestTrade(BaseModel):
@@ -648,7 +664,7 @@ class BacktestService:
         years: int | None = None,
         start: date | None = None,
         end: date | None = None,
-        fill: FillMode = FillMode.INTRABAR,
+        fill: FillMode | None = None,
         blackout: bool = True,
         symbols: list[str] | None = None,
         sizing_mode: SizingMode | None = None,
@@ -660,6 +676,8 @@ class BacktestService:
         config = self.configs.get()
         if config is None:
             raise TrdError("No engine configured. Run 'trd engine init' first.")
+        if fill is None:
+            fill = default_fill(config.timeframe)
 
         if symbols is None:
             board = self.watchlists.get_by_name(config.watchlist)

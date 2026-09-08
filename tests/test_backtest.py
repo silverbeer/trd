@@ -634,3 +634,14 @@ def test_the_budget_resets_each_session():
     for _symbol, entry_date in opened:
         per_session[entry_date] = per_session.get(entry_date, 0) + 1
     assert all(count <= 1 for count in per_session.values()), per_session
+
+
+def test_the_default_fill_is_the_one_the_live_engine_gets() -> None:
+    """A daily engine's stop fires near its level while the bar forms; an
+    intraday engine honours a stop at the next scan, five minutes on. Measured:
+    live day stops average -1.34R, the close replay -1.32R, intrabar -1.02R."""
+    from trd.services.backtest import FillMode, default_fill
+
+    assert default_fill("1d") == FillMode.INTRABAR
+    assert default_fill("5m") == FillMode.CLOSE
+    assert default_fill("1h") == FillMode.CLOSE

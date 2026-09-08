@@ -414,3 +414,72 @@ def test_cli_backfills_and_emits_json(cli_env: FakeProvider, tmp_path) -> None:
         assert any("Simulation fills" in c for c in payload["caveats"])
     finally:
         os.environ.pop("TRD_HOME", None)
+
+
+# ------------------------------------------------------ the exit bar, intraday
+
+
+FIVE = BarSource.stamper("5m")
+
+
+def ibar(hh: int, mm: int, low: str, high: str, close: str | None = None):
+    from trd.models import IntradayBar
+
+    return IntradayBar(
+        ts=datetime(2026, 8, 5, hh, mm),
+        open=Decimal("100"),
+        high=Decimal(high),
+        low=Decimal(low),
+        close=Decimal(close or high),
+        volume=1_000,
+    )
+
+
+def test_on_intraday_bars_the_exit_bar_is_after_the_trade_not_inside_it() -> None:
+    """GOOGL, 2026-08-05: opened 11:55:11, stopped out at 12:00:14 for -1.8R. The
+    12:00 bar then fell to -7.5R — after the exit. Counting that bar as heat the
+    trade took scored a clean stop-out as the worst trade in the book."""
+    bars = [
+        ibar(11, 55, "99", "101"),  # entry bar: excluded, its low already happened
+        ibar(12, 0, "25", "101", close="60"),  # exit bar: the crash came after 12:00:14
+        ibar(12, 5, "20", "61"),
+    ]
+    lived, forward = window(
+        bars, FIVE, datetime(2026, 8, 5, 11, 55, 11), datetime(2026, 8, 5, 12, 0, 14)
+    )
+    assert lived == []
+    assert [FIVE.stamp(b).minute for b in forward] == [
+        0,
+        5,
+    ]  # the exit bar leads the follow-through
+
+
+def test_on_daily_bars_the_exit_bar_is_still_lived_through() -> None:
+    """A daily engine exits at the bell, after the whole bar has traded."""
+    bars = [bar(2, low="95", high="105"), bar(3, low="88", high="104")]
+    lived, forward = window(bars, DAILY, datetime(2026, 6, 1, 16, 0), datetime(2026, 6, 3, 16, 0))
+    assert [DAILY.stamp(b).day for b in lived] == [2, 3]
+    assert forward == []
+
+
+def test_the_exit_price_is_a_point_on_the_path() -> None:
+    """With the exit bar excluded, the exit price is the one thing known about
+    it: the trade certainly got there. A stop-out at 82 is -1.8R even when no
+    full bar before it printed below 95."""
+    lived = [ibar(12, 0, "95", "103")]
+    ex = excursion(
+        lived, ENTRY, RISK, FIVE, exit_price=Decimal("82"), exit_at=datetime(2026, 8, 5, 12, 5, 14)
+    )
+    assert ex.mae_r == Decimal("-1.8")
+    assert ex.mae_at == datetime(2026, 8, 5, 12, 5, 14)
+    assert ex.mae_bar == 2  # the point after the one bar lived through
+    assert ex.mfe_r == Decimal("0.3")  # the bar's high still counts
+    assert ex.bars_seen == 1
+
+    # A target fill is the best price the trade saw, and says so.
+    ex = excursion(lived, ENTRY, RISK, FIVE, exit_price=Decimal("120"))
+    assert ex.mfe_r == Decimal("2") and ex.mfe_bar == 2
+
+    # With no bars at all — closed on the very next scan — the exit is the path.
+    ex = excursion([], ENTRY, RISK, FIVE, exit_price=Decimal("90"))
+    assert ex.mae_r == Decimal("-1") and ex.bars_seen == 0

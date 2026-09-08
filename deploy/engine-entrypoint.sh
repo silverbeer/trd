@@ -20,23 +20,32 @@ fi
 # --- only scan during the regular session -------------------------------------
 # The CronJob schedule already narrows this to 09:00-16:55 ET Mon-Fri; the guard
 # trims the edges cron cannot express (the 09:30 open and the 16:00 close).
-# TRD_ENGINE_FORCE=1 bypasses it, for verifying a deploy off-hours.
-if [ "${TRD_ENGINE_FORCE:-0}" != "1" ]; then
-    # %-H / %-M are unpadded on purpose: POSIX arithmetic reads a leading zero as
-    # octal, and "0930" is not a valid octal number. This is /bin/sh (dash), so
-    # bash's 10# prefix is not available either.
-    dow=$(TZ=America/New_York date +%u)           # 1=Mon ... 7=Sun
-    hour=$(TZ=America/New_York date +%-H)
-    minute=$(TZ=America/New_York date +%-M)
-    now=$((hour * 100 + minute))
-    if [ "$dow" -gt 5 ]; then
-        echo "market closed (weekend) — nothing to do"
+# TRD_ENGINE_FORCE=1 bypasses it, for verifying a deploy off-hours — but a forced
+# pass outside the session takes NO ENTRIES. On Sunday 2026-08-16 one opened five
+# day-engine positions on Friday's closing quotes; they were carried over the
+# weekend and gapped open Monday at an average -3R, past a stop that could not
+# fire because nothing scans on a weekend. Exits still run, the ranking still
+# prints, the deploy is still proven. Nothing is bought.
+#
+# %-H / %-M are unpadded on purpose: POSIX arithmetic reads a leading zero as
+# octal, and "0930" is not a valid octal number. This is /bin/sh (dash), so
+# bash's 10# prefix is not available either.
+dow=$(TZ=America/New_York date +%u)           # 1=Mon ... 7=Sun
+hour=$(TZ=America/New_York date +%-H)
+minute=$(TZ=America/New_York date +%-M)
+now=$((hour * 100 + minute))
+in_session=1
+if [ "$dow" -gt 5 ] || [ "$now" -lt 930 ] || [ "$now" -gt 1600 ]; then
+    in_session=0
+fi
+scan_args=""
+if [ "$in_session" -eq 0 ]; then
+    if [ "${TRD_ENGINE_FORCE:-0}" != "1" ]; then
+        echo "outside the session (dow $dow, $now ET) — nothing to do"
         exit 0
     fi
-    if [ "$now" -lt 930 ] || [ "$now" -gt 1600 ]; then
-        echo "outside 09:30-16:00 ET (now $now) — nothing to do"
-        exit 0
-    fi
+    echo "forced outside the session (dow $dow, $now ET) — exits only, no entries"
+    scan_args="--exits-only"
 fi
 
 # Market holidays are not filtered. They are harmless: with no new daily bar,
@@ -106,7 +115,8 @@ fi
 # NDJSON because the consumer is promtail, not a human — one event per line, each
 # independently queryable in Loki. --notify pushes fills to Telegram; with no
 # token configured it degrades to a warning, so an unconfigured cluster still scans.
-trd engine scan --ndjson --notify
+# shellcheck disable=SC2086  # $scan_args is empty or one flag, never quoted text
+trd engine scan --ndjson --notify $scan_args
 
 # --- measure what today's trades actually did ---------------------------------
 # Only on the last pass of the day. The measurement walks the bars a trade lived
