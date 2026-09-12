@@ -177,8 +177,15 @@ trd engine review-pack [--date ISO] [--engines ...] [--window 30] [--json]
                                       # A document, not a set of queries: an agent is only
                                       # reproducible if its input is
 trd engine review [--date ISO] [--engines ...] [--window 30] [--snapshot] [--ai] [--model M] [--notify] [--json]
-                                      # findings over the pack — statistics, no judgement, no LLM.
-                                      # Scoped to a RULE / STRATEGY / FILTER, never a trade; each
+                                      # every closed trade first, in two plain sentences: what the
+                                      # BUY found (graded on MFE — the move the rule was hunting
+                                      # either showed up or did not) and what the EXIT kept (graded
+                                      # on capture and follow-through). Independent on purpose, so
+                                      # 'good buy, bad exit' is sayable. They DESCRIBE a price path
+                                      # and never rule on a decision — a trade can follow every rule
+                                      # and lose. 'trd learn trade-verdict'
+                                      # then findings over the pack — statistics, no judgement, no
+                                      # LLM. Scoped to a RULE / STRATEGY / FILTER, never a trade; each
                                       # carries n, its evidence, and the backtest that would settle
                                       # it. Under 20 trades = HYPOTHESIS (labelled); under 5 = not
                                       # reported. 'Nothing conclusive' is a real and expected
@@ -256,8 +263,13 @@ trd engine apply-queue [--notify]     # apply the commands the Telegram bot queu
                                       # whoever typed it, in their own chat
 trd engine daily-report [--json] [--date ISO] [--engines swing=/a,day=/b] [--window 30]
                       [--notify]
-                                      # post-market report, both engines in ONE message: today's
-                                      # realized + exits, since-start realized/unrealized/NET,
+                                      # post-market report, both engines in ONE message. Leads with
+                                      # MONEY: invested (bankroll = size x slots), worth now, and
+                                      # the return in dollars and percent, split into cash booked
+                                      # and still-open — the 'I put in X, it is worth Y' line. An
+                                      # engine on RISK sizing has no bankroll (committed capital
+                                      # floats) and the block says so rather than quoting a total
+                                      # risked as a total invested. Then today's realized + exits,
                                       # best and worst strategy by expectancy in R over a trailing
                                       # window, today's losses GROUPED BY EXIT RULE, every exit
                                       # today with its legs (entry→exit, hold, rule; best first,
@@ -271,7 +283,10 @@ trd engine daily-report [--json] [--date ISO] [--engines swing=/a,day=/b] [--win
                                       # One database is one engine, so 'both' is two reads summed;
                                       # --engines defaults to TRD_BOT_ENGINES, the same variable
                                       # the bot uses, so chat and the report cannot name engines
-                                      # differently. 'trd learn daily-report' defines every line
+                                      # differently. 'trd learn daily-report' defines every line.
+                                      # Every term used carries its definition in the message: the
+                                      # report is read by someone learning the vocabulary, so R,
+                                      # expectancy and 'at risk' are glossed where they appear
 trd engine watchdog [--engines ...] [--max-age 15] [--repeat 60] [--notify] [--json]
                                       # has a scan landed recently? RUN THIS OUTSIDE THE CLUSTER.
                                       # Reads each engine's published status.json — never a
@@ -389,6 +404,17 @@ CSV import format (header required): `date,account,symbol,side,quantity,price[,f
   the local binary ([src/trd/agents/claude_code.py](src/trd/agents/claude_code.py), which
   strips ANTHROPIC_API_KEY from the child so the subscription is billed, not the key) and
   `vertex:` wraps the Anthropic model in a Vertex client. Nothing else learns which.
+- **A trade is described; a rule is judged.** The per-trade grades
+  ([src/trd/services/verdicts.py](src/trd/services/verdicts.py)) turn the stored
+  MAE/MFE/capture/follow-through into sentences — "offered +2.5R and never traded below
+  what we paid", "price carried on another +0.85R without us". They are observations
+  about a price path, true whatever anyone thinks of the rule. A *conclusion* ("this
+  filter discards winners") needs a population and stays in a `Finding` with its `n`.
+  Grading one trade as a good or bad decision is the thing the review exists not to do:
+  a correct decision loses money often enough that trade-by-trade verdicts teach the
+  opposite of what the measurement is for. The buy grade reads MFE and nothing else, so
+  an exit can never colour it — that independence is what makes "good buy, bad exit"
+  sayable at all.
 - The decision review ([src/trd/services/review.py](src/trd/services/review.py)) is the
   deterministic half of the daily agent, and the split is deliberate: the pack is the
   agent's *input contract* (so a model's answer can be re-run and diffed), and the

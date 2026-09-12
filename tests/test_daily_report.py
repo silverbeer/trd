@@ -106,6 +106,7 @@ def day(
     exits_today: list[ExitEvent] | None = None,
     realized_all: Decimal = Decimal("100"),
     unrealized: Decimal = Decimal("-20"),
+    bankroll: Decimal | None = Decimal("1000"),
     marks_are_stale: bool = False,
     marked_at: date | None = None,
 ) -> EngineDay:
@@ -119,6 +120,7 @@ def day(
         exits_today=exits_today or [],
         realized_all=realized_all,
         unrealized=unrealized,
+        bankroll=bankroll,
         open_positions=2,
         risk_at_stop=Decimal("50"),
         marks_are_stale=marks_are_stale,
@@ -268,12 +270,61 @@ def test_the_market_is_open_only_when_an_engine_has_a_bar_for_the_date() -> None
 # ------------------------------------------------------------------- the message
 
 
-def test_net_is_never_shown_without_realized_and_unrealized() -> None:
-    """An engine up on net only because of open positions, while its completed
-    trades lost money, is a different engine from one up on both."""
+def test_the_return_is_never_shown_without_its_two_halves() -> None:
+    """An engine up only because of open positions, while its completed trades
+    lost money, is a different engine from one up on both. The total is always
+    printed above the split that explains it."""
+    lines = daily_report_message(DailyReport(on=TODAY, engines=[day()])).splitlines()
+    total = next(i for i, line in enumerate(lines) if line.strip().startswith("return"))
+    assert "cash booked" in lines[total + 1]
+    assert "still open" in lines[total + 2]
+
+
+def test_money_says_what_went_in_and_what_it_is_worth() -> None:
+    """The question the report exists to answer, in the first block, without
+    arithmetic left for the reader."""
+    text = daily_report_message(
+        DailyReport(
+            on=TODAY,
+            engines=[day(realized_all=Decimal("84"), unrealized=Decimal("6"))],
+        )
+    )
+    money = text.splitlines()[2]
+    assert money.startswith("MONEY")
+    assert "1,000.00" in text  # invested
+    assert "1,090.00" in text  # worth now
+    assert "+9.0%" in text
+
+
+def test_money_refuses_to_invent_a_bankroll_under_risk_sizing() -> None:
+    """Position size is the dollars RISKED there, so size x slots is a tenth of
+    the capital and would flatter the return tenfold. Saying so is the only
+    honest option."""
+    text = daily_report_message(DailyReport(on=TODAY, engines=[day(bankroll=None)]))
+    assert "no fixed amount in" in text or "there is no fixed amount in" in text
+    assert "%" not in text.split("TODAY")[0]
+
+
+def test_one_engine_gets_no_per_engine_money_breakdown() -> None:
+    """With a single engine those rows restate the block above them verbatim."""
     text = daily_report_message(DailyReport(on=TODAY, engines=[day()]))
-    net_line = next(line for line in text.splitlines() if "NET" in line)
-    assert "realized" in net_line and "unrealized" in net_line
+    assert "→" not in text.split("TODAY")[0]
+
+
+def test_the_money_breakdown_is_the_first_section_to_give_way() -> None:
+    """The combined block has already answered 'am I up'. Which rule is losing
+    money outranks which engine is holding it."""
+    crowded = DailyReport(
+        on=TODAY,
+        engines=[
+            day(f"engine-{i}", exits_today=[event(f"S{i}", "-5")], realized_today=Decimal("-5"))
+            for i in range(6)
+        ],
+    )
+    text = daily_report_message(crowded)
+    assert "MONEY" in text
+    assert "NOT WORKING" in text
+    assert "→" not in text.split("TODAY")[0]
 
 
 def test_stale_marks_are_stated_above_the_numbers_they_would_break() -> None:
@@ -287,7 +338,8 @@ def test_stale_marks_are_stated_above_the_numbers_they_would_break() -> None:
     )
     lines = text.splitlines()
     assert "stale" in lines[1]
-    assert lines.index("TODAY") > 1  # the warning comes first, not as a footnote
+    # The warning comes first, not as a footnote under the numbers it breaks.
+    assert next(i for i, line in enumerate(lines) if line.startswith("MONEY")) > 1
 
 
 def test_todays_losses_are_grouped_by_exit_rule() -> None:

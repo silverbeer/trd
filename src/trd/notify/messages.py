@@ -291,6 +291,82 @@ def _pad(engines: list[EngineDay]) -> int:
     return max((len(e.engine) for e in engines), default=5)
 
 
+def _pct(value: Decimal | None) -> str:
+    """A return as a person quotes one: "+9.0%". Two decimals on a percentage
+    implies a precision that a mark taken at the last stored close does not have."""
+    if value is None:
+        return "—"
+    return f"{'+' if value >= 0 else '-'}{abs(float(value)):.1f}%"
+
+
+def _money_section(report: DailyReport, live: list[EngineDay], both: bool) -> list[str]:
+    """The headline a person actually asked for: I put in X, it is worth Y.
+
+    Deliberately the first block and deliberately arithmetic anyone can check —
+    bankroll, plus what was made on it, as a percentage. `realized` and
+    `unrealized` are still here, under the names a first-time reader can act on:
+    money taken out of finished trades, and a gain on paper that can still
+    evaporate. That distinction is the reason the total is never shown alone.
+
+    When bankroll is unknown (risk sizing, where the capital committed floats),
+    the block says what it does not know rather than falling back to a bare NET
+    that looks like it answered the question.
+    """
+    rows: list[tuple[str, str, str]] = []
+    total = report.bankroll
+    if total is None:
+        scope = "these engines size" if both else "this engine sizes"
+        rows.append(("invested", "—", f"{scope} by risk, so there is no fixed amount in"))
+        rows.append(("made so far", _signed(report.net), ""))
+    else:
+        scope = "both engines" if both else "the engine"
+        rows.append(("invested", _money(total), f"what {scope} may put to work at once"))
+        rows.append(("worth now", _money(report.worth_now), ""))
+        rows.append(("return", _signed(report.net), _pct(report.return_pct)))
+    rows.append(("  cash booked", _signed(report.realized_all), "out of trades that are done"))
+    rows.append(("  still open", _signed(report.unrealized), "on paper, not sold yet"))
+
+    label = max(len(k) for k, _, _ in rows)
+    value = max(len(v) for _, v, _ in rows)
+    lines = ["MONEY — what went in, what it is worth"]
+    for key, val, note in rows:
+        line = f"  {key.ljust(label)}  {val.rjust(value)}"
+        lines.append(f"{line}  {note}" if note else line)
+
+    return lines
+
+
+def _money_legs(live: list[EngineDay], budget: int) -> list[str]:
+    """The same question per engine: put in, worth now, made, percent.
+
+    Only when there is more than one — with a single engine these rows restate
+    the block above them verbatim. And the first thing on the whole message to
+    give way when the screen runs out: the combined block has already answered
+    "am I up", which is what this section is for, and knowing which rule is
+    losing money outranks knowing which engine holds it.
+    """
+    if len(live) < 2 or budget < len(live):
+        return []
+    legs = [
+        (
+            e.engine,
+            _money(e.bankroll) if e.bankroll is not None else "—",
+            _money(e.worth_now) if e.worth_now is not None else "—",
+            _signed(e.net),
+            _pct(e.return_pct) if e.bankroll is not None else "sized by risk",
+        )
+        for e in live
+    ]
+    name = max(len(c[0]) for c in legs)
+    put = max(len(c[1]) for c in legs)
+    worth = max(len(c[2]) for c in legs)
+    net = max(len(c[3]) for c in legs)
+    return [
+        f"  {engine.ljust(name)}  {into.rjust(put)} → {out.rjust(worth)}   {made.rjust(net)}  {pct}"
+        for engine, into, out, made, pct in legs
+    ]
+
+
 def daily_report_message(report: DailyReport) -> str:
     """The post-market report as one message worth reading on a phone.
 
@@ -323,7 +399,13 @@ def daily_report_message(report: DailyReport) -> str:
     if not live:
         return "\n".join(lines)
 
-    lines += ["", "TODAY"]
+    lines += ["", *_money_section(report, live, both)]
+    # Where the per-engine breakdown goes if the screen can afford it. Recorded
+    # now and spliced last, because it is the lowest-priority section on the
+    # message and its cost cannot be known until everything else is built.
+    legs_at = len(lines)
+
+    lines += ["", "TODAY — trades that closed on this session"]
     for engine in live:
         count = len(engine.exits_today)
         detail = f"{count} exit{'' if count == 1 else 's'}" if count else "no exits"
@@ -337,25 +419,11 @@ def daily_report_message(report: DailyReport) -> str:
             )
         )
 
-    lines += ["", "SINCE START"]
-    for engine in live:
-        lines.append(
-            row(
-                engine.engine,
-                f"realized {_signed(engine.realized_all)} · "
-                f"unrealized {_signed(engine.unrealized)} · NET {_signed(engine.net)}",
-            )
-        )
-    if both:
-        lines.append(
-            row(
-                "both",
-                f"realized {_signed(report.realized_all)} · "
-                f"unrealized {_signed(report.unrealized)} · NET {_signed(report.net)}",
-            )
-        )
-
-    lines += ["", f"WORKING ({report.window_days}d)"]
+    lines += [
+        "",
+        f"WORKING ({report.window_days}d) — best strategy by expectancy, "
+        "the average R a trade of that kind returns",
+    ]
     for engine in live:
         best = engine.best
         lines.append(
@@ -376,6 +444,12 @@ def daily_report_message(report: DailyReport) -> str:
         )
     if both:
         lines.append(row("both", f"at risk {_money(report.risk_at_stop)}"))
+    # The two terms every line above leans on, defined once at the bottom where
+    # they cost a reader who already knows them a single glance.
+    lines.append(
+        "at risk = what the open book loses if every stop hits · "
+        "1R = what one trade had at risk between its entry and its stop"
+    )
 
     # Both optional sections are built last, sized by what is left of the screen,
     # and spliced back in above the open book so the reading order still runs
@@ -389,6 +463,10 @@ def daily_report_message(report: DailyReport) -> str:
     if bad or trades:
         insert = lines.index("OPEN BOOK (now)") - 1
         lines[insert:insert] = bad + trades
+    # Last, and at an index recorded before the splice above — which lands
+    # further down the list, so this one is still where it was.
+    legs = _money_legs(live, budget=MAX_LINES - len(lines))
+    lines[legs_at:legs_at] = legs
     return "\n".join(lines)
 
 
@@ -519,11 +597,56 @@ def _trades_section(live: list[EngineDay], budget: int) -> list[str]:
 REVIEW_MESSAGE_BUDGET = 3900
 REVIEW_MAX_FINDINGS = 6
 REVIEW_MAX_WATCH = 4
+# Trades described in words, per engine. Ten closed trades is a normal day on
+# the day engine and three sentences each would eat the whole budget before the
+# findings get a line — so the biggest winner and the biggest loser are shown by
+# default and the rest stay in `trd engine review`. Sorted by R already, which
+# is why taking from both ends works.
+REVIEW_MAX_TRADES = 4
 
 
 def _clip(text: str, limit: int) -> str:
     text = " ".join(text.split())
     return text if len(text) <= limit else text[: limit - 1].rstrip() + "…"
+
+
+def _ends(trades: list, keep: int) -> list:
+    """The best and worst of a list already sorted best-first, in order.
+
+    A day's trades described in full is a wall of text on a phone. The two ends
+    are the two a reader actually wants — the win of the day and the one that
+    hurt — and the middle is where the ordinary trades live.
+    """
+    if len(trades) <= keep:
+        return trades
+    head = (keep + 1) // 2
+    return trades[:head] + trades[len(trades) - (keep - head) :]
+
+
+def _verdict_section(pack: EnginePack) -> list[str]:
+    """Each trade in two sentences: what the buy found, what the exit kept.
+
+    Plain English on purpose and in the message rather than only in the terminal:
+    this is the half of the review that answers "was that a good buy", and a
+    reader on a phone should not have to open a laptop to get it.
+    """
+    shown = _ends(pack.trades, REVIEW_MAX_TRADES)
+    if not shown:
+        return []
+    lines = ["", f"{pack.engine.upper()} — TRADE BY TRADE"]
+    for trade in shown:
+        rule = f" · {trade.rule_name}" if trade.rule_name else ""
+        lines.append(f"{trade.symbol} {_signed(trade.pnl)} ({_r(trade.r_multiple)}){rule}")
+        verdict = trade.verdict
+        if verdict is None:
+            lines.append("  not measured yet")
+            continue
+        lines.append(f"  Buy {verdict.entry.value} — {_clip(verdict.entry_note, 150)}")
+        lines.append(f"  Exit {verdict.exit.value} — {_clip(verdict.exit_note, 150)}")
+    hidden = len(pack.trades) - len(shown)
+    if hidden:
+        lines.append(f"  +{hidden} more in trd engine review")
+    return lines
 
 
 def review_message(result: ReviewResult, packs: list[EnginePack], judged: Any | None = None) -> str:
@@ -551,6 +674,9 @@ def review_message(result: ReviewResult, packs: list[EnginePack], judged: Any | 
     for caveat in result.caveats:
         if "stale" in caveat or "no outcome measured" in caveat:
             lines.append(f"⚠ {_clip(caveat, 160)}")
+
+    for pack in packs:
+        lines += _verdict_section(pack)
 
     findings = result.findings
     if findings:
