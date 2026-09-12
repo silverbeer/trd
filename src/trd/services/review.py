@@ -45,6 +45,8 @@ from trd.models import EngineConfig, SignalOutcome, TradeOutcome
 from trd.services.daily_report import EngineDay, engine_day
 from trd.services.engine import EngineService
 from trd.services.outcomes import OutcomeService
+from trd.services.verdicts import TradeVerdict
+from trd.services.verdicts import verdict as trade_verdict
 
 # Below this many trades a pattern is not reported at all. Four trades agreeing
 # is not a population, it is a coincidence with a narrative attached.
@@ -100,6 +102,17 @@ class TradeReview(BaseModel):
     rule_intent: str | None = None
     exit_reason: str | None = None
     outcome: TradeOutcome | None = None
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def verdict(self) -> TradeVerdict | None:
+        """What the buy found and what the exit kept, in words.
+
+        Computed rather than stored: it is a reading of `outcome`, and two
+        copies of that reading would let the table and the JSON disagree about
+        the same trade. Descriptive only — see `services/verdicts`.
+        """
+        return trade_verdict(self.outcome, self.rule)
 
 
 class SignalReview(BaseModel):

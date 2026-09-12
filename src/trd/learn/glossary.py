@@ -733,14 +733,25 @@ _ENTRIES: list[GlossaryEntry] = [
             "questions in this order: am I up or down, what is working, what is not, "
             "and what is still exposed. A fill alert says a trade happened; only this "
             "says whether the day was any good.\n\n"
-            "Read the words precisely, because three different periods appear in one "
-            "message. TODAY is cash booked by trades that CLOSED today — a trade still "
-            "running is not in it, however well it is doing. SINCE START is every "
-            "trade the engine has ever taken: realized (booked), unrealized (open "
-            "positions at their last close) and NET, which is the two added up. NET "
-            "never appears alone: an engine up only because of open positions, while "
-            "most of its closed trades lost money, is a different engine from one up "
-            "on both.\n\n"
+            "MONEY is the headline and the simplest thing in the message: what went "
+            "in, what it is worth, and the difference. 'Invested' is the engine's "
+            "bankroll — position size x slots, what it is allowed to have at work at "
+            "once. It is used as the denominator rather than the dollars actually "
+            "deployed because the deployed figure moves every time a slot fills or "
+            "empties, and a percentage whose bottom half changes for reasons that are "
+            "not performance is worse than no percentage. An engine on risk sizing has "
+            "no bankroll in this sense — the capital committed floats with every stop "
+            "distance — so the block says it does not know rather than quoting a total "
+            "risked as if it were a total invested.\n\n"
+            "The return is split, always, into 'cash booked' (money out of trades that "
+            "are finished) and 'still open' (a gain on paper that can still evaporate). "
+            "An engine up only because of open positions, while most of its closed "
+            "trades lost money, is a different engine from one up on both, and a single "
+            "NET cannot tell them apart.\n\n"
+            "Read the periods precisely, because two appear in one message. TODAY is "
+            "cash booked by trades that CLOSED today — a trade still running is not in "
+            "it, however well it is doing. MONEY is every trade the engine has ever "
+            "taken.\n\n"
             "WORKING and NOT WORKING name the best and worst strategy by expectancy in "
             "R over a trailing window (30 days by default), not by dollars — R is what "
             "makes a $200 day trade and a $2,000 swing comparable. A strategy with "
@@ -767,7 +778,9 @@ _ENTRIES: list[GlossaryEntry] = [
         formula=(
             "today          = sum(booked P&L of positions closed on the date)\n"
             "trade order    = realized R, descending (dollars only break a tie)\n"
-            "since start    = realized + unrealized  (NET)\n"
+            "invested       = position size x max positions   (exposure sizing only)\n"
+            "worth now      = invested + realized + unrealized\n"
+            "return         = realized + unrealized  (NET);  % = NET / invested\n"
             "working/not    = max/min expectancy in R over the trailing window\n"
             "money at risk  = sum((mark - stop in force) x remaining qty), floored at 0"
         ),
@@ -775,7 +788,14 @@ _ENTRIES: list[GlossaryEntry] = [
             "'swing +5.17 · 5 exits' — five trades closed today and together booked "
             "$5.17. The ten still open are not in that figure; they are in OPEN BOOK."
         ),
-        related=["risk-at-stop", "expectancy", "r-multiple", "paper-trading", "survivorship"],
+        related=[
+            "risk-at-stop",
+            "expectancy",
+            "r-multiple",
+            "paper-trading",
+            "survivorship",
+            "trade-verdict",
+        ],
         used_in=["trd engine daily-report"],
     ),
     GlossaryEntry(
@@ -831,6 +851,62 @@ _ENTRIES: list[GlossaryEntry] = [
         ),
         related=["mae", "capture", "follow-through", "r-multiple"],
         used_in=["trd engine outcomes"],
+    ),
+    GlossaryEntry(
+        key="trade-verdict",
+        term="Trade grades — what the buy found, what the exit kept",
+        category=Category.ENGINE,
+        definition=(
+            "Two words beside every closed trade in 'trd engine review', turning the "
+            "stored MAE/MFE/capture/follow-through arithmetic into a sentence. The Buy "
+            "grade is about what the trade was ever OFFERED; the Exit grade is about "
+            "what was done with it. Keeping them independent is what lets the review "
+            "say 'good buy, bad exit' — the most common finding there is, and one a "
+            "single profit-and-loss figure can never express.\n\n"
+            "They describe, they do not judge. 'Went against us from the first bar and "
+            "never showed a profit' is an observation about a price path and is true "
+            "whatever anyone thinks of the rule. 'That was a bad decision' is a claim "
+            "about a rule, needs a population behind it, and is what a FINDING with an "
+            "n beside it is for. A trade can follow every rule correctly and still "
+            "lose; grading trades one at a time as good or bad decisions teaches the "
+            "opposite of what the measurement is for.\n\n"
+            "BUY grades, read off MFE — the best the trade ever looked:\n"
+            "  GOOD    offered a full R or more without first falling far against us\n"
+            "  ROUGH   offered a full R, but only after taking half the heat to its "
+            "stop — a good trade bought early\n"
+            "  WEAK    went the right way and stopped short of a full R\n"
+            "  BAD     never offered even half an R: there was no move to catch\n"
+            "  UNKNOWN opened and closed inside one bar, so no price path is stored\n\n"
+            "EXIT grades, read off capture and follow-through, in order of how directly "
+            "each answers the question:\n"
+            "  EARLY   price carried on a full R or more after we were out\n"
+            "  LATE    handed back most of a move it had already been offered\n"
+            "  GOOD    got out before a fall, or kept 70% or more of the best\n"
+            "  OK      neither notable — the ordinary case, and most trades\n\n"
+            "An UNKNOWN buy is not a data problem. A trade that opened and closed inside "
+            "one five-minute bar has known endpoints and an unknown path between them, "
+            "so its MFE is the exit price wearing a different name — grading the buy on "
+            "it would say 'we were offered exactly what we took' about every such trade, "
+            "a measurement that can only ever agree with itself. The exit is still "
+            "graded there, because the bars AFTER it are real."
+        ),
+        formula=(
+            "buy   GOOD  MFE >= 1R and MAE > -0.5R\n"
+            "      ROUGH MFE >= 1R and MAE <= -0.5R\n"
+            "      WEAK  0.5R <= MFE < 1R\n"
+            "      BAD   MFE < 0.5R\n"
+            "exit  EARLY follow-through >= +1R\n"
+            "      LATE  capture < 40%  (and MFE >= 0.25R)\n"
+            "      GOOD  follow-through <= -0.5R, or capture >= 70%\n"
+            "      OK    otherwise"
+        ),
+        example=(
+            "'AAPL -0.04 (-0.59R) · Buy ROUGH, Exit LATE' — it was offered +1.17R after "
+            "first falling -1.15R against us, and closed at a loss: the move was there "
+            "and the whole of it was handed back before the bell closed the position."
+        ),
+        related=["mae", "mfe", "capture", "follow-through", "r-multiple", "daily-report"],
+        used_in=["trd engine review", "trd engine review-pack"],
     ),
     GlossaryEntry(
         key="capture",

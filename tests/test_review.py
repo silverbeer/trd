@@ -26,6 +26,7 @@ from trd.services.review import (
     MIN_TRADES_TO_SPEAK,
     ConfigSummary,
     EnginePack,
+    TradeReview,
     WindowSignal,
     WindowTrade,
     capture_findings,
@@ -571,3 +572,86 @@ def test_cli_notify_sends_the_review_when_the_session_traded(
     assert len(sent) == 1
     assert sent[0].startswith("🔍 trd review")
     assert "ARITHMETIC" in sent[0]
+
+
+# --------------------------------------------------- the trade told in English
+
+
+def trade_review(
+    symbol: str = "DELL",
+    pnl: str = "0.36",
+    r: str = "2.50",
+    rule: str | None = "profit_target",
+    measured: TradeOutcome | None = None,
+) -> TradeReview:
+    """One closed trade as the pack carries it."""
+    return TradeReview(
+        symbol=symbol,
+        strategy="momentum",
+        strategy_name="Momentum",
+        strategy_intent="rides a name already moving",
+        opened_at=datetime(2026, 9, 3, 10, 0),
+        closed_at=datetime(2026, 9, 3, 10, 20),
+        entry_price=Decimal("538"),
+        exit_price=Decimal("557"),
+        quantity=Decimal("1"),
+        stop_price=Decimal("530"),
+        target_price=Decimal("554"),
+        pnl=Decimal(pnl),
+        r_multiple=Decimal(r),
+        rule=rule,
+        rule_name="Profit Target",
+        outcome=measured,
+    )
+
+
+def test_a_trade_carries_its_own_plain_english_grades() -> None:
+    """The grades are a reading of the stored outcome, computed once. Two copies
+    of that reading would let the table and the JSON disagree about one trade."""
+    graded = trade_review(measured=outcome(1, mfe="2.5", exit_r="2.5", mae="-0.1"))
+    assert graded.verdict is not None
+    assert graded.verdict.entry.value == "GOOD"
+    assert graded.verdict.exit.value == "GOOD"
+
+
+def test_an_unmeasured_trade_has_no_grades_rather_than_empty_ones() -> None:
+    """A trade nobody backfilled has not been measured. A row of UNKNOWNs beside
+    it would read as a measurement that came back empty."""
+    assert trade_review(measured=None).verdict is None
+
+
+def test_the_review_message_says_what_the_buy_found_and_the_exit_kept() -> None:
+    """The half of the review that answers "was that a good buy", on a phone.
+    A reader should not need a laptop for it."""
+    from trd.notify.messages import review_message
+
+    good = trade_review(measured=outcome(1, mfe="2.5", exit_r="2.5", mae="-0.1"))
+    bad = trade_review(
+        symbol="SNDK",
+        pnl="-0.23",
+        r="-2.42",
+        rule="stop_loss",
+        measured=outcome(2, mfe="0.0", exit_r="-2.42", mae="-2.42", follow="-1.61"),
+    )
+    built = pack()
+    built.trades = [good, bad]
+    text = review_message(review([built], on=ON), [built])
+    assert "TRADE BY TRADE" in text
+    assert "DELL" in text and "SNDK" in text
+    assert "Buy GOOD" in text and "Buy BAD" in text
+
+
+def test_the_message_shows_both_ends_of_a_long_day_not_its_first_half() -> None:
+    """Trades are sorted best-first, so a prefix would hide every loser. The win
+    of the day and the one that hurt are the two a reader wants."""
+    from trd.notify.messages import REVIEW_MAX_TRADES, review_message
+
+    built = pack()
+    built.trades = [
+        trade_review(symbol=f"S{i}", r=str(Decimal(10 - i)), measured=outcome(i))
+        for i in range(REVIEW_MAX_TRADES + 3)
+    ]
+    text = review_message(review([built], on=ON), [built])
+    assert "S0" in text  # the best
+    assert f"S{REVIEW_MAX_TRADES + 2}" in text  # the worst
+    assert "more in trd engine review" in text
