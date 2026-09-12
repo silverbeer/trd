@@ -38,7 +38,10 @@
 
     <!-- Every 5 minutes, the same cadence as the scan it is watching. The check
          is three file reads; the alert itself is rate-limited to one an hour by
-         --repeat, so a long outage is one message and not forty. -->
+         the repeat option, so a long outage is one message and not forty.
+         (No double hyphen may appear inside an XML comment: a flag name written
+         here once made the whole file unparseable and launchd refused to load
+         it with nothing but "Input/output error".) -->
     <key>StartInterval</key>
     <integer>300</integer>
 
