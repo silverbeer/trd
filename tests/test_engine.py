@@ -826,10 +826,14 @@ def test_session_close_is_off_by_default():
 def test_session_close_fires_at_the_flat_time():
     bars = make_bars(uptrend())
     rule = exit_rules.SessionClose()
+    # Opened this morning: the only thing under test here is the clock. A
+    # position from an earlier session is closed on sight instead, which is a
+    # different rule and has its own test.
+    today = _position(opened_at=datetime(2024, 9, 16, 9, 35))
     before = datetime(2024, 9, 16, 15, 54)
-    assert rule.check(_position(), bars, bars, Decimal("101"), DAY_PARAMS, before, DAILY) is None
+    assert rule.check(today, bars, bars, Decimal("101"), DAY_PARAMS, before, DAILY) is None
     hit = rule.check(
-        _position(), bars, bars, Decimal("101"), DAY_PARAMS, datetime(2024, 9, 16, 15, 55), DAILY
+        today, bars, bars, Decimal("101"), DAY_PARAMS, datetime(2024, 9, 16, 15, 55), DAILY
     )
     assert hit is not None and hit.rule == "session_close"
     assert "15:55" in hit.reason
@@ -1761,3 +1765,41 @@ def test_an_exits_only_scan_manages_the_book_and_buys_nothing(engine, provider, 
     forced = engine.scan(at=datetime(2024, 9, 21, 11, 46), entries=False)
     assert [fill.rule for fill in forced.closed] == ["stop"]
     assert forced.opened == []
+
+
+def test_a_day_trade_from_an_earlier_session_is_closed_on_sight():
+    """SB-1054. The engine went dark at 12:20 on 2026-09-09 holding four day
+    trades. At 09:31 the next morning session_close stayed silent, because 0931
+    is before 15:55 — so the trades ran on and three gapped through their stops
+    for -3.13R, -2.88R and -1.48R. A day engine carries nothing overnight, so a
+    position from an earlier session is an error to correct at once, not a
+    position to keep until this afternoon's bell."""
+    bars = make_bars(uptrend())
+    stranded = _position(opened_at=datetime(2024, 9, 15, 11, 46))
+    decision = exit_rules.evaluate(
+        stranded, bars, bars, Decimal("101"), DAY_PARAMS, datetime(2024, 9, 16, 9, 31), DAILY
+    )
+    assert decision is not None and decision.rule == "session_close"
+    assert "carries nothing overnight" in decision.reason
+
+    # Same position, same morning, on a SWING engine: nothing fires. Carrying
+    # overnight is what a swing engine is for.
+    swing = exit_rules.evaluate(
+        stranded,
+        bars,
+        bars,
+        Decimal("101"),
+        exit_rules.DEFAULT_EXIT_PARAMS,
+        datetime(2024, 9, 16, 9, 31),
+        DAILY,
+    )
+    assert swing is None
+
+    # And a position opened today is still left alone until the bell.
+    today = _position(opened_at=datetime(2024, 9, 16, 9, 35))
+    assert (
+        exit_rules.evaluate(
+            today, bars, bars, Decimal("101"), DAY_PARAMS, datetime(2024, 9, 16, 9, 40), DAILY
+        )
+        is None
+    )

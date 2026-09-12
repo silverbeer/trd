@@ -202,6 +202,35 @@ kubectl run trd-queue-now -n trd --rm -i --restart=Never --image=trd:latest \
   --image-pull-policy=Never --env TRD_QUEUE_FORCE=1 --command -- /app/queue-entrypoint.sh
 ```
 
+## When it stops, something outside has to say so
+
+The cluster's host channel died mid-session on 2026-09-09 and again on 2026-09-11. Both
+times k3s itself was healthy: what broke was the Mac's connection into the VM, which
+carries the filesystem share the pods read their databases through. The engine homes
+became empty directories, every pod kept starting against nothing, the bot crash-looped,
+and the first anyone knew was a Telegram message that never arrived — nineteen hours later.
+
+Three guards now exist, and only the third can catch a cluster that is wholly gone:
+
+1. **`type: Directory` on every hostPath.** A vanished share now fails the mount instead of
+   being quietly replaced by an empty directory.
+2. **The scan entrypoint refuses to run** without a non-empty `trd.duckdb`, naming the share.
+3. **A watchdog on the Mac, outside k3s** — `deploy/io.silverbeer.trd.watchdog.plist`, every
+   five minutes:
+
+```bash
+cp deploy/io.silverbeer.trd.watchdog.plist ~/Library/LaunchAgents/   # edit USERNAME + tokens
+launchctl load ~/Library/LaunchAgents/io.silverbeer.trd.watchdog.plist
+trd engine watchdog --engines "swing=$HOME/.trd-engine,day=$HOME/.trd-day"
+```
+
+It reads only the `status.json` each scan publishes, never a database, so it cannot contend
+for the writer lock. It alerts when the market is open and no scan has landed for fifteen
+minutes, repeats at most hourly, and says when scanning resumes. Out of hours it says
+nothing, because silence is then correct.
+
+**It must not be deployed into the cluster it watches.** That is the whole point.
+
 ## The nightly decision review — one message, both engines
 
 ```bash

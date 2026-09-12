@@ -123,6 +123,24 @@ from trd.services.review import (
     engine_pack,
     review,
 )
+from trd.services.watchdog import (
+    DEFAULT_MAX_AGE_MINUTES as WATCHDOG_MAX_AGE,
+)
+from trd.services.watchdog import (
+    DEFAULT_REPEAT_MINUTES as WATCHDOG_REPEAT,
+)
+from trd.services.watchdog import (
+    STATE_FILENAME as WATCHDOG_STATE_FILENAME,
+)
+from trd.services.watchdog import (
+    WatchdogState,
+)
+from trd.services.watchdog import (
+    check as watchdog_check,
+)
+from trd.services.watchdog import (
+    decide as watchdog_decide,
+)
 from trd.services.watchlist import DEFAULT_WATCHLIST
 
 app = typer.Typer(
@@ -2484,6 +2502,76 @@ def _packs(engines: str | None, on: date, window: int) -> tuple[list[EnginePack]
             if conn is not None:
                 conn.close()
     return packs, problems
+
+
+@engine_app.command("watchdog")
+def engine_watchdog(
+    engines: ReviewEnginesOpt = None,
+    max_age: Annotated[
+        int,
+        typer.Option("--max-age", help="Minutes of silence that counts as stopped. Default 15."),
+    ] = WATCHDOG_MAX_AGE,
+    repeat: Annotated[
+        int,
+        typer.Option("--repeat", help="Minutes before an unchanged alert is sent again."),
+    ] = WATCHDOG_REPEAT,
+    notify: Annotated[
+        bool, typer.Option("--notify", help="Alert the configured chat (Telegram).")
+    ] = False,
+    as_json: JsonOpt = False,
+) -> None:
+    """Has a scan landed recently? Run this from OUTSIDE the cluster.
+
+    The engine went dark twice in three days and nothing said so, because
+    everything that could have noticed lived inside the thing that had stopped.
+    This reads each engine's published `status.json` — never a database, so it
+    can never block a scan — and complains when the market is open and no scan
+    has landed.
+
+    Exits non-zero when an engine is failing, so a launchd agent or a cron entry
+    can act on it without parsing anything. Silence outside market hours is
+    correct and is never reported.
+    """
+    _use_json(as_json)
+    try:
+        targets = _report_targets(engines)
+    except TrdError as exc:
+        _fail(exc)
+        return
+
+    result = watchdog_check(targets, max_age=max_age)
+    state_path = targets[0][1] / WATCHDOG_STATE_FILENAME
+    state = WatchdogState.load(state_path)
+    message, next_state = watchdog_decide(result, state, repeat_minutes=repeat)
+
+    if as_json:
+        _emit_json(result)
+    else:
+        for pulse in result.engines:
+            mark = "[green]✓[/green]" if pulse.alive else "[red]✗[/red]"
+            detail = pulse.problem or f"last scan {pulse.age_minutes} minutes ago"
+            console.print(f"{mark} {pulse.engine}: {detail}", highlight=False)
+        if not result.in_session:
+            console.print("[dim]Outside market hours — no scan is expected.[/dim]")
+
+    if notify and message is not None:
+        notifier = notify_from_env()
+        if notifier is None:
+            err_console.print(
+                "[yellow]warning:[/yellow] --notify set but TELEGRAM_BOT_TOKEN / "
+                "TELEGRAM_CHAT_ID are not configured — nothing sent."
+            )
+        else:
+            try:
+                notifier.send(message)
+                next_state.save(state_path)
+            except TrdError as exc:
+                err_console.print(f"[yellow]warning:[/yellow] alert failed: {exc}")
+    elif notify:
+        next_state.save(state_path)
+
+    if not result.healthy and result.in_session:
+        raise typer.Exit(1)
 
 
 @engine_app.command("review-pack")

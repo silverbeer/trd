@@ -87,4 +87,4 @@ spec:
             - name: trd-home
               hostPath:
                 path: /Users/***REMOVED***/.trd-engine
-                type: DirectoryOrCreate
+                type: Directory
