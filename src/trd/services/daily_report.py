@@ -27,7 +27,7 @@ from decimal import Decimal
 
 from pydantic import BaseModel, computed_field
 
-from trd.models import EnginePosition, StrategyStat
+from trd.models import EngineConfig, EnginePosition, SizingMode, StrategyStat
 from trd.services.engine import EngineService, strategy_stats
 
 # How far back "what is working" looks. A month of sessions is long enough that
@@ -108,6 +108,19 @@ class EngineDay(BaseModel):
     marks_are_stale: bool = False
     marked_at: date | None = None
 
+    # -- the money question
+    #
+    # What the engine is allowed to put to work: position size x slots. A stable
+    # denominator, deliberately — the dollars actually deployed swing every time
+    # a slot fills or empties, and a return percentage whose bottom half moves
+    # for reasons that are not performance is worse than no percentage at all.
+    #
+    # None under risk sizing, where position size is the dollars *risked* and the
+    # capital committed floats with every stop distance. There is no bankroll to
+    # quote there, and inventing one would be wrong in whichever direction the
+    # stops happened to sit.
+    bankroll: Decimal | None = None
+
     # -- what is working, over the trailing window
     window_days: int = DEFAULT_WINDOW_DAYS
     window_trades: int = 0
@@ -124,6 +137,28 @@ class EngineDay(BaseModel):
         """Booked plus on-paper, the same total `engine status` reports. Shown
         beside its two halves and never instead of them."""
         return self.realized_all + self.unrealized
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def worth_now(self) -> Decimal | None:
+        """Bankroll plus everything made on it — cash booked and paper gain alike.
+
+        The answer to "what is it worth today" for someone who put money in once
+        and wants one number back. It is not a market value of the open book:
+        most of the bankroll is uncommitted most of the time, and the positions
+        are marked at the last stored close.
+        """
+        if self.bankroll is None:
+            return None
+        return self.bankroll + self.net
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def return_pct(self) -> Decimal | None:
+        """NET as a percentage of what was put in. The 'and the return was Y' half."""
+        if self.bankroll is None or self.bankroll == 0:
+            return None
+        return self.net / self.bankroll * 100
 
     @computed_field  # type: ignore[prop-decorator]
     @property
@@ -187,6 +222,32 @@ class DailyReport(BaseModel):
 
     @computed_field  # type: ignore[prop-decorator]
     @property
+    def bankroll(self) -> Decimal | None:
+        """The two engines' bankrolls added up — but only when *every* live
+        engine has one. One engine on risk sizing makes the combined total a
+        sum over a different set than the NET above it, and a percentage over
+        a partial denominator is the kind of number that reads as a result."""
+        live = [e for e in self.engines if e.error is None]
+        if not live or any(e.bankroll is None for e in live):
+            return None
+        return sum((e.bankroll or Decimal(0) for e in live), Decimal(0))
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def worth_now(self) -> Decimal | None:
+        total = self.bankroll
+        return None if total is None else total + self.net
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def return_pct(self) -> Decimal | None:
+        total = self.bankroll
+        if total is None or total == 0:
+            return None
+        return self.net / total * 100
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
     def risk_at_stop(self) -> Decimal:
         return sum((e.risk_at_stop for e in self.engines), Decimal(0))
 
@@ -213,6 +274,7 @@ def engine_day(
     """
     status = service.status()
     account = service.account()
+    config = service.config()
 
     cutoff = on - timedelta(days=window_days)
     exits: list[ExitEvent] = []
@@ -263,6 +325,7 @@ def engine_day(
         unrealized=status.unrealized,
         realized_all=status.realized,
         risk_at_stop=status.risk_at_stop,
+        bankroll=bankroll(config),
         marks_are_stale=status.marks_are_stale,
         marked_at=status.marked_at,
         window_days=window_days,
@@ -270,6 +333,21 @@ def engine_day(
         best=best,
         worst=worst,
     )
+
+
+def bankroll(config: EngineConfig) -> Decimal | None:
+    """What this engine may have at work at once, or None when that is not a
+    number this engine has.
+
+    Under exposure sizing every trade commits the same dollars, so full slots x
+    size is exactly the capital deployed and the same figure `engine status`
+    prints as `committed` when the book is full. Under risk sizing the same
+    product is the total *risked* if every stop hit at once, which is a tenth of
+    the capital and would flatter every return percentage tenfold.
+    """
+    if config.sizing_mode != SizingMode.EXPOSURE:
+        return None
+    return config.position_size * config.max_positions
 
 
 def _rank(event: ExitEvent) -> Decimal:

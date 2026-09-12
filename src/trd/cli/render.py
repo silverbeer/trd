@@ -2,6 +2,7 @@ from datetime import date, datetime
 from decimal import Decimal
 
 from rich.console import Group, RenderableType
+from rich.padding import Padding
 from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
@@ -2174,6 +2175,66 @@ def outcome_trades_table(rows: list[tuple[TradeOutcome, EnginePosition, Instrume
     return table
 
 
+VERDICT_STYLE = {
+    "GOOD": "green",
+    "ROUGH": "yellow",
+    "WEAK": "yellow",
+    "BAD": "red",
+    "EARLY": "yellow",
+    "LATE": "yellow",
+    "OK": "dim",
+    "UNKNOWN": "dim",
+}
+
+
+def trade_verdict_lines(pack: EnginePack) -> list:
+    """Every closed trade in two sentences: what the buy found, what the exit kept.
+
+    Under the table rather than inside it on purpose. The table is for scanning
+    ten trades at once and its columns are R-multiples; this is for reading one
+    trade and understanding it without knowing what an R is. Both describe the
+    same rows, and neither judges whether the trade should have been taken —
+    that claim needs a population and lives in the findings below.
+
+    Each trade is a `Table.grid` rather than a string so a sentence that runs
+    past the terminal wraps *under itself* instead of back to column zero, where
+    the second half of a note reads as a line of its own.
+    """
+    out: list = ["", "[bold]Trade by trade — what the buy found, what the exit kept[/bold]"]
+    for trade in pack.trades:
+        verdict = trade.verdict
+        money = f"{float(trade.pnl):+,.2f}" if trade.pnl is not None else "—"
+        head = f"\n[bold]{trade.symbol}[/bold]  {money}  ({fmt_r(trade.r_multiple)})"
+        if trade.rule_name:
+            head += f"  [dim]· {trade.rule_name}[/dim]"
+        out.append(head)
+        grid = Table.grid(padding=(0, 1))
+        grid.add_column(width=5)
+        grid.add_column(width=7)
+        grid.add_column(overflow="fold")
+        if verdict is None:
+            grid.add_row("", "", "[dim]not measured yet — 'trd engine outcomes --backfill'[/dim]")
+            out.append(Padding(grid, (0, 0, 0, 2)))
+            continue
+        for label, value, note in (
+            ("Buy", verdict.entry.value, verdict.entry_note),
+            ("Exit", verdict.exit.value, verdict.exit_note),
+        ):
+            style = VERDICT_STYLE.get(value, "dim")
+            grid.add_row(label, f"[{style}]{value}[/{style}]", note)
+        out.append(Padding(grid, (0, 0, 0, 2)))
+    # The unit every sentence above is denominated in, spelled out once. Saying
+    # "+2.50R" to someone who has to go and look up what an R is costs the line
+    # its meaning; repeating the definition on every line costs the block its
+    # readability.
+    out.append(
+        "\n[dim]R = the dollars this trade had at risk between its entry and its stop. "
+        "+2R means it made twice what it stood to lose. The grades describe what price did, "
+        "not whether the trade should have been taken.[/dim]"
+    )
+    return out
+
+
 def review_renderables(result: ReviewResult, packs: list[EnginePack]) -> list:
     """The review as a human reads it: what happened, then what it means.
 
@@ -2211,6 +2272,7 @@ def review_renderables(result: ReviewResult, packs: list[EnginePack]) -> list:
             )
         if pack.trades:
             out.append(header)
+            out += trade_verdict_lines(pack)
         else:
             out.append(f"[bold]{pack.engine}[/bold] — no trades closed on {pack.on}")
 
