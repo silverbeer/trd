@@ -2766,6 +2766,12 @@ def _store_review(
         if pack is None:
             continue
         findings = [f for f in result.findings if f.engine == name]
+        # The engine's own slice, not the combined review. Storing every
+        # engine's findings in every database made each one claim the other's
+        # work: `Finding.key` exists so a claim can be tracked across days, and
+        # a history that double-counts and misattributes cannot do that. The
+        # denormalized columns below were always filtered; the payload was not.
+        mine = result.model_copy(update={"findings": findings, "engines": [name]})
         conn = None
         try:
             conn = connect(home / "trd.duckdb")
@@ -2782,7 +2788,7 @@ def _store_review(
                     quiet=not findings,
                 ),
                 payload={
-                    "review": result.model_dump(mode="json"),
+                    "review": mine.model_dump(mode="json"),
                     "pack": pack.model_dump(mode="json"),
                     # Stored beside the arithmetic it was given, so a claim the
                     # model made can be read back next to the numbers it saw.
