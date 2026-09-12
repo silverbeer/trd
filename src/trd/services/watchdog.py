@@ -63,8 +63,14 @@ def in_session(moment: datetime) -> bool:
     filtered: the cost of that is at most one wrong alert a year, and the cost of
     a calendar that silently goes stale is missing a real outage on a day it
     claims is a holiday.
+
+    A naive timestamp is read as already being exchange-local, never as the
+    machine's own zone. That is the convention the rest of the engine writes in —
+    `last_scan` is a naive local stamp — and assuming the host clock instead made
+    this answer "closed" all afternoon on any box running UTC, which is every CI
+    runner and any cluster node outside New York.
     """
-    local = moment.astimezone(MARKET_TZ)
+    local = moment.astimezone(MARKET_TZ) if moment.tzinfo else moment
     if local.weekday() > 4:
         return False
     return SESSION_OPEN <= local.hour * 100 + local.minute <= SESSION_CLOSE
@@ -155,7 +161,7 @@ def check(
 ) -> WatchdogResult:
     """Ask every engine for a pulse. Pure: files in, a verdict out."""
     now = now or datetime.now()
-    session = in_session(now if now.tzinfo else now.replace(tzinfo=MARKET_TZ))
+    session = in_session(now)
     return WatchdogResult(
         at=now,
         in_session=session,
