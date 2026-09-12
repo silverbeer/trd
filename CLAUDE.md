@@ -287,6 +287,27 @@ trd engine daily-report [--json] [--date ISO] [--engines swing=/a,day=/b] [--win
                                       # Every term used carries its definition in the message: the
                                       # report is read by someone learning the vocabulary, so R,
                                       # expectancy and 'at risk' are glossed where they appear
+trd engine agenda [--engines ...] [--window 10] [--min-sessions 3] [--json]
+                                      # which review findings have EARNED a ticket. The review
+                                      # recomputes nightly and does not remember yesterday, so a
+                                      # month-old problem is reported as a fresh discovery every
+                                      # night; this reads the stored reviews back and groups by
+                                      # Finding.key (<detector>.<subject>, deterministic — a repeat
+                                      # is a string match, not a judgement).
+                                      # READY = not a hypothesis AND fired on >= --min-sessions of
+                                      # the stored reviews AND still firing. WATCHING = firing,
+                                      # unproven, and says WHICH bar is missing. QUIET = fired in
+                                      # the window, gone from the newest session — the only evidence
+                                      # in trd that a rule change did anything, which is also why a
+                                      # once-persistent finding that stopped is NEVER ready.
+                                      # The unit of a ticket is the KEY, not the night: 4 stored
+                                      # sessions emitted 43 findings from 12 distinct keys, so
+                                      # filing per finding per night is ~300 tickets/month for 12
+                                      # problems. Numbers come from the NEWEST session — an older n
+                                      # is the same analysis over a window that has moved.
+                                      # --json carries a ticket title + body per READY finding.
+                                      # READ-ONLY, no network, and it knows nothing about Linear:
+                                      # trd emits the agenda, an agent files it. 'trd learn agenda'
 trd engine watchdog [--engines ...] [--max-age 15] [--repeat 60] [--notify] [--json]
                                       # has a scan landed recently? RUN THIS OUTSIDE THE CLUSTER.
                                       # Reads each engine's published status.json — never a
@@ -404,6 +425,14 @@ CSV import format (header required): `date,account,symbol,side,quantity,price[,f
   the local binary ([src/trd/agents/claude_code.py](src/trd/agents/claude_code.py), which
   strips ANTHROPIC_API_KEY from the child so the subscription is billed, not the key) and
   `vertex:` wraps the Anthropic model in a Vertex client. Nothing else learns which.
+- **trd emits work; it never files it.** `trd engine agenda`
+  ([src/trd/services/agenda.py](src/trd/services/agenda.py)) reads the stored reviews
+  and says which findings have earned a ticket — it does not create one. Nothing under
+  `src/trd` imports, or knows the name of, an issue tracker: no client, no API token in
+  the cluster, and a nightly CronJob that cannot fill a backlog unattended. Same rule as
+  the broker's MCP session, and for the same reason — the thing that trades money does
+  not reach out and write to other systems. The agenda is a read: `connect_read_only`,
+  so it can never take the writer lock a scan needs.
 - **A trade is described; a rule is judged.** The per-trade grades
   ([src/trd/services/verdicts.py](src/trd/services/verdicts.py)) turn the stored
   MAE/MFE/capture/follow-through into sentences — "offered +2.5R and never traded below
