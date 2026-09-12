@@ -272,6 +272,20 @@ trd engine daily-report [--json] [--date ISO] [--engines swing=/a,day=/b] [--win
                                       # --engines defaults to TRD_BOT_ENGINES, the same variable
                                       # the bot uses, so chat and the report cannot name engines
                                       # differently. 'trd learn daily-report' defines every line
+trd engine watchdog [--engines ...] [--max-age 15] [--repeat 60] [--notify] [--json]
+                                      # has a scan landed recently? RUN THIS OUTSIDE THE CLUSTER.
+                                      # Reads each engine's published status.json — never a
+                                      # database, so it can never block a scan — and alerts when
+                                      # the market is open and no scan has landed. Exits non-zero
+                                      # so launchd/cron can act without parsing. Silence out of
+                                      # hours is correct and never reported; an unchanged alert
+                                      # repeats at most hourly; recovery is announced only to
+                                      # whoever heard the alarm.
+                                      # Install: deploy/io.silverbeer.trd.watchdog.plist (every
+                                      # 5 min). It must NOT live in k3s: on 2026-09-09 and
+                                      # 2026-09-11 the cluster's host channel died, k3s stayed
+                                      # up, pods ran against an emptied mount for 19 hours and
+                                      # every candidate alarm was inside the thing that stopped
 trd bot serve [--passes N]            # Telegram command bot: /add SYM [engines], /rm, /status,
                                       # /book, /report, /engines. Long-polls (no public endpoint,
                                       # cert). User guide: [docs/telegram-bot.md](docs/telegram-bot.md)
@@ -397,6 +411,15 @@ CSV import format (header required): `date,account,symbol,side,quantity,price[,f
   slot. `scale_out` is off by default and the measurement says leave it off.
 - Engine rules are code-registry entries, never config: entry strategies in [src/trd/engine/strategies.py](src/trd/engine/strategies.py) (`@register`, mirroring the indicator registry), exit rules in [src/trd/engine/exits.py](src/trd/engine/exits.py). Strategies never reimplement indicator math — they call the indicator registry. Every signal and exit carries a plain-English `reason`; a rule you can't explain doesn't ship.
 - **Every rule lookback is denominated in sessions, never bars.** "20-day" means twenty sessions on every timeframe; `sessions_to_bars` resolves it. Exits do this inline; entries get a `StrategyContext` carrying two series — the engine's own bars for the *trigger*, settled daily bars for the *trend filter*, which has to read daily because 200 sessions of 5-minute bars is 15,600 of them and the provider serves ~4,600. `ctx.daily` never includes the session in progress, on any timeframe: that is the lookahead guarantee for the trend, as the prefix slice is for the bars. A new rule that hardcodes a bar count reintroduces the bug both fixes exist to kill.
+- **A day engine closes a position from an earlier session on sight.** `session_close`
+  fires on `opened_at.date() < now.date()` as well as at `flat_at_minute`: 09:31 is before
+  15:55, so without it a trade the engine was holding when it stopped simply ran on. It
+  cost -7.4R over three gap fills on 2026-09-10 (SB-1054).
+- **`hostPath` mounts are `type: Directory`, never `DirectoryOrCreate`.** The engine homes
+  are shares from the Mac; when that share died mid-session, DirectoryOrCreate had
+  Kubernetes create an empty directory in its place and every pod then ran happily against
+  no database. `Directory` fails the mount instead. The scan entrypoint refuses to start on
+  a missing or empty `trd.duckdb` for the same reason, naming the share as the likely cause.
 - The engine only ever trades a `simulation` account, and its fills are ordinary `txn` rows — so portfolio/equity/XIRR/drawdown work on it unchanged. `engine_position` stores only what a txn can't: strategy, stop/target, trail high-water mark, exit reason. The initial stop is immutable so closed-trade R-multiples stay meaningful.
 - Tests never hit the network. Extend `FakeProvider` in [tests/conftest.py](tests/conftest.py).
 
