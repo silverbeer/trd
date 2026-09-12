@@ -75,6 +75,21 @@ class ReviewSnapshotRepo:
             for r in rows
         ]
 
+    def recent_payloads(self, limit: int = 30) -> list[tuple[date, dict]]:
+        """The stored reviews themselves, newest first.
+
+        Findings live inside the payload rather than in columns of their own, so
+        anything asking "has this finding persisted" reads them from here. One
+        query rather than a date list followed by a fetch each: thirty snapshots
+        of a dozen findings is nothing, and the round trips would be the cost.
+        """
+        rows = self.conn.execute(
+            "SELECT snapshot_date, payload FROM review_snapshot "
+            "ORDER BY snapshot_date DESC LIMIT ?",
+            [limit],
+        ).fetchall()
+        return [(r[0], json.loads(r[1])) for r in rows]
+
     def payload(self, on: date) -> dict | None:
         row = self.conn.execute(
             "SELECT payload FROM review_snapshot WHERE snapshot_date = ?", [on]

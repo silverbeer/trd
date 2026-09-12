@@ -853,6 +853,72 @@ _ENTRIES: list[GlossaryEntry] = [
         used_in=["trd engine outcomes"],
     ),
     GlossaryEntry(
+        key="agenda",
+        term="Review agenda — which findings have earned a ticket",
+        category=Category.ENGINE,
+        definition=(
+            "The review recomputes from scratch every night over a trailing window. It "
+            "does not remember yesterday, so a problem that has been true for a month is "
+            "reported as a fresh discovery every night — which is how a daily message "
+            "stops being read, and why nothing gets done about any of it.\n\n"
+            "The agenda is the memory. It reads the stored reviews back, groups every "
+            "finding by its KEY, and asks whether it survived.\n\n"
+            "The unit of a ticket is the key, not the night. `Finding.key` is built as "
+            "`<detector>.<subject>` — capture.momentum, stop-room.pullback, filter.edge — "
+            "and is deterministic, so recognising a repeat is a string comparison and not "
+            "a judgement about whether two sentences mean the same thing. Measured over "
+            "the first four stored sessions: 43 findings emitted, twelve distinct keys "
+            "behind them. Filing one ticket per finding per night would produce roughly "
+            "three hundred tickets a month describing twelve problems.\n\n"
+            "Two bars, and a finding must clear both:\n"
+            "  1. ENOUGH TRADES — not a hypothesis. Under 20 closed trades the review "
+            "already labels it a hunch, and a hunch repeated on four nights is still one "
+            "hunch: the same rolling analysis returning the same answer, not four "
+            "independent samples.\n"
+            "  2. ENOUGH NIGHTS — fired on at least 3 of the stored sessions AND still "
+            "firing on the newest one.\n\n"
+            "Three states:\n"
+            "  READY    cleared both bars. This is work.\n"
+            "  WATCHING firing, unproven. Named so it can be seen coming, never filed — "
+            "a hypothesis that reads like a finding is how a backlog fills with work "
+            "nobody should do. The wait says which bar is missing.\n"
+            "  QUIET    fired in the window, absent from the newest session.\n\n"
+            "QUIET is the reason to build this. A finding that stops firing after a rule "
+            "changed is the only evidence in trd that the change did anything — without "
+            "it you are guessing whether an edit helped. It is also why a persistent "
+            "finding that has gone away is never READY: filing a ticket for a problem "
+            "that has already fixed itself is worse than filing nothing.\n\n"
+            "The numbers come from the NEWEST session a finding appeared in. An older n "
+            "is not more evidence; it is the same analysis over a window that has since "
+            "moved, and taking the largest would quote a sample the engine no longer has "
+            "(capture.momentum ran 305 -> 256 -> 220 -> 198 over four sessions as older "
+            "trades fell out of the 30-day window).\n\n"
+            "Findings are filtered by their own `engine` field rather than by which "
+            "database they were read from: snapshots written before SB-1061 carry both "
+            "engines' findings in every payload, and those rows are still the only "
+            "history there is.\n\n"
+            "trd does not file the ticket. The command emits the agenda and something "
+            "else files it — the same rule that keeps the broker's MCP session out of "
+            "src/trd. No issue-tracker client, no API token in the cluster, and a nightly "
+            "job that cannot fill a backlog unattended."
+        ),
+        formula=(
+            "key       = <detector>.<subject>          e.g. capture.momentum\n"
+            "identity  = (engine, key)\n"
+            "READY     = still firing AND sessions >= 3 AND not a hypothesis\n"
+            "WATCHING  = still firing AND (hypothesis OR sessions < 3)\n"
+            "QUIET     = seen in the window, absent from the newest session"
+        ),
+        example=(
+            "'capture.momentum · fired 4/4 sessions · n=198' -> READY. "
+            "'stop-room.pullback · fired 4/4 · n=9 · HYPOTHESIS' -> WATCHING, waiting on "
+            "closed trades, not on nights. 'early-exit.stop · fired 1 · last 2026-09-08' "
+            "-> QUIET: it stopped, and that is the result."
+        ),
+        related=["daily-report", "expectancy", "r-multiple", "capture", "trade-verdict"],
+        used_in=["trd engine agenda", "trd engine review"],
+    ),
+    GlossaryEntry(
         key="trade-verdict",
         term="Trade grades — what the buy found, what the exit kept",
         category=Category.ENGINE,
