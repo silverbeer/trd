@@ -84,8 +84,8 @@ spec:
         - name: swing-home
           hostPath:
             path: /Users/tomdrake/.trd-engine
-            type: DirectoryOrCreate
+            type: Directory
         - name: day-home
           hostPath:
             path: /Users/tomdrake/.trd-day
-            type: DirectoryOrCreate
+            type: Directory

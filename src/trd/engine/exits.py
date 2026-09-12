@@ -397,17 +397,31 @@ class SessionClose(ExitRule):
         flat_at = int(params.get("flat_at_minute", 0))
         if flat_at <= 0:
             return None
-        if now.hour * 100 + now.minute < flat_at:
+        # A position still open from an earlier session should not exist on a day
+        # engine, and the correct response is to close it at the first
+        # opportunity rather than to wait for today's bell. Measured on
+        # 2026-09-09 (SB-1054): the engine went dark at 12:20 holding four
+        # trades, and because 09:31 the next morning is before 15:55 this rule
+        # stayed silent and let them run. Three gapped through their stops at the
+        # open for -3.13R, -2.88R and -1.48R — a 7R loss on a rule whose entire
+        # purpose is holding no risk through a gap.
+        stranded = position.opened_at.date() < now.date()
+        if not stranded and now.hour * 100 + now.minute < flat_at:
             return None
         move = position.pnl_pct_at(price)
         drift = f"{move:+.1f}%" if move is not None else "flat"
-        return ExitDecision(
-            rule=self.key,
-            reason=(
+        if stranded:
+            reason = (
+                f"opened {position.opened_at:%b %-d} and still open — a day engine "
+                f"carries nothing overnight, so this is closed on sight at {drift}. "
+                "It survived a bell only because no scan ran."
+            )
+        else:
+            reason = (
                 f"session close at {flat_at // 100:02d}:{flat_at % 100:02d} — "
                 f"out at {drift}, holding nothing through the overnight gap"
-            ),
-        )
+            )
+        return ExitDecision(rule=self.key, reason=reason)
 
 
 # Order matters: capital protection first, profit-taking second, housekeeping last.

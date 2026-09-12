@@ -87,4 +87,4 @@ spec:
             - name: trd-home
               hostPath:
                 path: /Users/tomdrake/.trd-engine
-                type: DirectoryOrCreate
+                type: Directory

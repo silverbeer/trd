@@ -48,6 +48,24 @@ if [ "$in_session" -eq 0 ]; then
     scan_args="--exits-only"
 fi
 
+# --- the database has to actually be there --------------------------------------
+# The homes are hostPath mounts from the Mac. When that share dies the directory
+# can still be present and empty, and every command below would then run against
+# nothing: sync would store bars into a scratch file, and the scan would report
+# "no engine configured" every five minutes while the real book sat unmanaged.
+# That is exactly what happened on 2026-09-09 and again on 2026-09-11 (SB-1054).
+# Refuse loudly instead, naming the likely cause.
+DB="${TRD_HOME:-/data}/trd.duckdb"
+if [ ! -s "$DB" ]; then
+    echo "FATAL: no database at $DB (missing or empty)."
+    echo "The engine home is a hostPath mount; an empty one almost always means the"
+    echo "host filesystem share into the VM has died. Check from the Mac:"
+    echo "    kubectl get nodes"
+    echo "    rdctl shell -- ls -la $(dirname "$DB")"
+    echo "Refusing to scan: an engine with no database cannot manage open positions."
+    exit 1
+fi
+
 # Market holidays are not filtered. They are harmless: with no new daily bar,
 # signals for the last bar already exist, so nothing new can fire.
 

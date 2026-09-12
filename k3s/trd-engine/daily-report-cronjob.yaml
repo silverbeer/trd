@@ -100,11 +100,18 @@ spec:
           volumes:
             # EDIT these paths for the machine you deploy to — deploy-k3s.sh rewrites
             # them by the suffix each one already carries.
+            #
+            # `type: Directory`, never DirectoryOrCreate. On 2026-09-09 the host
+            # filesystem share into the VM died mid-session; DirectoryOrCreate
+            # made Kubernetes CREATE an empty directory in its place, so every
+            # pod started happily against no database for 19 hours. Directory
+            # fails the mount instead, which is loud and cannot be mistaken for
+            # an engine that simply had nothing to do (SB-1054).
             - name: swing-home
               hostPath:
                 path: /Users/tomdrake/.trd-engine
-                type: DirectoryOrCreate
+                type: Directory
             - name: day-home
               hostPath:
                 path: /Users/tomdrake/.trd-day
-                type: DirectoryOrCreate
+                type: Directory

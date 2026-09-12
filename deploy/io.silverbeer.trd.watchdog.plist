@@ -1,0 +1,63 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  launchd job: notice when the engine has stopped scanning, and say so.
+
+  This is the one piece that must NOT live in k3s. On 2026-09-09 and again on
+  2026-09-11 the cluster's host channel died mid-session; k3s itself stayed up,
+  the pods kept starting against an emptied mount, the bot crash-looped, and
+  nothing told anyone for nineteen hours. Every candidate alarm lived inside the
+  thing that had stopped. This one runs on the Mac, on its own timer, reads only
+  the status.json each scan publishes, and never opens a database — so it cannot
+  block a scan and cannot be taken down by the same failure.
+
+  Install:
+    1) Replace USERNAME below with your account name (absolute paths only).
+    2) cp deploy/io.silverbeer.trd.watchdog.plist ~/Library/LaunchAgents/
+    3) launchctl load ~/Library/LaunchAgents/io.silverbeer.trd.watchdog.plist
+    4) Test now:  launchctl start io.silverbeer.trd.watchdog
+                  cat ~/Library/Logs/trd-watchdog.log
+    Uninstall:    launchctl unload ~/Library/LaunchAgents/io.silverbeer.trd.watchdog.plist
+
+  It needs TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID to alert. They are set below
+  rather than read from 1Password because launchd starts with almost no
+  environment and cannot unlock a vault; fill them in on the machine, and note
+  that this file then holds a secret and must not be committed.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>io.silverbeer.trd.watchdog</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/zsh</string>
+        <string>-lc</string>
+        <!-- Both engines, named exactly as the bot and the report name them. -->
+        <string>trd engine watchdog --engines "swing=$HOME/.trd-engine,day=$HOME/.trd-day" --notify</string>
+    </array>
+
+    <!-- Every 5 minutes, the same cadence as the scan it is watching. The check
+         is three file reads; the alert itself is rate-limited to one an hour by
+         --repeat, so a long outage is one message and not forty. -->
+    <key>StartInterval</key>
+    <integer>300</integer>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>TELEGRAM_BOT_TOKEN</key>
+        <string>REPLACE_ME</string>
+        <key>TELEGRAM_CHAT_ID</key>
+        <string>REPLACE_ME</string>
+        <key>PATH</key>
+        <string>/Users/USERNAME/.local/bin:/opt/homebrew/bin:/usr/bin:/bin</string>
+    </dict>
+
+    <key>StandardOutPath</key>
+    <string>/Users/USERNAME/Library/Logs/trd-watchdog.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/USERNAME/Library/Logs/trd-watchdog.err</string>
+</dict>
+</plist>
