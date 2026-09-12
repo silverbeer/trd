@@ -2175,6 +2175,89 @@ def outcome_trades_table(rows: list[tuple[TradeOutcome, EnginePosition, Instrume
     return table
 
 
+def agenda_renderables(built) -> list:
+    """What to file, what to watch, what has gone quiet.
+
+    READY first and shortest: it is the only section that asks for work. QUIET
+    is last but never dropped — a finding that stopped firing is the only
+    evidence in trd that a change to the rules did anything, and it is invisible
+    everywhere else.
+    """
+    out: list = [
+        f"[bold]Review agenda[/bold]  [dim]· {built.sessions_read} stored session"
+        f"{'' if built.sessions_read == 1 else 's'} · "
+        f"{built.min_sessions} needed to file[/dim]",
+    ]
+    for caveat in built.caveats:
+        out.append(f"[yellow]·[/yellow] {caveat}")
+
+    if not built.histories:
+        out.append(
+            "\n[dim]No stored reviews to read. Run 'trd engine review --snapshot' "
+            "(the nightly CronJob does).[/dim]"
+        )
+        return out
+
+    ready = built.ready
+    out.append(
+        f"\n[green bold]READY TO FILE[/green bold]  [dim]({len(ready)})[/dim]"
+        if ready
+        else "\n[bold]READY TO FILE[/bold]  [dim]nothing has cleared both bars yet[/dim]"
+    )
+    for history in ready:
+        out.append(_agenda_entry(history, built))
+
+    watching = built.watching
+    if watching:
+        out.append(f"\n[yellow bold]WATCHING[/yellow bold]  [dim]({len(watching)})[/dim]")
+        for history in watching:
+            out.append(_agenda_entry(history, built))
+
+    quiet = built.quiet
+    if quiet:
+        out.append(
+            f"\n[bold]GONE QUIET[/bold]  [dim]({len(quiet)}) — fired in the window, "
+            "absent from the newest session[/dim]"
+        )
+        for history in quiet:
+            out.append(_agenda_entry(history, built))
+
+    out.append(
+        "\n[dim]--json emits a ticket title and body for every READY finding. "
+        "A finding that stops firing is a change that worked.[/dim]"
+    )
+    return out
+
+
+def _agenda_entry(history, built) -> RenderableType:
+    """One finding: what it says, how long it has said it, and why it is here."""
+    grid = Table.grid(padding=(0, 1))
+    grid.add_column(width=2)
+    grid.add_column(overflow="fold")
+    grid.add_row("", f"[bold]{history.headline}[/bold]")
+    grid.add_row(
+        "",
+        f"[dim]{history.engine} · {history.key} · fired {history.sessions}/"
+        f"{built.sessions_read} sessions ({history.first_seen} → {history.last_seen}) · "
+        f"n={history.n}{' · HYPOTHESIS' if history.hypothesis else ''}[/dim]",
+    )
+    if history.state(built.min_sessions).value == "WATCHING":
+        grid.add_row("", f"[dim]waiting: {_why_waiting(history, built.min_sessions)}[/dim]")
+    return Padding(grid, (0, 0, 1, 2))
+
+
+def _why_waiting(history, min_sessions: int) -> str:
+    """Naming what is missing, not just that something is. "Not enough trades"
+    and "not enough nights" are different waits with different ends."""
+    reasons = []
+    if history.hypothesis:
+        reasons.append(f"only {history.n} closed trades behind it")
+    if history.sessions < min_sessions:
+        short = min_sessions - history.sessions
+        reasons.append(f"{short} more session{'' if short == 1 else 's'} of firing")
+    return ", ".join(reasons) or "nothing — this should be ready"
+
+
 VERDICT_STYLE = {
     "GOOD": "green",
     "ROUGH": "yellow",

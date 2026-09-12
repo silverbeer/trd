@@ -16,6 +16,7 @@ from rich.table import Table
 
 from trd.build import build_version
 from trd.cli.render import (
+    agenda_renderables,
     ai_review_renderables,
     backtest_table,
     board_table,
@@ -96,6 +97,11 @@ from trd.services import (
     SundayPrepService,
     SyncService,
     WatchlistService,
+)
+from trd.services.agenda import (
+    DEFAULT_MIN_SESSIONS,
+    DEFAULT_WINDOW_SESSIONS,
+    agenda,
 )
 from trd.services.backtest import BacktestService, FillMode
 from trd.services.commands import CommandQueueService
@@ -2613,6 +2619,71 @@ def engine_review_pack(
         for caveat in engine.caveats:
             console.print(f"[dim]· {caveat}[/dim]")
     console.print("[dim]--json emits the whole document.[/dim]")
+
+
+@engine_app.command("agenda")
+def engine_agenda(
+    engines: ReviewEnginesOpt = None,
+    window: Annotated[
+        int,
+        typer.Option("--window", help="How many stored review sessions to consider."),
+    ] = DEFAULT_WINDOW_SESSIONS,
+    min_sessions: Annotated[
+        int,
+        typer.Option("--min-sessions", help="Sessions a finding must survive to be filed."),
+    ] = DEFAULT_MIN_SESSIONS,
+    as_json: JsonOpt = False,
+) -> None:
+    """Which review findings have earned a ticket, and which have gone away.
+
+    The review recomputes from scratch nightly and does not remember yesterday,
+    so a problem true for a month is reported as a fresh discovery every night.
+    This reads the stored reviews back, groups every finding by its key, and
+    asks whether it survived: READY is work, WATCHING is not yet proven, and
+    QUIET is a finding that stopped firing — the only evidence in trd that a
+    change to the rules actually did something.
+
+    Read-only, no network, and it knows nothing about any issue tracker: it
+    emits the agenda and something else files it.
+    """
+    _use_json(as_json)
+    try:
+        targets = _report_targets(engines)
+    except TrdError as exc:
+        _fail(exc)
+        return
+
+    snapshots: list[tuple[str, list[tuple[date, dict]]]] = []
+    problems: list[str] = []
+    for name, home in targets:
+        db_path = home / "trd.duckdb"
+        if not db_path.exists():
+            problems.append(f"{name}: no database at {db_path}")
+            continue
+        conn = None
+        try:
+            conn = connect_read_only(db_path)
+            snapshots.append((name, ReviewSnapshotRepo(conn).recent_payloads(limit=window)))
+        except (TrdError, duckdb.Error) as exc:
+            problems.append(f"{name}: {exc}")
+        finally:
+            if conn is not None:
+                conn.close()
+
+    built = agenda(
+        snapshots,
+        on=datetime.now().date(),
+        window=window,
+        min_sessions=min_sessions,
+        caveats=problems,
+    )
+    if as_json:
+        _emit_json(built)
+        return
+    for problem in problems:
+        err_console.print(f"[yellow]warning:[/yellow] {problem}")
+    for renderable in agenda_renderables(built):
+        console.print(renderable, markup=True, highlight=False)
 
 
 @engine_app.command("review")
