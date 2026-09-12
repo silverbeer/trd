@@ -26,6 +26,7 @@ from trd.services.review import (
     MIN_TRADES_TO_SPEAK,
     ConfigSummary,
     EnginePack,
+    ReviewResult,
     TradeReview,
     WindowSignal,
     WindowTrade,
@@ -655,3 +656,62 @@ def test_the_message_shows_both_ends_of_a_long_day_not_its_first_half() -> None:
     assert "S0" in text  # the best
     assert f"S{REVIEW_MAX_TRADES + 2}" in text  # the worst
     assert "more in trd engine review" in text
+
+
+def test_each_engine_stores_only_its_own_findings(tmp_path) -> None:
+    """One database is one engine, and that has to hold for the payload too.
+
+    The denormalized columns were always filtered per engine; the payload was
+    not, so every database claimed the other engine's findings as its own. The
+    stored reviews are the only history of what the reviewer has ever said —
+    anything that reads `Finding.key` back across days to score a claim, or to
+    decide a finding has persisted, double-counts and misattributes while both
+    engines' findings sit in both payloads.
+    """
+    from trd.cli.app import _store_review
+    from trd.db.connection import connect
+    from trd.repos.review_snapshot import ReviewSnapshotRepo
+    from trd.services.review import Finding
+
+    homes = {}
+    for name in ("swing", "day"):
+        home = tmp_path / name
+        home.mkdir()
+        connect(home / "trd.duckdb").close()
+        homes[name] = home
+
+    def finding(engine: str, key: str) -> Finding:
+        return Finding(
+            key=key,
+            engine=engine,
+            scope="strategy",
+            subject="momentum",
+            headline=f"{engine} said something",
+            detail="",
+            n=200,
+            window_days=30,
+        )
+
+    result = ReviewResult(
+        on=ON,
+        generated_at=datetime(2026, 9, 11, 16, 31),
+        build="test",
+        engines=["swing", "day"],
+        findings=[finding("swing", "capture.momentum"), finding("day", "filter.edge")],
+    )
+    packs = [pack(engine="swing"), pack(engine="day")]
+    spec = ",".join(f"{name}={home}" for name, home in homes.items())
+
+    _store_review(spec, ON, result, packs)
+
+    for name, home in homes.items():
+        conn = connect(home / "trd.duckdb")
+        try:
+            payload = ReviewSnapshotRepo(conn).payload(ON)
+            assert payload is not None
+            stored = payload["review"]
+            assert stored["engines"] == [name]
+            assert {f["engine"] for f in stored["findings"]} == {name}
+            assert payload["pack"]["engine"] == name
+        finally:
+            conn.close()
