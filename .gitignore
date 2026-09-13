@@ -24,3 +24,10 @@ htmlcov/
 # qe-plugin state
 .qe/coverage_history.jsonl
 coverage.json
+
+# CodeGraph: local index + other agents' generated config (SB-1066)
+.codegraph/
+.cursor/
+.gemini/
+.kiro/
+GEMINI.md

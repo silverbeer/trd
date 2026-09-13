@@ -34,7 +34,8 @@
       "mcp__robinhood-trading__get_watchlist_items",
       "mcp__robinhood-trading__get_watchlists",
       "mcp__robinhood-trading__run_scan",
-      "mcp__robinhood-trading__search"
+      "mcp__robinhood-trading__search",
+      "mcp__codegraph__*"
     ],
     "deny": [
       "mcp__robinhood-trading__add_option_to_watchlist",
@@ -56,6 +57,18 @@
       "mcp__robinhood-trading__update_scan_config",
       "mcp__robinhood-trading__update_scan_filters",
       "mcp__robinhood-trading__update_watchlist"
+    ]
+  },
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/codegraph-hook.sh"
+          }
+        ]
+      }
     ]
   }
 }
