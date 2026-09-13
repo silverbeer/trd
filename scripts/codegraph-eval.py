@@ -78,7 +78,8 @@ def load_arms() -> dict[str, str]:
     return arms
 
 
-def analyse(transcript: Path) -> collections.Counter:
+def analyse(transcript: Path) -> tuple[str, collections.Counter]:
+    """Session start date and its counters."""
     s: collections.Counter = collections.Counter()
     shown: set[str] = set()
     first_ts = None
@@ -128,8 +129,7 @@ def analyse(transcript: Path) -> collections.Counter:
                     targets = CODE_PATH.findall(cmd)
             if shown and any(relative(t) in shown for t in targets if t):
                 s["reread"] += 1
-    s["date"] = (first_ts or "?")[:10]
-    return s
+    return (first_ts or "?")[:10], s
 
 
 def main() -> None:
@@ -143,19 +143,19 @@ def main() -> None:
 
     rows = []
     for t in transcripts:
-        s = analyse(t)
-        if not s["prompts"] or (args.since and s["date"] < args.since):
+        date, s = analyse(t)
+        if not s["prompts"] or (args.since and date < args.since):
             continue
         arm = arms.get(t.stem) or ("on?" if s["inj_bytes"] else "unlogged")
-        rows.append((t.stem, arm, s))
+        rows.append((t.stem, arm, date, s))
 
     header = ("date", "session", "arm", "prompts", "lookups/p", "reread", "inj KB", "ctx M/p", "cg")
     print("{:10} {:8} {:8} {:>7} {:>9} {:>6} {:>6} {:>7} {:>3}".format(*header))
     by_arm: dict[str, list] = collections.defaultdict(list)
-    for sid, arm, s in rows:
+    for sid, arm, date, s in rows:
         p = s["prompts"]
         print(
-            f"{s['date']:10} {sid[:8]:8} {arm:8} {p:7} {s['lookups'] / p:9.1f} {s['reread']:6} "
+            f"{date:10} {sid[:8]:8} {arm:8} {p:7} {s['lookups'] / p:9.1f} {s['reread']:6} "
             f"{s['inj_bytes'] / 1024:6.0f} {s['ctx'] / p / 1e6:7.2f} {s['cg']:3}"
         )
         by_arm[arm].append(s)
