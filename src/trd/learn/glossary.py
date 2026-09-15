@@ -406,17 +406,79 @@ _ENTRIES: list[GlossaryEntry] = [
     ),
     GlossaryEntry(
         key="total-return",
-        term="Total return",
+        term="Total return (vs price return)",
         category=Category.RETURNS,
         definition=(
-            "Everything you've made on what you currently hold, as a percent of what "
-            "you paid. The headline 'am I up?' number — but it ignores WHEN you invested "
-            "(see xirr for the time-aware version)."
+            "Everything the money earned: the price move PLUS the cash the holdings "
+            "paid out. The headline 'am I up?' number — though it still ignores WHEN "
+            "you invested (see xirr for the time-aware version).\n\n"
+            "PRICE RETURN is the other half of the pair, and the difference is the "
+            "whole point. Price return asks what the shares are worth against what they "
+            "cost. Total return adds the dividends and interest that already left the "
+            "position and landed as cash — money you have, which no share price can "
+            "show.\n\n"
+            "On a young book the gap is pennies. On an old one it is most of the "
+            "result: a dividend-paying core held for a decade earns a large share of "
+            "everything it makes through distributions, and a tracker reporting only "
+            "price return would show a number that is quietly and increasingly low.\n\n"
+            "The comparison is where it bites hardest. Judging your total return "
+            "against an index's PRICE return flatters you; judging your price return "
+            "against an index's total return does the opposite. Neither is a "
+            "like-for-like answer to 'am I beating the market', which is the question "
+            "the DCA plans exist to settle.\n\n"
+            "trd cannot see a dividend until it is recorded — 'trd income add'. "
+            "Reinvested (DRIP) distributions are different: they buy shares at a real "
+            "price, so they are an ordinary 'trd buy' and are already in the cost "
+            "basis. Recording one in both places counts it twice."
         ),
-        formula="total return % = (current value - cost basis) / cost basis x 100",
-        example="$50,000 invested, now worth $62,500 -> total return = 12,500/50,000 = +25%.",
-        related=["pl", "xirr", "cost-basis"],
+        formula=(
+            "price return % = (value - cost basis) / cost basis x 100\n"
+            "total return % = (value + income - cost basis) / cost basis x 100"
+        ),
+        example=(
+            "$50,000 invested, now worth $62,500, having paid $1,400 in dividends -> "
+            "price return +25.0%, total return (12,500 + 1,400)/50,000 = +27.8%."
+        ),
+        related=["pl", "xirr", "cost-basis", "income", "benchmark"],
         used_in=["trd dashboard", "trd portfolio"],
+    ),
+    GlossaryEntry(
+        key="income",
+        term="Income — dividends, interest, cash sweep",
+        category=Category.RETURNS,
+        definition=(
+            "Cash a holding pays you, as opposed to the price going up. Three kinds "
+            "trd records: a DIVIDEND paid by a stock or ETF, INTEREST on cash, and a "
+            "broker's CASH SWEEP moving idle balances into a yield account.\n\n"
+            "It is not a purchase, and that distinction is structural rather than "
+            "cosmetic. A dividend creates no shares and consumes none, so it never "
+            "touches the FIFO lot arithmetic that decides your cost basis and what a "
+            "sale realises. It is stored in its own table for exactly that reason — a "
+            "third value on buy/sell would reach every branch that matches on them.\n\n"
+            "What it does change is every return that measures money rather than "
+            "price: XIRR on the dashboard, on the equity curve, and on a DCA plan. "
+            "Money arriving has the same sign as a sale without the share count "
+            "moving, which is the whole of the arithmetic.\n\n"
+            "A plan's share of a dividend is split by how much of that holding the "
+            "plan actually bought, on the day it was paid. An account that holds SPY "
+            "from three old one-off buys and one plan contribution should not credit "
+            "the plan with the whole payment — and a plan that has never bought VOO "
+            "gets none of VOO's dividend at all.\n\n"
+            "REINVESTED dividends (DRIP) are not income here. They buy shares at a "
+            "real price and belong in 'trd buy', where they become a lot with a cost "
+            "basis. Recorded in both places, they are counted twice."
+        ),
+        formula=(
+            "portfolio XIRR flows = buys (out) + sells (in) + income (in) + value today\n"
+            "plan's share of a payment = plan shares held / account shares held, that day"
+        ),
+        example=(
+            "'trd income add 1.98 --symbol VOO --account sofi --date 2026-07-01'. Five "
+            "payments totalling $3.43 over three months on a $2,300 account is "
+            "rounding — and it is the cheapest this problem will ever be to fix."
+        ),
+        related=["total-return", "xirr", "cost-basis", "dca"],
+        used_in=["trd income ls", "trd dashboard", "trd equity", "trd dca show"],
     ),
     GlossaryEntry(
         key="alpha",
@@ -425,7 +487,12 @@ _ENTRIES: list[GlossaryEntry] = [
         definition=(
             "How much better (or worse) you did than simply buying the S&P 500 with the "
             "same money on the same days. Positive alpha means your choices added value; "
-            "negative means an index fund would have beaten you."
+            "negative means an index fund would have beaten you.\n\n"
+            "One asymmetry to know about: the benchmark side is a PRICE return. trd "
+            "values SPY from its price series and knows nothing of SPY's own "
+            "distributions, while your side counts the dividends you have recorded. "
+            "That makes alpha slightly generous to you. Stated rather than hidden — "
+            "see total-return for why the two halves of a comparison have to match."
         ),
         formula="alpha = your total return % - S&P 500 same-dates return %",
         example="You +25.4%, S&P 500 +18.2% on the same contributions -> alpha = +7.2pp.",

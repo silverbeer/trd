@@ -28,12 +28,18 @@ from trd.errors import TrdError
 from trd.models import SizingMode
 from trd.repos.engine import DEFAULT_EARNINGS_BLACKOUT_DAYS
 
-BACKUP_VERSION = 4
+BACKUP_VERSION = 5
 # v1 predates exit triggers and the engine; v2 keyed engine signals by bar date and
 # dropped the engine config fields added after it; v3 predates the point-in-time
-# earnings archive. Every older version still reads — the missing sections are
-# treated as empty, which is correct: they did not exist to be exported.
-SUPPORTED_VERSIONS = (1, 2, 3, 4)
+# earnings archive; v4 predates recorded income. Every older version still reads —
+# the missing sections are treated as empty, which is correct: they did not exist
+# to be exported.
+#
+# The bump matters in the other direction. A v4 reader handed a v5 file would
+# ignore the income section and restore silently, losing every dividend rather
+# than refusing — the same failure as old code writing a new schema. Raising the
+# number makes that a stated error instead.
+SUPPORTED_VERSIONS = (1, 2, 3, 4, 5)
 
 
 class BackupStats(BaseModel):
@@ -44,6 +50,7 @@ class BackupStats(BaseModel):
     watchlists: int
     indicators: int
     exit_triggers: int = 0
+    income: int = 0
     earnings_results: int = 0
     engine_positions: int = 0
     engine_signals: int = 0
@@ -160,6 +167,28 @@ def export_data(conn: duckdb.DuckDBPyConnection) -> dict:
             "note": r[4],
         }
         for r in rows("SELECT key, params, enabled, display_order, note FROM indicator_config")
+    ]
+    # User-owned and unrecoverable, like the transactions beside it: a provider
+    # can tell you a symbol's dividend history, never which of those payments
+    # landed in your account.
+    income = [
+        {
+            "account": r[0],
+            "symbol": r[1],
+            "kind": r[2],
+            "amount": str(r[3]),
+            "received_at": r[4].isoformat(),
+            "note": r[5],
+        }
+        for r in rows(
+            """
+            SELECT a.name, i.symbol, n.kind, n.amount, n.received_at, n.note
+            FROM income n
+            JOIN account a ON a.id = n.account_id
+            LEFT JOIN instrument i ON i.id = n.instrument_id
+            ORDER BY n.received_at, n.id
+            """
+        )
     ]
     exit_triggers = [
         {
@@ -308,6 +337,7 @@ def export_data(conn: duckdb.DuckDBPyConnection) -> dict:
         "watchlists": watchlists,
         "indicators": indicators,
         "exit_triggers": exit_triggers,
+        "income": income,
         "earnings_results": earnings_results,
         "engine": {
             "config": engine_config,
@@ -436,6 +466,24 @@ def restore_data(conn: duckdb.DuckDBPyConnection, data: dict) -> BackupStats:
                 ind["enabled"],
                 ind["display_order"],
                 ind["note"],
+            ],
+        )
+
+    # Backups written before income existed have no section; treat it as empty
+    # rather than failing, the same as every other section added after v1.
+    income = data.get("income", [])
+    for entry in income:
+        symbol = entry.get("symbol")
+        conn.execute(
+            """INSERT INTO income (account_id, instrument_id, kind, amount, received_at, note)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            [
+                account_id[entry["account"]],
+                instrument_id[symbol] if symbol else None,
+                entry.get("kind", "dividend"),
+                _dec(entry["amount"]),
+                datetime.fromisoformat(entry["received_at"]),
+                entry.get("note"),
             ],
         )
 
@@ -579,6 +627,7 @@ def restore_data(conn: duckdb.DuckDBPyConnection, data: dict) -> BackupStats:
         watchlists=len(data["watchlists"]),
         indicators=len(data["indicators"]),
         exit_triggers=len(exit_triggers),
+        income=len(income),
         earnings_results=len(data.get("earnings_results", [])),
         engine_positions=len(positions),
         engine_signals=len(signals),

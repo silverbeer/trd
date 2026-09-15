@@ -44,6 +44,18 @@ trd quote AAPL                        # live quote for any symbol
 trd buy AAPL 10 [--price 213.50] [--account main] [--date 2026-06-10] [--fees 1] [--note ...]
 trd sell AAPL 5 [--price ...]         # validates held quantity
 trd import txns.csv                   # bulk-load transactions
+trd income add 1.98 --symbol VOO [--account sofi] [--date ISO] [--kind dividend|interest|cash_sweep]
+trd income ls [--account N] [--json]  # cash a holding PAID you, as opposed to the price rising.
+                                      # Not a buy: creates no shares, consumes none, never reaches
+                                      # FIFO — which is why it is its own table and not a third
+                                      # Side. It does reach every return that measures MONEY: XIRR
+                                      # on dashboard, equity and a DCA plan. A plan's share of a
+                                      # payment is split by how much of that holding the plan
+                                      # actually bought, on the day it was paid, so an account that
+                                      # holds SPY from old one-offs AND a contribution doesn't
+                                      # credit the plan with all of it. A REINVESTED dividend
+                                      # (DRIP) is an ordinary 'trd buy' — recorded here too it is
+                                      # counted twice. 'trd learn income · total-return'
 trd backup data.json                 # export user-owned facts (txns/accounts/plans/watch/indicators)
                                       # + the point-in-time earnings archive, which sync CANNOT rebuild
 trd restore data.json [--force]      # rebuild a DB from a backup, then trd sync (cross-machine sync)
@@ -404,6 +416,21 @@ CSV import format (header required): `date,account,symbol,side,quantity,price[,f
 - `earnings_event` is a rewritable cache of *dates* (what the entry blackout needs). `earnings_result` ([src/trd/services/earnings_archive.py](src/trd/services/earnings_archive.py)) is the **point-in-time archive**: written when a release is first announced so the estimate is captured before the number lands, never revised afterwards, and `quality_status` names what was genuinely observed so an unfillable column (revenue, guidance, revisions, BMO/AMC timing — none of which yfinance supplies) never reads as a measurement of zero. It is the one provider-sourced table in `trd backup`, because no provider can hand it back.
 - An instrument carries `tradable`. False means a calculated number rather than a holding — `^VIX`, which the regime gate reads and nothing can own. It stays typed `stock` because `instrument.type` has a `CHECK` from `001_init` that DuckDB cannot widen and 12 foreign keys point at the table. `record_trade` and `trd engine add` refuse a non-tradable; `EngineService.universe()` filters one already in a list; the earnings poll skips it (an index never has a date, so it qualified as "needs a re-check" on every scan — ~158 wasted requests a day).
 - Schema changes = new numbered file in [src/trd/db/migrations](src/trd/db/migrations). Never edit an applied migration.
+- **Cash received is not a trade.** Income (dividends, interest, a broker's sweep) lives
+  in its own table ([migration 024](src/trd/db/migrations/024_income.sql)), never as a
+  third value on `Side` — that enum is load-bearing in FIFO, and a dividend creates no lot
+  and consumes none, so the holdings arithmetic must not be able to see it. It does reach
+  every return that measures money, and does so through ONE definition:
+  [src/trd/services/cashflow.py](src/trd/services/cashflow.py). Three places built XIRR
+  flows by hand before it (dashboard, equity curve, plan detail); three copies is how
+  income gets added to two of them and quietly missed by the third, and a return that is
+  right on one screen and wrong on the next is worse than one that is wrong everywhere.
+  A plan's share of a payment is pro-rated by the shares the plan held that day. `trd
+  backup` carries it (version 5) because no provider can hand it back — a provider knows
+  what a symbol has paid, never which payments landed in this account.
+- **Price return and total return are different numbers and trd says which.** `Dashboard.
+  price_return_pct` is (value − cost)/cost; `total_return_pct` adds the income. Reporting
+  the first under the second's name is what made every figure quietly low.
 - Money/quantities are `Decimal` end to end. Never float.
 - Broker integration is **agent-side only**: an MCP session reads the brokerage and writes a snapshot file; `trd engine reconcile` does the diff. Nothing under `src/trd` imports or knows about MCP. The committed `.claude/settings.json` (never `settings.local.json`, which is gitignored and would put the gate on one machine only) names all 53 tools the server exposes: 34 reads allowed, 19 denied — the 17 that mutate broker state (order place/cancel, option exercise, watchlist and scan mutations) plus both `review_*_order` tools, which price an order without placing it and are denied anyway because trd decides from its own data. There is no mid-name wildcard, so a tool added later matches neither list and surfaces as an unlisted tool needing an explicit decision. See [docs/robinhood-mcp.md](docs/robinhood-mcp.md).
 - The Telegram command bot ([src/trd/notify/bot.py](src/trd/notify/bot.py)) **never opens the database**. DuckDB is single-writer and the bot is resident while a scan is not, so a connection held there would lock out a scan — putting a chat feature in the trading path. Reads answer from the snapshots the scan publishes (`status.json`, `report.json`, `status.txt`); writes go to a queue of JSON files under `TRD_HOME/commands/` that `trd engine apply-queue` drains inside the scan's process. Queue files are named by Telegram's `update_id` so replay order is the order typed and a redelivered update is recognised, not reapplied. Authorization is a numeric-user-id allowlist checked before anything reads the message text.
