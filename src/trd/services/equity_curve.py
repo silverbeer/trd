@@ -17,8 +17,10 @@ import duckdb
 from pydantic import BaseModel
 
 from trd.errors import TrdError, UnknownAccountError
-from trd.models import AccountType, Transaction
+from trd.models import AccountType, Income, Transaction
 from trd.repos import AccountRepo, InstrumentRepo, PriceRepo, TransactionRepo
+from trd.repos.income import IncomeRepo
+from trd.services.cashflow import cash_flows
 from trd.services.fifo import fifo_position
 from trd.services.xirr import xirr
 
@@ -73,6 +75,7 @@ class EquityCurveService:
         self.instruments = InstrumentRepo(conn)
         self.txns = TransactionRepo(conn)
         self.prices = PriceRepo(conn)
+        self.income = IncomeRepo(conn)
 
     def _scope(
         self, account_name: str | None, include_simulation: bool
@@ -218,31 +221,43 @@ class EquityCurveService:
             max_drawdown_pct=max_dd,
             period_return_pct=period_return,
             pl_pct=pl_pct,
-            xirr=self._xirr(sorted_txns, window_start, start_value, today, end_value),
+            xirr=self._xirr(
+                sorted_txns,
+                [
+                    i
+                    for i in self.income.list_all()
+                    if i.account_id not in skip
+                    and (account_id is None or i.account_id == account_id)
+                ],
+                window_start,
+                start_value,
+                today,
+                end_value,
+            ),
             unpriced=sorted(set(unpriced)),
         )
 
     @staticmethod
     def _xirr(
         sorted_txns: list[Transaction],
+        income: list[Income],
         window_start: date,
         start_value: Decimal,
         end: date,
         end_value: Decimal,
     ) -> float | None:
         """Money-weighted return over the window: opening holdings are an initial
-        outflow, in-window trades are flows, closing value is the terminal inflow."""
+        outflow, in-window trades and dividends are flows, closing value is the
+        terminal inflow.
+
+        Including income is what makes this a TOTAL return rather than a price
+        return. The curve's `value` line is still holdings at their close — cash
+        paid out has left the positions — so the two answer different questions
+        on purpose.
+        """
         flows: list[tuple[date, float]] = []
         if start_value > 0:
             flows.append((window_start, -float(start_value)))
-        for t in sorted_txns:
-            d = t.executed_at.date()
-            if d <= window_start or d > end:
-                continue
-            amount = float(t.quantity * t.price)
-            if t.side.value == "buy":
-                flows.append((d, -(amount + float(t.fees))))
-            else:
-                flows.append((d, amount - float(t.fees)))
+        flows += cash_flows(sorted_txns, income, after=window_start, until=end)
         flows.append((end, float(end_value)))
         return xirr(flows)
