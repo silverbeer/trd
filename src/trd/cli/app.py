@@ -47,6 +47,7 @@ from trd.cli.render import (
     fmt_signed_pct,
     forecast_table,
     history_table,
+    income_table,
     indicator_panel,
     lots_table,
     movers_table,
@@ -64,7 +65,7 @@ from trd.config import DEFAULT_ACCOUNT, get_settings
 from trd.db.connection import connect, connect_read_only
 from trd.engine.bars import DAILY
 from trd.errors import TrdError
-from trd.models import AccountType, BrokerSnapshot, Side, SizingMode
+from trd.models import AccountType, BrokerSnapshot, IncomeKind, Side, SizingMode
 from trd.notify import label_from_env, scan_messages
 from trd.notify.bot import (
     POLL_TIMEOUT,
@@ -87,6 +88,7 @@ from trd.services import (
     EquityCurveService,
     ExitTriggerService,
     HistoryService,
+    IncomeService,
     IndicatorService,
     MoversService,
     PlanService,
@@ -171,6 +173,11 @@ app.add_typer(plan_app, name="dca")
 app.add_typer(plan_app, name="plan", hidden=True)  # back-compat alias
 exit_app = typer.Typer(help="Stop/target exit triggers on holdings.", no_args_is_help=True)
 app.add_typer(exit_app, name="exit")
+income_app = typer.Typer(
+    help="Cash your holdings paid you: dividends, interest, a broker's cash sweep.",
+    no_args_is_help=True,
+)
+app.add_typer(income_app, name="income")
 engine_app = typer.Typer(
     help="Monitor-mode trading engine: scan a universe, paper-trade the signals.",
     no_args_is_help=True,
@@ -1363,6 +1370,97 @@ def plan_ls(
             plan.note or "—",
         )
     console.print(table)
+
+
+@income_app.command("add")
+def income_add(
+    amount: Annotated[str, typer.Argument(help="Cash received, e.g. 1.98.")],
+    symbol: Annotated[
+        str | None,
+        typer.Option("--symbol", "-s", help="The holding that paid it. Required for a dividend."),
+    ] = None,
+    account: Annotated[
+        str, typer.Option("--account", "-a", help="Account the cash landed in.")
+    ] = DEFAULT_ACCOUNT,
+    date_str: Annotated[
+        str | None, typer.Option("--date", "-d", help="Date received (YYYY-MM-DD). Default: today.")
+    ] = None,
+    kind: Annotated[
+        str,
+        typer.Option("--kind", "-k", help="dividend | interest | cash_sweep."),
+    ] = "dividend",
+    note: Annotated[str | None, typer.Option("--note", help="Anything worth remembering.")] = None,
+) -> None:
+    """Record cash a holding paid you.
+
+    A dividend is not a buy: it creates no shares and changes no cost basis, so
+    it never reaches the FIFO arithmetic. What it does change is every return
+    figure — until it is recorded, trd measures price appreciation alone and
+    reports less than you actually made.
+
+    A REINVESTED dividend is a different thing. It buys shares at a real price
+    and belongs in 'trd buy', not here; recording it in both places counts it
+    twice.
+    """
+    try:
+        kind_value = IncomeKind(kind)
+    except ValueError:
+        _fail(TrdError(f"Unknown kind '{kind}'. Use: {', '.join(k.value for k in IncomeKind)}."))
+        return
+    received = _parse_date(date_str) or datetime.now()
+    settings = get_settings()
+    service = IncomeService(connect(settings.db_path), YFinanceProvider())
+    try:
+        entry = service.add(
+            account_name=account,
+            amount=_parse_decimal(amount, "amount"),
+            received_at=received,
+            symbol=symbol,
+            kind=kind_value,
+            note=note,
+        )
+    except TrdError as exc:
+        _fail(exc)
+        return
+    paid_by = f" from {symbol.upper()}" if symbol else ""
+    console.print(
+        f"Recorded {entry.kind.value.replace('_', ' ')} {fmt_money(entry.amount)}{paid_by} "
+        f"in [bold]{account}[/bold] on {entry.received_at:%Y-%m-%d}."
+    )
+
+
+@income_app.command("ls")
+def income_ls(
+    account: Annotated[
+        str | None, typer.Option("--account", "-a", help="Only this account.")
+    ] = None,
+    as_json: JsonOpt = False,
+) -> None:
+    """Every payment received, oldest first, with the running total."""
+    _use_json(as_json)
+    settings = get_settings()
+    service = IncomeService(connect(settings.db_path), YFinanceProvider())
+    try:
+        rows = service.ledger(account)
+    except TrdError as exc:
+        _fail(exc)
+        return
+    if as_json:
+        _emit_json(
+            [
+                {**entry.model_dump(mode="json"), "symbol": inst.symbol if inst else None}
+                for entry, inst in rows
+            ]
+        )
+        return
+    if not rows:
+        console.print(
+            "No income recorded. A dividend your broker paid is cash trd cannot see "
+            "until you add it: [bold]trd income add 1.98 --symbol VOO[/bold]."
+        )
+        return
+    console.print(income_table(rows))
+    console.print("[dim]terms: trd learn income · total-return · price-return[/dim]")
 
 
 def _dca_detail_service() -> DcaDetailService:

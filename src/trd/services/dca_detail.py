@@ -11,6 +11,8 @@ from pydantic import BaseModel
 
 from trd.models import Transaction
 from trd.providers.base import MarketDataProvider
+from trd.repos.income import IncomeRepo
+from trd.services.cashflow import cash_flows, plan_income_flows
 from trd.services.fifo import fifo_position
 from trd.services.plan import Plan, PlanService, PlanStatus
 from trd.services.xirr import xirr
@@ -125,6 +127,7 @@ class DcaDetailService:
         self.conn = conn
         self.provider = provider
         self.plans = PlanService(conn, provider)
+        self.income = IncomeRepo(conn)
 
     def detail(self, account_name: str) -> PlanDetail:
         plan = self.plans.get_plan(account_name)
@@ -134,7 +137,7 @@ class DcaDetailService:
         events = self._events(txns)
         symbol_stats = self._symbol_stats(plan, status, txns)
         cadence = self._cadence(plan, txns)
-        plan_xirr = self._xirr(txns, status)
+        plan_xirr = self._xirr(plan, txns, status)
         return PlanDetail(
             plan=plan,
             status=status,
@@ -243,12 +246,22 @@ class DcaDetailService:
             streak=streak,
         )
 
-    def _xirr(self, txns: list[Transaction], status: PlanStatus) -> float | None:
+    def _xirr(self, plan: Plan, txns: list[Transaction], status: PlanStatus) -> float | None:
+        """Money-weighted return on the plan, dividends included.
+
+        Income is attributed by the plan's share of each holding on the day it
+        was paid — see `plan_income_flows`. Crediting a plan with the whole of a
+        dividend on a symbol the account also holds outside it would flatter the
+        very comparison the plan exists to make.
+        """
         if status.value is None or not txns:
             return None
-        flows: list[tuple[date, float]] = []
-        for txn in txns:
-            amount = float(txn.quantity * txn.price + txn.fees)
-            flows.append((txn.executed_at.date(), -amount if txn.side == "buy" else amount))
+        income = plan_income_flows(
+            self.income.list_all(plan.account.id),
+            txns,
+            self.plans.txns.list_chronological(plan.account.id),
+        )
+        flows = cash_flows(txns) + income
+        flows.sort(key=lambda f: f[0])
         flows.append((date.today(), float(status.value)))
         return xirr(flows)

@@ -71,6 +71,38 @@ class Transaction(BaseModel):
     plan_id: int | None = None  # set when the txn was recorded by a contribution plan
 
 
+class IncomeKind(StrEnum):
+    """Cash a holding pays you, by where it came from.
+
+    Kept separate from `Side` on purpose: a dividend creates no lot and consumes
+    none, so FIFO must never see it. See migration 024.
+    """
+
+    DIVIDEND = "dividend"  # paid by a holding
+    INTEREST = "interest"  # paid on cash
+    CASH_SWEEP = "cash_sweep"  # a broker sweeping idle cash into a yield account
+
+
+class Income(BaseModel):
+    """One cash payment received, never a purchase.
+
+    `instrument_id` is None for account-level cash — interest, a sweep — and set
+    for anything a holding paid, so income can be read per position.
+
+    A REINVESTED dividend does not belong here: it creates a real lot with a real
+    cost basis and is an ordinary `buy`. Recording it in both places counts it
+    twice, once in the return and once in the holdings.
+    """
+
+    id: int
+    account_id: int
+    instrument_id: int | None = None
+    kind: IncomeKind = IncomeKind.DIVIDEND
+    amount: Decimal
+    received_at: datetime
+    note: str | None = None
+
+
 class Quote(BaseModel):
     symbol: str
     price: Decimal

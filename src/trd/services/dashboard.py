@@ -10,9 +10,11 @@ from decimal import Decimal
 import duckdb
 from pydantic import BaseModel
 
-from trd.models import Position
+from trd.models import AccountType, Income, Position
 from trd.providers.base import MarketDataProvider
+from trd.repos.income import IncomeRepo
 from trd.services.benchmark import BENCHMARK, same_dates_value
+from trd.services.cashflow import cash_flows
 from trd.services.portfolio import PortfolioService
 from trd.services.xirr import xirr
 
@@ -40,12 +42,32 @@ class Dashboard(BaseModel):
     xirr: float | None
     benchmark_value: Decimal | None
     spy_today_pct: Decimal | None
+    # Cash the holdings paid out: dividends, interest, a broker's sweep. Kept
+    # beside the price move rather than folded into it, because they are
+    # different things — one you can still lose, the other is already banked.
+    income: Decimal = Decimal(0)
 
     @property
-    def total_return_pct(self) -> Decimal | None:
+    def price_return_pct(self) -> Decimal | None:
+        """What the holdings are worth against what they cost. The number trd
+        used to call 'total return', which it never was: a price return ignores
+        every dividend the position paid on the way."""
         if self.invested == 0:
             return None
         return self.gains / self.invested * 100
+
+    @property
+    def total_return_pct(self) -> Decimal | None:
+        """Price move plus the cash paid out — what the money actually earned.
+
+        The distinction is small on a young book and large on an old one: on a
+        dividend-paying core held for a decade, distributions are a substantial
+        share of everything made. Reporting the price return under this name is
+        what made every figure in trd quietly low.
+        """
+        if self.invested == 0:
+            return None
+        return (self.gains + self.income) / self.invested * 100
 
     @property
     def today_change_pct(self) -> Decimal | None:
@@ -75,7 +97,13 @@ class Dashboard(BaseModel):
 
     @property
     def alpha(self) -> Decimal | None:
-        """Total return minus what the same money in the S&P 500 would have returned."""
+        """Total return minus what the same money in the S&P 500 would have returned.
+
+        Both sides are price-only where the benchmark is concerned — SPY's
+        same-dates value is a price series — so this compares like with like
+        only until trd knows SPY's distributions too. Stated in `trd learn
+        alpha` rather than silently assumed.
+        """
         mine, theirs = self.total_return_pct, self.benchmark_return_pct
         if mine is None or theirs is None:
             return None
@@ -94,6 +122,7 @@ class DashboardService:
         self.conn = conn
         self.provider = provider
         self.portfolio = PortfolioService(conn, provider)
+        self.income = IncomeRepo(conn)
 
     def summary(self, include_simulation: bool = False) -> Dashboard:
         positions = self.portfolio.positions(include_simulation=include_simulation)
@@ -130,6 +159,7 @@ class DashboardService:
             xirr=self._portfolio_xirr(positions, value, include_simulation),
             benchmark_value=self._benchmark(include_simulation),
             spy_today_pct=self._spy_today(),
+            income=self._income(include_simulation),
         )
 
     def _holdings(self, positions: list[Position], total_value: Decimal) -> list[Holding]:
@@ -148,16 +178,31 @@ class DashboardService:
         holdings.sort(key=lambda h: h.value, reverse=True)
         return holdings
 
+    def _scoped_income(self, include_simulation: bool) -> list[Income]:
+        """Income for the accounts this view covers, and no others."""
+        ids = {
+            a.id
+            for a in self.portfolio.accounts.list_all()
+            if include_simulation or a.type != AccountType.SIMULATION
+        }
+        return [i for i in self.income.list_all() if i.account_id in ids]
+
+    def _income(self, include_simulation: bool) -> Decimal:
+        return sum((i.amount for i in self._scoped_income(include_simulation)), Decimal(0))
+
     def _portfolio_xirr(
         self, positions: list[Position], value: Decimal, include_simulation: bool
     ) -> float | None:
+        """Money-weighted total return: every trade, every dividend, and what
+        the book is worth today."""
         if value == 0:
             return None
-        flows: list[tuple[date, float]] = []
-        for txns in self.portfolio._scope_txns(None, include_simulation).values():
-            for txn in txns:
-                amount = float(txn.quantity * txn.price + txn.fees)
-                flows.append((txn.executed_at.date(), -amount if txn.side == "buy" else amount))
+        txns = [
+            txn
+            for txns in self.portfolio._scope_txns(None, include_simulation).values()
+            for txn in txns
+        ]
+        flows = cash_flows(txns, self._scoped_income(include_simulation))
         if not flows:
             return None
         flows.append((date.today(), float(value)))

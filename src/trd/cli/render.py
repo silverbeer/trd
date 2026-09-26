@@ -526,6 +526,33 @@ def _money0(value):
     return f"{value:,.0f}" if value is not None else "—"
 
 
+def income_table(rows: list) -> Table:
+    """Every payment received, oldest first, with a running total.
+
+    Oldest first on purpose, unlike `trd history`: income is read to see whether
+    it is growing, and a stream that compounds is a story told forwards.
+    """
+    table = Table(title="Income — cash your holdings paid", title_justify="left")
+    table.add_column("Date")
+    table.add_column("Symbol", style="bold")
+    table.add_column("Kind")
+    table.add_column("Amount", justify="right")
+    table.add_column("Note", overflow="fold")
+    total = Decimal(0)
+    for entry, instrument in rows:
+        total += entry.amount
+        table.add_row(
+            f"{entry.received_at:%Y-%m-%d}",
+            instrument.symbol if instrument else "—",
+            entry.kind.value.replace("_", " "),
+            fmt_money(entry.amount),
+            entry.note or "",
+        )
+    table.add_section()
+    table.add_row("Total", "", "", f"[bold]{fmt_money(total)}[/bold]", "")
+    return table
+
+
 def dashboard_card(dash: Dashboard) -> Table:
     """The compact 'five metrics that matter' home view."""
     table = Table(title="Portfolio", title_justify="left", show_header=False)
@@ -538,7 +565,12 @@ def dashboard_card(dash: Dashboard) -> Table:
         table.add_row("vs S&P 500", fmt_signed_pct(dash.alpha))
     table.add_section()
     table.add_row("Amount invested", fmt_money(dash.invested))
-    table.add_row("Investment gains", fmt_signed(dash.gains))
+    table.add_row("Price gain", fmt_signed(dash.gains))
+    # Only when there is some. A "Dividends 0.00" row on a book that has never
+    # been paid one reads as a holding that yields nothing, rather than as a
+    # column nobody has filled in.
+    if dash.income:
+        table.add_row("Dividends + interest", fmt_signed(dash.income))
     table.add_section()
     today = f"{fmt_signed(dash.today_change)} ({fmt_signed_pct(dash.today_change_pct)})"
     table.add_row("Today's change", today)
