@@ -101,7 +101,7 @@ class IncomeKind(StrEnum):
     """Cash a holding pays you, by where it came from.
 
     Kept separate from `Side` on purpose: a dividend creates no lot and consumes
-    none, so FIFO must never see it. See migration 024.
+    none, so FIFO must never see it. See migration 025.
     """
 
     DIVIDEND = "dividend"  # paid by a holding

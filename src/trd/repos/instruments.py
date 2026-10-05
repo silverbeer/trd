@@ -10,7 +10,7 @@ _COLS = "id, symbol, name, type, exchange, sector, currency, tradable"
 INSTRUMENT_COLS = len(_COLS.split(", "))
 
 
-# The profile (migration 024) is read only by this repo's own lookups. Joins keep
+# The profile (migration 025) is read only by this repo's own lookups. Joins keep
 # selecting the core columns above: a list or a book never needs a paragraph of
 # business description per row, and the positional slices in five repos stay put.
 _PROFILE = "industry, country, summary"

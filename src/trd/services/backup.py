@@ -394,7 +394,7 @@ def restore_data(conn: duckdb.DuckDBPyConnection, data: dict) -> BackupStats:
                 inst["exchange"],
                 inst["sector"],
                 inst["currency"],
-                # .get: a backup written before migration 024 has none of these.
+                # .get: a backup written before migration 025 has none of these.
                 inst.get("industry"),
                 inst.get("country"),
                 inst.get("summary"),
