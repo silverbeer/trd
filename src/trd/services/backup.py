@@ -94,8 +94,14 @@ def export_data(conn: duckdb.DuckDBPyConnection) -> dict:
             "exchange": r[3],
             "sector": r[4],
             "currency": r[5],
+            "industry": r[6],
+            "country": r[7],
+            "summary": r[8],
         }
-        for r in rows("SELECT symbol, name, type, exchange, sector, currency FROM instrument")
+        for r in rows(
+            "SELECT symbol, name, type, exchange, sector, currency, industry, country, summary "
+            "FROM instrument"
+        )
     ]
     accounts = [
         {"name": r[0], "type": r[1], "currency": r[2]}
@@ -378,8 +384,9 @@ def restore_data(conn: duckdb.DuckDBPyConnection, data: dict) -> BackupStats:
         if inst["symbol"] in instrument_id:
             continue
         row = conn.execute(
-            """INSERT INTO instrument (symbol, name, type, exchange, sector, currency)
-               VALUES (?, ?, ?, ?, ?, ?) RETURNING id""",
+            """INSERT INTO instrument (symbol, name, type, exchange, sector, currency,
+                                         industry, country, summary)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id""",
             [
                 inst["symbol"],
                 inst["name"],
@@ -387,6 +394,10 @@ def restore_data(conn: duckdb.DuckDBPyConnection, data: dict) -> BackupStats:
                 inst["exchange"],
                 inst["sector"],
                 inst["currency"],
+                # .get: a backup written before migration 024 has none of these.
+                inst.get("industry"),
+                inst.get("country"),
+                inst.get("summary"),
             ],
         ).fetchone()
         assert row is not None

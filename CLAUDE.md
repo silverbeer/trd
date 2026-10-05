@@ -40,7 +40,7 @@ trd history [--days 30] [--all-time] [--symbol X] [--side buy|sell] [--account N
                                       # every sell (FIFO-matched) and a period total. Real money only
                                       # unless --all. FIFO matches over ALL history, then the window
                                       # filters what's shown — never the other way round
-trd quote AAPL                        # live quote for any symbol
+trd quote AAPL                        # live quote + profile: sector / industry / country / summary
 trd buy AAPL 10 [--price 213.50] [--account main] [--date 2026-06-10] [--fees 1] [--note ...]
 trd sell AAPL 5 [--price ...]         # validates held quantity
 trd import txns.csv                   # bulk-load transactions
