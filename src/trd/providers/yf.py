@@ -162,6 +162,9 @@ class YFinanceProvider:
             tradable=info.get("quoteType", "") not in _NOT_TRADABLE_QUOTE_TYPES,
             exchange=info.get("fullExchangeName") or info.get("exchange"),
             sector=info.get("sector"),
+            industry=info.get("industry"),
+            country=info.get("country"),
+            summary=info.get("longBusinessSummary"),
             currency=info.get("currency") or "USD",
         )
 

@@ -719,6 +719,9 @@ def _yfinance_verifier() -> Callable[[str], str]:
     provider = YFinanceProvider()
 
     def verify(symbol: str) -> str:
-        return provider.get_info(symbol).name or symbol
+        # Name and what kind of company it is, so the reply to /add answers
+        # "what did I just add" as well as "did it resolve".
+        info = provider.get_info(symbol)
+        return " · ".join(p for p in (info.name or symbol, info.category) if p)
 
     return verify

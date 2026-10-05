@@ -695,8 +695,12 @@ def quote(symbol: Annotated[str, typer.Argument(help="Ticker, e.g. AAPL or BTC-U
     table.add_row("Type", info.type.value)
     table.add_row("Exchange", info.exchange or "—")
     table.add_row("Sector", info.sector or "—")
+    table.add_row("Industry", info.industry or "—")
+    table.add_row("Country", info.country or "—")
     table.add_row("Currency", info.currency)
     console.print(table)
+    if info.summary:
+        console.print(info.summary, style="dim")
 
 
 def _trade(
