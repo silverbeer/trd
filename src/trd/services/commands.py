@@ -25,7 +25,8 @@ from pathlib import Path
 import duckdb
 from pydantic import BaseModel
 
-from trd.errors import NotTradableError, TrdError
+from trd.errors import NotTradableError, ProviderError, TrdError
+from trd.models import Instrument
 from trd.providers.base import MarketDataProvider
 from trd.services.engine import EngineService
 from trd.services.sync import SyncService
@@ -167,9 +168,7 @@ class CommandQueueService:
         # daily range — would open a paper position in something with no shares,
         # stopped at 2 x the ATR of a mean-reverting index, and fold its
         # R-multiples into the scorecard beside real trades.
-        instrument = self.watchlists.instruments.get_by_symbol(symbol) or (
-            self.watchlists.instruments.insert(self.provider.get_info(symbol))
-        )
+        instrument = self._profiled(symbol)
         if not instrument.tradable:
             raise NotTradableError(instrument.symbol)
         added = self.watchlists.add(symbol, config.watchlist)
@@ -183,7 +182,8 @@ class CommandQueueService:
         short = dict(status.short_history)
         depth = short.get(symbol)
         where = f"{config.watchlist} ({status.account})"
-        prefix = f"added {symbol} to {where}" if added else f"{symbol} was already on {where}"
+        label = _label(instrument)
+        prefix = f"added {label} to {where}" if added else f"{label} was already on {where}"
         if depth is not None:
             return (
                 f"{prefix} — {depth} {status.bar_unit} bars, below the "
@@ -191,6 +191,26 @@ class CommandQueueService:
                 f"the daily sync will keep filling it in."
             )
         return f"{prefix} — {bars} bars pulled, ready to trade."
+
+    def _profiled(self, symbol: str) -> Instrument:
+        """The instrument, created or re-profiled from the provider as needed.
+
+        A name added again is the moment to repair a thin profile: the row was
+        written on whatever day it was first seen, and Yahoo's info call comes
+        back without sector or industry often enough that a blank stored once
+        would otherwise stay blank. Best effort only — the add is about the
+        universe, and a provider error must not refuse it.
+        """
+        repo = self.watchlists.instruments
+        instrument = repo.get_by_symbol(symbol)
+        if instrument is None:
+            return repo.insert(self.provider.get_info(symbol))
+        if instrument.sector and instrument.industry:
+            return instrument
+        try:
+            return repo.enrich(symbol, self.provider.get_info(symbol)) or instrument
+        except ProviderError:
+            return instrument
 
     def remove(self, symbol: str) -> str:
         config = self.engine.config()
@@ -206,3 +226,9 @@ class CommandQueueService:
         if symbol in held:
             return f"{note} — the open position stays and will close on its own exit rules."
         return note
+
+
+def _label(instrument: Instrument) -> str:
+    """'VRT (Vertiv Holdings Co · Industrials / Electrical Equipment & Parts)'."""
+    detail = " · ".join(p for p in (instrument.name, instrument.category) if p)
+    return f"{instrument.symbol} ({detail})" if detail else instrument.symbol

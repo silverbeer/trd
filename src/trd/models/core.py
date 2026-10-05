@@ -30,11 +30,24 @@ class InstrumentInfo(BaseModel):
     type: InstrumentType = InstrumentType.STOCK
     exchange: str | None = None
     sector: str | None = None
+    # The finer label beneath sector ("Semiconductors" under "Technology"), the
+    # country of domicile, and the provider's business description. Profile, not
+    # price: refilled on add when missing, NULL where the provider has none.
+    industry: str | None = None
+    country: str | None = None
+    summary: str | None = None
     currency: str = "USD"
     # False for a calculated number rather than a holding — an index. It stays
     # typed as a stock because instrument.type carries a CHECK constraint that
     # only table surgery could widen, and 12 foreign keys point at this table.
     tradable: bool = True
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def category(self) -> str | None:
+        """'Industrials / Electrical Equipment & Parts' — what kind of company this is."""
+        parts = [p for p in (self.sector, self.industry) if p]
+        return " / ".join(parts) or None
 
 
 class Instrument(BaseModel):
@@ -44,11 +57,24 @@ class Instrument(BaseModel):
     type: InstrumentType
     exchange: str | None = None
     sector: str | None = None
+    # The finer label beneath sector ("Semiconductors" under "Technology"), the
+    # country of domicile, and the provider's business description. Profile, not
+    # price: refilled on add when missing, NULL where the provider has none.
+    industry: str | None = None
+    country: str | None = None
+    summary: str | None = None
     currency: str = "USD"
     # False for a calculated number rather than a holding — an index. It stays
     # typed as a stock because instrument.type carries a CHECK constraint that
     # only table surgery could widen, and 12 foreign keys point at this table.
     tradable: bool = True
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def category(self) -> str | None:
+        """'Industrials / Electrical Equipment & Parts' — what kind of company this is."""
+        parts = [p for p in (self.sector, self.industry) if p]
+        return " / ".join(parts) or None
 
 
 class Account(BaseModel):
@@ -75,7 +101,7 @@ class IncomeKind(StrEnum):
     """Cash a holding pays you, by where it came from.
 
     Kept separate from `Side` on purpose: a dividend creates no lot and consumes
-    none, so FIFO must never see it. See migration 024.
+    none, so FIFO must never see it. See migration 025.
     """
 
     DIVIDEND = "dividend"  # paid by a holding
