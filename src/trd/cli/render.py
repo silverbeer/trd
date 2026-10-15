@@ -1572,6 +1572,16 @@ def engine_backtest_renderables(
         + f"\nequity {fmt_money(result.start_value)} → {fmt_money(result.end_value)}"
         + (f" ({ret:+.1f}%)" if ret is not None else "")
         + f"  ·  max drawdown {result.max_drawdown_pct:.1f}%"
+        + (
+            f"\ncapture {result.capture * 100:.0f}% — booked R / offered R, pooled"
+            if result.capture is not None
+            else ""
+        )
+        + (
+            "\noverrides: " + ", ".join(f"{k}={v:g}" for k, v in sorted(result.overrides.items()))
+            if result.overrides
+            else ""
+        )
         # Only when it happened. Silence means the rules never argued with
         # themselves, and a permanent "0 passed over" would be noise.
         + (

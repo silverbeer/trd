@@ -258,6 +258,15 @@ trd engine backtest --scale-out N      # replay with the runner on and off. MEAS
                                       # went -31.5% → -39.5% → -42.1%. Same return, materially worse
                                       # drawdown, so scale_out_pct stays 0. Re-measure before
                                       # switching it on; do not switch it on because it sounds right
+trd engine backtest -p KEY=VALUE [-p ...]   # override any exit param for one run — the exit sweep
+                                      # (SB-1033): stop_atr_mult, trail_atr_mult, trail_activate_r,
+                                      # max_sessions, target_r, entry_delay_minutes ... one axis at a
+                                      # time against the same history. Unknown keys are refused (a
+                                      # typo would replay the baseline and call it a result). Every
+                                      # run now reports pooled CAPTURE and per-trade mae_r/mfe_r,
+                                      # the same walk 'trd engine outcomes' does on live trades.
+                                      # trail_activate_r and entry_delay_minutes are live knobs too,
+                                      # both 0 = off; change the live config only on a measured win
 trd engine backtest --regime/--no-regime        # same history with the regime gate on and off —
                                       # the comparison the gate should be judged on, never assumed
                                       # replay the rules against stored history — same scorecard as

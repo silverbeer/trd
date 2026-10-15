@@ -30,7 +30,7 @@ Nothing here calls an LLM, and nothing here judges. It is arithmetic that
 something else can reason over.
 """
 
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 from datetime import datetime
 from decimal import Decimal
 
@@ -389,20 +389,26 @@ def _mean(values: list[Decimal | None]) -> Decimal | None:
     return sum(present, Decimal(0)) / Decimal(len(present))
 
 
-def _pooled_capture(outcomes: list[TradeOutcome]) -> Decimal | None:
+def pooled_capture(pairs: Iterable[tuple[Decimal | None, Decimal | None]]) -> Decimal | None:
     """Booked R divided by offered R, over every trade that was offered anything.
 
-    Trades that never traded above their entry are excluded from BOTH sides: they
-    had nothing to capture, and leaving them in would credit the engine with
-    keeping a share of an opportunity that never existed.
+    `pairs` is (mfe_r, exit_r) per trade. Trades that never traded above their
+    entry are excluded from BOTH sides: they had nothing to capture, and leaving
+    them in would credit the engine with keeping a share of an opportunity that
+    never existed. Shared with the backtest, so a swept capture and a live one
+    are the same number.
     """
-    offered = [o for o in outcomes if o.mfe_r is not None and o.mfe_r > 0 and o.exit_r is not None]
+    offered = [(m, x) for m, x in pairs if m is not None and m > 0 and x is not None]
     if not offered:
         return None
-    total_mfe = sum((o.mfe_r or Decimal(0) for o in offered), Decimal(0))
+    total_mfe = sum((m for m, _ in offered), Decimal(0))
     if total_mfe <= 0:
         return None
-    return sum((o.exit_r or Decimal(0) for o in offered), Decimal(0)) / total_mfe
+    return sum((x for _, x in offered), Decimal(0)) / total_mfe
+
+
+def _pooled_capture(outcomes: list[TradeOutcome]) -> Decimal | None:
+    return pooled_capture((o.mfe_r, o.exit_r) for o in outcomes)
 
 
 def summarize_trades(label: str, outcomes: list[TradeOutcome]) -> OutcomeGroup:
