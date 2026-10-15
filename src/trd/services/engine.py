@@ -72,6 +72,7 @@ from trd.repos.engine import (
     EngineRunRepo,
     EngineSignalRepo,
 )
+from trd.timeframes import SESSION_OPEN_MINUTE
 
 DEFAULT_ENGINE_ACCOUNT = "engine-sim"
 DEFAULT_ENGINE_WATCHLIST = "engine"
@@ -82,6 +83,20 @@ DEFAULT_MAX_POSITIONS = 5
 DEFAULT_EARNINGS_BLACKOUT_DAYS = 3
 # How long before a day-mode engine's flat time it stops taking new entries.
 ENTRY_CUTOFF_MINUTES = 30
+
+
+def entry_opens_at(params: dict[str, float]) -> int | None:
+    """Minute-of-day before which no new trade is opened, or None when off.
+
+    `entry_delay_minutes` after the session open. Shared by the live scanner and
+    the backtest, so a sweep that measures a delay measures the gate that would
+    actually run.
+    """
+    delay = int(params.get("entry_delay_minutes", 0))
+    if delay <= 0:
+        return None
+    return SESSION_OPEN_MINUTE + delay
+
 
 # Ten liquid, heavily-covered names. Small enough to reason about by hand, which
 # is the point of a monitor-mode dry run — you should be able to check the
@@ -804,6 +819,15 @@ class EngineService:
             result.skipped.append(
                 f"no new entries within {ENTRY_CUTOFF_MINUTES}m of the session close — "
                 "a fill now would be flattened before it could work"
+            )
+            return
+
+        opens = entry_opens_at(config.exit_params)
+        if opens is not None and (now.hour * 60 + now.minute) < opens:
+            result.capacity = max(0, config.max_positions - len(held))
+            result.skipped.append(
+                f"no new entries in the first {opens - SESSION_OPEN_MINUTE}m of the session — "
+                "the stop is sized from yesterday's bars and is narrowest at the open"
             )
             return
 

@@ -50,12 +50,18 @@ from trd.engine import REGISTRY as STRATEGIES
 from trd.engine import evaluate_exits, regime
 from trd.engine.bars import DAILY, BarSource
 from trd.engine.base import StrategyContext
-from trd.engine.exits import RULES, ExitDecision, exit_quantity
+from trd.engine.exits import DEFAULT_EXIT_PARAMS, RULES, ExitDecision, exit_quantity
 from trd.errors import TrdError
 from trd.models import Bar, DailyBar, EnginePosition, PositionStatus, SizingMode, StrategyStat
 from trd.repos import EarningsRepo, InstrumentRepo, PriceRepo, WatchlistRepo
 from trd.repos.engine import EngineConfigRepo
-from trd.services.engine import ENTRY_CUTOFF_MINUTES, plan_entry, strategy_stats
+from trd.services.engine import (
+    ENTRY_CUTOFF_MINUTES,
+    entry_opens_at,
+    plan_entry,
+    strategy_stats,
+)
+from trd.services.outcomes import excursion, pooled_capture
 
 CAVEAT = (
     "Backtests flatter: today's universe is the names that survived, fills pay no "
@@ -114,6 +120,10 @@ class BacktestTrade(BaseModel):
     exit_reason: str
     pnl: Decimal
     r_multiple: Decimal | None = None
+    # The path the trade lived through, in R — the same walk `trd engine outcomes`
+    # does on live trades, so a backtest capture and a live one are one unit.
+    mae_r: Decimal | None = None
+    mfe_r: Decimal | None = None
 
     # computed_field, not a plain property: these are part of the --json contract
     # and a property would quietly vanish from the document.
@@ -170,7 +180,15 @@ class BacktestResult(BaseModel):
     max_drawdown_pct: float
     windows: list[WindowStats] = []
     skipped: list[str] = []
+    # Exit params this run replaced on the stored config — what a sweep varied.
+    overrides: dict[str, float] = {}
     caveat: str = CAVEAT
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def capture(self) -> Decimal | None:
+        """Booked R / offered R, pooled — what an exit sweep is scored on."""
+        return pooled_capture((t.mfe_r, t.r_multiple) for t in self.trades)
 
     @computed_field  # type: ignore[prop-decorator]
     @property
@@ -332,6 +350,8 @@ def simulate(
     entry_cutoff = (
         (flat_at // 100) * 60 + (flat_at % 100) - ENTRY_CUTOFF_MINUTES if flat_at else None
     )
+    # Mirrors the live opening delay, through the same helper.
+    entry_opens = entry_opens_at(exit_params) if source.is_intraday else None
     unknown = [k for k in strategies if k not in STRATEGIES]
     if unknown:
         raise TrdError(f"Unknown strategies: {', '.join(unknown)}")
@@ -407,6 +427,7 @@ def simulate(
     closed: list[EnginePosition] = []
     trades: list[BacktestTrade] = []
     entry_reasons: dict[int, str] = {}
+    entry_index: dict[int, int] = {}
     equity: list[EquityPoint] = []
     last_close: dict[str, Decimal] = {}
     blackout_blocked = 0
@@ -489,6 +510,18 @@ def simulate(
             closed.append(position)
             del open_positions[symbol]
             just_closed.add(symbol)
+            # The entry bar is out (the fill was at its close). The exit bar is in
+            # only on a close fill, which lived through all of it; an intrabar fill
+            # left somewhere inside it, so only the exit price itself is on the path.
+            lived = bars[entry_index[position.id] + 1 : i + 1 if fill is FillMode.CLOSE else i]
+            path = excursion(
+                lived,
+                position.entry_price,
+                position.risk_per_share,
+                source,
+                exit_price,
+                position.closed_at,
+            )
             trades.append(
                 BacktestTrade(
                     symbol=symbol,
@@ -503,6 +536,8 @@ def simulate(
                     exit_reason=decision.reason,
                     pnl=position.realized_pnl or Decimal(0),
                     r_multiple=position.realized_r,
+                    mae_r=path.mae_r,
+                    mfe_r=path.mfe_r,
                 )
             )
 
@@ -515,7 +550,9 @@ def simulate(
             if budget_session != today:
                 entries_today, budget_session = 0, today
             capacity = min(capacity, max(0, max_entries_per_day - entries_today))
-        too_late = entry_cutoff is not None and (stamp.hour * 60 + stamp.minute) >= entry_cutoff
+        minute = stamp.hour * 60 + stamp.minute
+        too_late = entry_cutoff is not None and minute >= entry_cutoff
+        too_early = entry_opens is not None and minute < entry_opens
         # Same gate the live scanner runs, over the prefix up to today — the
         # slice is the lookahead guarantee. Shared code, so the two cannot drift.
         blocked_by_regime = (
@@ -529,7 +566,13 @@ def simulate(
         )
         if blocked_by_regime is not None:
             regime_blocked += 1
-        if capacity > 0 and today >= trading_start and not too_late and blocked_by_regime is None:
+        if (
+            capacity > 0
+            and today >= trading_start
+            and not too_late
+            and not too_early
+            and blocked_by_regime is None
+        ):
             candidates: list[tuple[float, str, str, list[Bar], str]] = []
             for symbol in sorted(series):
                 i = index[symbol].get(stamp)
@@ -589,6 +632,7 @@ def simulate(
                     last_bar_date=today,
                 )
                 entry_reasons[next_id] = reason
+                entry_index[next_id] = len(prefix) - 1
                 next_id += 1
                 open_positions[symbol] = position
                 cash -= price * plan.quantity
@@ -672,6 +716,7 @@ class BacktestService:
         capital: Decimal | None = None,
         regime_filter: bool | None = None,
         scale_out_pct: float | None = None,
+        params_override: dict[str, float] | None = None,
     ) -> BacktestResult:
         config = self.configs.get()
         if config is None:
@@ -738,6 +783,20 @@ class BacktestService:
         # is the precedent for shipping on the number rather than on the idea.
         if scale_out_pct is not None:
             params["scale_out_pct"] = float(scale_out_pct)
+        # SB-1033: any exit knob, one axis at a time, on the same history. Only
+        # names the rules already read — a misspelt key would otherwise be stored
+        # in the bag, never consulted, and report the baseline as a sweep result.
+        overrides = {k: float(v) for k, v in (params_override or {}).items()}
+        unknown = sorted(k for k in overrides if k not in DEFAULT_EXIT_PARAMS)
+        if unknown:
+            raise TrdError(
+                f"Unknown exit param(s): {', '.join(unknown)}. "
+                f"Known: {', '.join(sorted(DEFAULT_EXIT_PARAMS))}."
+            )
+        negative = sorted(k for k, v in overrides.items() if v < 0)
+        if negative:
+            raise TrdError(f"Exit params cannot be negative: {', '.join(negative)}.")
+        params.update(overrides)
 
         regime_series: dict[str, list[DailyBar]] = {}
         if regime.is_configured(params):
@@ -751,7 +810,7 @@ class BacktestService:
                     )
                 regime_series[symbol] = self.prices.daily_bars(found.id)
 
-        return simulate(
+        result = simulate(
             bars_by_symbol,
             strategies=config.strategies,
             position_size=position_size or config.position_size,
@@ -769,3 +828,5 @@ class BacktestService:
             regime_bars=regime_series,
             daily_by_symbol=daily_by_symbol or None,
         )
+        result.overrides = overrides
+        return result
