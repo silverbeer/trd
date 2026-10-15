@@ -3164,6 +3164,16 @@ def engine_backtest(
             "runner ride, and compare expectancy in R.",
         ),
     ] = None,
+    param: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--param",
+            "-p",
+            help="Override one exit param for this run, KEY=VALUE (repeatable) — "
+            "e.g. -p trail_atr_mult=2 or -p entry_delay_minutes=10. Sweep one axis "
+            "at a time against the same history; the stored config is untouched.",
+        ),
+    ] = None,
     as_json: Annotated[bool, typer.Option("--json", help="Emit the result as JSON.")] = False,
 ) -> None:
     """Replay the engine's rules against stored history. Same rules, same
@@ -3191,6 +3201,7 @@ def engine_backtest(
             capital=_parse_decimal(capital, "capital") if capital else None,
             regime_filter=regime_filter,
             scale_out_pct=scale_out,
+            params_override=_parse_params(param or []),
         )
     except TrdError as exc:
         _fail(exc)

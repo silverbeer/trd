@@ -36,6 +36,10 @@ DEFAULT_EXIT_PARAMS: dict[str, float] = {
     "stop_atr_mult": 2.0,  # initial stop = entry - N x ATR(14)
     "target_r": 2.0,  # profit target = entry + N x initial risk
     "trail_atr_mult": 3.0,  # chandelier stop = highest close since entry - N x ATR
+    # The trail stays dormant until the trade has closed at least N x initial risk
+    # above entry. 0 is the rule as it always was: the trail takes over as soon as
+    # it sits above the initial stop. A sweep axis for SB-1033, not a live change.
+    "trail_activate_r": 0.0,
     "max_sessions": 10.0,  # give up on a trade that has gone nowhere in N sessions
     # Percent of the position sold when the target is reached, leaving the rest
     # to ride the trail. 0 is off, and off is the default: the idea that a runner
@@ -47,6 +51,10 @@ DEFAULT_EXIT_PARAMS: dict[str, float] = {
     # Flat-by-the-bell, as HHMM in the engine's local time. 0 disables it, which is
     # what a swing engine wants: its whole design is to carry positions overnight.
     "flat_at_minute": 0.0,
+    # No new entries in the first N minutes of the session. 0 is off. Entries
+    # before 09:40 were 14% of day trades and half of all heat past -1.5R: the
+    # stop is sized from the prior session's bars and is narrowest at the open.
+    "entry_delay_minutes": 0.0,
     # Market-regime gates on *new entries* (see trd.engine.regime). Both 0 = off,
     # which is every engine that predates them. They live in this bag because it
     # is the one set of rule knobs both the live scanner and the backtest already
@@ -150,7 +158,8 @@ class TrailingStop(ExitRule):
     description = (
         "Chandelier stop: highest close since entry minus N x ATR. Only takes over "
         "once it sits above the initial stop, so it locks in gains without ever "
-        "widening the original risk."
+        "widening the original risk. With trail_activate_r set, it also waits until "
+        "the trade has run that many R."
     )
 
     def check(
@@ -163,6 +172,11 @@ class TrailingStop(ExitRule):
         now: datetime,
         timeframe: str,
     ) -> ExitDecision | None:
+        activate_r = Decimal(str(params.get("trail_activate_r", 0.0)))
+        if activate_r > 0 and position.trail_high < (
+            position.entry_price + position.risk_per_share * activate_r
+        ):
+            return None  # not far enough in profit for the trail to take over
         mult = Decimal(str(params.get("trail_atr_mult", 3.0)))
         trail_stop = position.trail_high - position.atr_at_entry * mult
         if trail_stop <= position.stop_price:
