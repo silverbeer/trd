@@ -724,3 +724,40 @@ def test_the_indicator_exit_now_fires_on_the_session_it_belongs_to() -> None:
         DAILY,
     )
     assert fired is not None and fired.rule == "indicator"
+
+
+def _flat_daily(peak: float, n: int = 60) -> list:
+    """Flat daily bars whose 20-session high is `peak`, set five sessions back."""
+    start = date(2024, 6, 1)
+    return [
+        make_bars([100.0])[0].model_copy(
+            update={
+                "date": start + timedelta(days=i),
+                "high": Decimal(str(peak if i == n - 5 else 100.5)),
+            }
+        )
+        for i in range(n)
+    ]
+
+
+@pytest.mark.parametrize("daily_peak, fires", [(150.0, False), (101.0, True)])
+def test_intraday_breakout_reads_the_20_session_high_not_20_bars(daily_peak, fires) -> None:
+    """SB-574: the day engine printed "the 20-day high of 863.57" for MU when the
+    real 20-day high was 1035.50 — it was the high of the last 20 five-minute
+    bars. The channel must come from the daily series on every timeframe.
+
+    The 5m bars here top out at 100.50 and the last one closes at 102 on 5x
+    volume. Against a 20-session high of 150 that is no breakout at all (the
+    bar-counted bug fired here); against 101 it is one, and the reason names the
+    daily level."""
+    bars = make_intraday_bars([100.0] * 1699 + [102.0], volumes=[1_000_000] * 1699 + [5_000_000])
+    assert max(float(b.high) for b in bars[-21:-1]) == 100.5
+
+    signal = STRATEGIES["breakout"].evaluate(
+        StrategyContext(bars=bars, daily=_flat_daily(daily_peak), timeframe="5m")
+    )
+    if not fires:
+        assert signal is None
+        return
+    assert signal is not None
+    assert "20-day high of 101.00" in signal.reason
