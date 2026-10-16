@@ -140,6 +140,16 @@ trd engine trim SYM --pct 50          # sell part of an open position, leave the
                                       # would desync engine_position and take the account short
 trd engine signals [-n 25] [-s KEY]   # every signal fired, taken or passed over, with its reason
 trd engine report                     # per-strategy scorecard: win%, avg win/loss, expectancy in R
+trd engine edge [--samples K] [--seed N] [--json]
+                                      # do the entries beat CHANCE? Every taken signal beside K
+                                      # random entries in the same name and session (only bars
+                                      # the engine could have entered on), each priced with
+                                      # plan_entry's stop and walked by signal_outcome itself.
+                                      # Paired per signal; edge ± SE per strategy and before/after
+                                      # 09:40. Read net (MFE + MAE) first: bigger MFE AND worse
+                                      # MAE than random is volatility found, not direction.
+                                      # MEASURED 2026-10-16, day engine, 891 taken: net -0.01R
+                                      # ±0.06 — no entry edge. Read-only. 'trd learn entry-edge'
 trd engine rules                      # what each entry strategy looks for + the 5 exit rules
 trd engine why SYMBOL                 # why THIS trade was taken: the numbers the rule saw at entry,
                                       # what each indicator means, and which exit is in force

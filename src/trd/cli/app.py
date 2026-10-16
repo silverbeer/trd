@@ -28,6 +28,7 @@ from trd.cli.render import (
     dca_summary_table,
     dca_symbols_table,
     earnings_table,
+    edge_table,
     engine_backtest_renderables,
     engine_exits_table,
     engine_monitor_view,
@@ -114,6 +115,9 @@ from trd.services.daily_report import (
     engine_day,
     failed_engine,
 )
+from trd.services.edge import DEFAULT_SAMPLES as EDGE_SAMPLES
+from trd.services.edge import DEFAULT_SEED as EDGE_SEED
+from trd.services.edge import EdgeService
 from trd.services.engine import (
     DEFAULT_EARNINGS_BLACKOUT_DAYS,
     DEFAULT_ENGINE_ACCOUNT,
@@ -2372,6 +2376,46 @@ def engine_report(as_json: JsonOpt = False) -> None:
         console.print("No trades yet. Run [bold]trd engine scan[/bold] for a while first.")
         return
     console.print(engine_report_table(stats))
+
+
+@engine_app.command("edge")
+def engine_edge(
+    samples: Annotated[
+        int, typer.Option("--samples", "-k", help="Random entries drawn per taken signal.")
+    ] = EDGE_SAMPLES,
+    seed: Annotated[
+        int, typer.Option("--seed", help="Random seed — same seed, same draws, same answer.")
+    ] = EDGE_SEED,
+    as_json: JsonOpt = False,
+) -> None:
+    """Do the entries beat a random entry in the same name on the same session?
+
+    Every signal the engine acted on is set beside K random entries in the same
+    symbol and session, restricted to bars the engine could have entered on, each
+    priced with the stop plan_entry would have set and walked by the same function
+    as the real signal. Paired per signal, so the edge is what the rule's timing
+    added. Read-only. 'trd learn entry-edge'.
+    """
+    _use_json(as_json)
+    db_path = get_settings().db_path
+    try:
+        if not db_path.exists():
+            raise TrdError(f"No database at {db_path}. Run 'trd init' first.")
+        conn = connect_read_only(db_path)
+        with _spinner("Drawing random entries..."):
+            report = EdgeService(conn).report(samples=samples, seed=seed)
+    except TrdError as exc:
+        _fail(exc)
+        return
+    if as_json:
+        _emit_json(report)
+        return
+    console.print(edge_table(report))
+    if report.unmeasured:
+        console.print(
+            f"[dim]{report.unmeasured} taken signal(s) had no stop to price or no bar to "
+            "draw from and are left out of both sides.[/dim]"
+        )
 
 
 @engine_app.command("daily-report")
