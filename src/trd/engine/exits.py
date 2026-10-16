@@ -385,7 +385,7 @@ class TimeExit(ExitRule):
         drift = f"{move:+.1f}%" if move is not None else "flat"
         return ExitDecision(
             rule=self.key,
-            reason=(f"held {sessions:.0f} sessions and only moved {drift} — freeing the capital"),
+            reason=(f"held {sessions:g} sessions and only moved {drift} — freeing the capital"),
         )
 
 

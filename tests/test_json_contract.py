@@ -33,6 +33,7 @@ SERIALISED_SOURCES = [
     "src/trd/models/engine.py",
     "src/trd/models/reconcile.py",
     "src/trd/services/backtest.py",
+    "src/trd/services/exit_whatif.py",
 ]
 
 
