@@ -52,7 +52,15 @@ from trd.engine.bars import DAILY, BarSource
 from trd.engine.base import StrategyContext
 from trd.engine.exits import DEFAULT_EXIT_PARAMS, RULES, ExitDecision, exit_quantity
 from trd.errors import TrdError
-from trd.models import Bar, DailyBar, EnginePosition, PositionStatus, SizingMode, StrategyStat
+from trd.models import (
+    Bar,
+    DailyBar,
+    EnginePosition,
+    IntradayBar,
+    PositionStatus,
+    SizingMode,
+    StrategyStat,
+)
 from trd.repos import EarningsRepo, InstrumentRepo, PriceRepo, WatchlistRepo
 from trd.repos.engine import EngineConfigRepo
 from trd.services.engine import (
@@ -92,6 +100,34 @@ _FILL_TIME = time(16, 0)
 class FillMode(StrEnum):
     INTRABAR = "intrabar"
     CLOSE = "close"
+
+
+class EntryFill(StrEnum):
+    """Where a replayed entry fills, and what the rule saw when it decided.
+
+    CLOSE: the rule reads the signal bar complete and fills at its close. The
+    original model, and still the only one a daily bar can express.
+
+    OPEN: the rule reads the settled bars plus the next bar *just opened* — a
+    forming bar whose open, high, low and close are all its open price and whose
+    volume is unknown, exactly the bar `BarSource.with_live_bar` builds for a scan
+    — and fills at that open. It is the live engine's view a moment into a bucket.
+
+    Measured 2026-10-16 on the day engine (SB-1342): on 138 trades the replay and
+    the engine both took, the CLOSE replay bought +0.35R above the live fill (median
+    +0.15R). It read a bar three minutes further on than the engine ever had, and a
+    momentum signal keeps running in those three minutes, so CLOSE scored the same
+    trades 0.56R worse each.
+    """
+
+    CLOSE = "close"
+    OPEN = "open"
+
+
+def default_entry_fill(timeframe: str) -> EntryFill:
+    """OPEN on intraday bars, where the live engine acts inside the bar; CLOSE on
+    daily bars, where there is no 'just opened' bar to read."""
+    return EntryFill.OPEN if BarSource.stamper(timeframe).is_intraday else EntryFill.CLOSE
 
 
 def default_fill(timeframe: str) -> FillMode:
@@ -158,6 +194,7 @@ class BacktestResult(BaseModel):
     start: date
     end: date
     fill: FillMode
+    entry_fill: EntryFill = EntryFill.CLOSE
     earnings_blackout_days: int
     symbols: list[str]
     strategies: list[str]
@@ -374,6 +411,7 @@ def simulate(
     sizing_mode: SizingMode = SizingMode.EXPOSURE,
     capital: Decimal | None = None,
     fill: FillMode = FillMode.INTRABAR,
+    entry_fill: EntryFill = EntryFill.CLOSE,
     start: date | None = None,
     end: date | None = None,
     timeframe: str = DAILY,
@@ -390,6 +428,11 @@ def simulate(
     indicators as warmup.
     """
     source = BarSource.stamper(timeframe)
+    if entry_fill is EntryFill.OPEN and not source.is_intraday:
+        raise TrdError(
+            "Entry fill 'open' needs an intraday timeframe: a daily bar has no "
+            "'just opened' moment to read. Use --entry-fill close."
+        )
     flat_at = int(exit_params.get("flat_at_minute", 0))
     if flat_at > 0 and not source.is_intraday:
         raise TrdError(
@@ -512,18 +555,24 @@ def simulate(
         # without it here the two disagree about which trades exist, and the
         # backtest books round trips the engine would never take.
         just_closed: set[str] = set()
-        for symbol in sorted(open_positions):
+
+        def advance(
+            symbol: str, stamp: datetime, today: date, now: datetime, just_closed: set[str]
+        ) -> None:
+            """One bar of exits for the position in `symbol`, closing and
+            recording it if a rule fires."""
+            nonlocal cash
             position = open_positions[symbol]
             i = index[symbol].get(stamp)
             if i is None:
-                continue
+                return
             bars = series[symbol]
             position.bars_held += 1
             position.last_bar_date = today
             fills, decision = step_exit(position, bars, i, exit_params, now, fill, timeframe)
             cash += sum((price * sold for price, sold in fills), Decimal(0))
             if decision is None:
-                continue
+                return
             exit_price = fills[-1][0]
             position.status = PositionStatus.CLOSED
             position.closed_at = (
@@ -534,9 +583,11 @@ def simulate(
             closed.append(position)
             del open_positions[symbol]
             just_closed.add(symbol)
-            # The entry bar is out (the fill was at its close). The exit bar is in
-            # only on a close fill, which lived through all of it; an intrabar fill
-            # left somewhere inside it, so only the exit price itself is on the path.
+            # The entry bar is out when the fill was at its close, in when the fill
+            # was at its open — `entry_index` records the last bar BEFORE the trade
+            # either way. The exit bar is in only on a close fill, which lived
+            # through all of it; an intrabar fill left somewhere inside it, so only
+            # the exit price itself is on the path.
             lived = bars[entry_index[position.id] + 1 : i + 1 if fill is FillMode.CLOSE else i]
             path = excursion(
                 lived,
@@ -564,6 +615,9 @@ def simulate(
                     mfe_r=path.mfe_r,
                 )
             )
+
+        for symbol in sorted(open_positions):
+            advance(symbol, stamp, today, now, just_closed)
 
         # Entries: every enabled strategy over every eligible symbol, ranked the
         # way _run_entries ranks, filled while capacity lasts.
@@ -597,12 +651,29 @@ def simulate(
             and not too_early
             and blocked_by_regime is None
         ):
+            opened_now: list[str] = []
             candidates: list[tuple[float, str, str, list[Bar], str]] = []
             for symbol in sorted(series):
                 i = index[symbol].get(stamp)
                 if i is None or symbol in open_positions:
                     continue
-                prefix = series[symbol][: i + 1]
+                if entry_fill is EntryFill.OPEN:
+                    # The settled bars, then this bar as a scan sees it a moment
+                    # after it opens: every price its open, volume not yet known.
+                    if i == 0:
+                        continue
+                    bar = series[symbol][i]
+                    forming = IntradayBar(
+                        ts=source.stamp(bar),
+                        open=bar.open,
+                        high=bar.open,
+                        low=bar.open,
+                        close=bar.open,
+                        volume=None,
+                    )
+                    prefix = [*series[symbol][:i], forming]
+                else:
+                    prefix = series[symbol][: i + 1]
                 # Daily bars strictly before today's session. The cut is the
                 # lookahead guarantee for the trend filter, exactly as the prefix
                 # slice is for the engine's own bars: mid-session the daily bar is
@@ -656,12 +727,21 @@ def simulate(
                     last_bar_date=today,
                 )
                 entry_reasons[next_id] = reason
-                entry_index[next_id] = len(prefix) - 1
+                # The last bar before the trade: the signal bar on a close fill,
+                # the bar before the one filled into on an open fill.
+                entry_index[next_id] = len(prefix) - (2 if entry_fill is EntryFill.OPEN else 1)
                 next_id += 1
                 open_positions[symbol] = position
                 cash -= price * plan.quantity
                 capacity -= 1
                 entries_today += 1
+                if entry_fill is EntryFill.OPEN:
+                    opened_now.append(symbol)
+            # Filled at this bar's open, the trade lives through the rest of it,
+            # and the next live scan would read this bar's close: probe it now,
+            # or a stop crossed inside the entry bar waits five minutes to fire.
+            for symbol in opened_now:
+                advance(symbol, stamp, today, now, just_closed)
 
         for symbol, positions_index in index.items():
             i = positions_index.get(stamp)
@@ -693,6 +773,7 @@ def simulate(
         start=trading_start,
         end=last_session,
         fill=fill,
+        entry_fill=entry_fill,
         earnings_blackout_days=earnings_blackout_days,
         symbols=sorted(series),
         strategies=list(strategies),
@@ -741,6 +822,7 @@ class BacktestService:
         regime_filter: bool | None = None,
         scale_out_pct: float | None = None,
         params_override: dict[str, float] | None = None,
+        entry_fill: EntryFill | None = None,
     ) -> BacktestResult:
         config = self.configs.get()
         if config is None:
@@ -865,6 +947,7 @@ class BacktestService:
             sizing_mode=sizing_mode or config.sizing_mode,
             capital=capital,
             fill=fill,
+            entry_fill=entry_fill or default_entry_fill(config.timeframe),
             start=start,
             end=end,
             timeframe=config.timeframe,
