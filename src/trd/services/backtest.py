@@ -771,29 +771,48 @@ class BacktestService:
         bars_by_symbol: dict[str, Sequence[Bar]] = {}
         daily_by_symbol: dict[str, Sequence[DailyBar]] = {}
         earnings_by_symbol: dict[str, list[date]] = {}
+        # A name with no bars is reported, not fatal (SB-1340). The day universe
+        # carries names the provider never served a 5-minute bar for, and one of
+        # them used to abort the whole run — so every sweep had to hand-pass the
+        # other 99 names. The live scan already skips such a name every pass; the
+        # replay now does the same, and says so in `skipped`.
+        #
+        # An unknown instrument is different. Named explicitly with --symbols it
+        # is almost certainly a typo, and a typo must not quietly backtest the
+        # rest of the list as if it were the answer asked for. On the engine's
+        # own watchlist it is skipped like any other name with no history.
+        explicit = symbols is not None
+        no_history: list[str] = []
         for symbol in universe:
             instrument = self.instruments.get_by_symbol(symbol)
             if instrument is None:
-                raise TrdError(f"Unknown symbol {symbol} — 'trd quote {symbol}' adds it.")
+                if explicit:
+                    raise TrdError(f"Unknown symbol {symbol} — 'trd quote {symbol}' adds it.")
+                no_history.append(f"{symbol}: unknown instrument — 'trd quote {symbol}' adds it")
+                continue
             bars = source.stored(instrument.id)
             if not bars:
-                raise TrdError(
-                    f"{symbol} has no {config.timeframe} price history. Run '{deepen}' first."
-                )
-            bars_by_symbol[symbol] = bars
+                no_history.append(f"{symbol}: no {config.timeframe} bars — run '{deepen}'")
+                continue
+            daily: Sequence[DailyBar] = []
             if source.is_intraday:
                 # A second series, for the trend filter only. An intraday engine
                 # cannot hold 200 sessions of its own bars, so "above the 200-day"
                 # is read where 200 sessions actually exist.
                 daily = self.prices.daily_bars(instrument.id)
                 if not daily:
-                    raise TrdError(
-                        f"{symbol} has no daily price history, which this engine's trend "
-                        "filter reads even though it trades intraday. Run "
-                        "'trd sync --years 10' first."
+                    no_history.append(
+                        f"{symbol}: no daily bars for the trend filter — run 'trd sync --years 10'"
                     )
+                    continue
                 daily_by_symbol[symbol] = daily
+            bars_by_symbol[symbol] = bars
             earnings_by_symbol[symbol] = self.earnings.dates_for_instrument(instrument.id)
+        if not bars_by_symbol:
+            raise TrdError(
+                f"No {config.timeframe} price history for any name in the universe. "
+                f"Run '{deepen}' first."
+            )
 
         # The point of SB-492: run the same history with the gate on and off and
         # compare. `regime_filter=False` zeroes the switches for this run only.
@@ -853,4 +872,5 @@ class BacktestService:
             daily_by_symbol=daily_by_symbol or None,
         )
         result.overrides = overrides
+        result.skipped = no_history + result.skipped
         return result
