@@ -1854,6 +1854,13 @@ def engine_status_renderables(status: EngineStatus) -> list[RenderableType]:
         )
     else:
         data.add_row("history", f"every symbol clears the {status.warmup_bars}-bar warmup")
+    for strategy, quiet in status.silent_strategies:
+        data.add_row(
+            "[yellow]silent[/yellow]",
+            f"[yellow]{strategy}[/yellow] — no signal in {quiet} scanned sessions. A rule "
+            "that cannot fire looks like a quiet market; 'trd engine signals -s "
+            f"{strategy}' shows when it last did",
+        )
     out.append(data)
 
     activity = Table(title="Activity", title_justify="left", show_header=False, box=None)
