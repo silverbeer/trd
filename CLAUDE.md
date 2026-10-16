@@ -304,6 +304,11 @@ trd engine backtest --regime/--no-regime        # same history with the regime g
                                       # --years 10'. Day-mode engines backtest on their intraday
                                       # bars (the walk is keyed on each bar's instant, so
                                       # session_close fires at the bell); day mode on 1d is refused
+                                      # READ-ONLY connection (SB-1340): never takes the writer
+                                      # lock, never migrates — a home whose schema is behind this
+                                      # build is refused, backtest a copy. A universe name with
+                                      # no bars lands in 'skipped' instead of aborting the run;
+                                      # an unknown name passed via --symbols is still an error
 trd engine scan --ndjson --notify     # one JSON event per line (log shipping) + Telegram on fills
 trd engine apply-queue [--notify]     # apply the commands the Telegram bot queued for THIS
                                       # engine (TRD_HOME/commands). The bot never opens DuckDB —

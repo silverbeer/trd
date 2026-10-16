@@ -479,6 +479,74 @@ def test_service_symbols_override_requires_known_symbols(
         BacktestService(conn).run(symbols=["ZZZT"])
 
 
+def test_a_name_with_no_bars_is_skipped_not_fatal(conn: duckdb.DuckDBPyConnection):
+    """SB-1340: NO and SLA sit in the day universe with no 5-minute bars, and one
+    of them used to abort the whole run. The live scan skips such a name every
+    pass; the replay does the same and says so."""
+    provider = FakeProvider()
+    provider.add_symbol("AAPL", price="101.00")
+    provider.add_symbol("MSFT", price="101.00")
+    EngineService(conn, provider).init(symbols=["AAPL", "MSFT"], strategies=["breakout"])
+    instrument = InstrumentRepo(conn).get_by_symbol("AAPL")
+    assert instrument is not None
+    series = breakout_series()
+    _entry, _stop, target = entry_levels(series)
+    next_day = series[-1].date + timedelta(days=1)
+    PriceRepo(conn).upsert_daily(
+        instrument.id, [*series, bar(next_day, 102.0, float(target) + 1, 101.5, 103.0)]
+    )
+
+    result = BacktestService(conn).run()
+    assert len(result.trades) == 1
+    assert result.symbols == ["AAPL"]
+    assert any(s.startswith("MSFT: no 1d bars") for s in result.skipped)
+
+
+def test_a_universe_with_no_bars_anywhere_still_refuses(conn: duckdb.DuckDBPyConnection):
+    """Skipping one empty name is reporting; skipping all of them would be a
+    backtest of nothing that reads as a flat strategy."""
+    provider = FakeProvider()
+    provider.add_symbol("AAPL", price="101.00")
+    EngineService(conn, provider).init(symbols=["AAPL"], strategies=["breakout"])
+    with pytest.raises(TrdError, match="any name in the universe"):
+        BacktestService(conn).run()
+
+
+def test_the_cli_backtest_never_needs_write_access(cli_env: FakeProvider, tmp_path):
+    """A replay writes nothing, so it opens read-only — the connection a live
+    scan's writer lock does not have to fight. Proved by making the file
+    unwritable: a writable open would fail there."""
+    import json
+    import os
+    import stat
+
+    from typer.testing import CliRunner
+
+    from trd.cli.app import app
+    from trd.db.connection import connect
+
+    home = tmp_path / "engine"
+    home.mkdir()
+    db = home / "trd.duckdb"
+    conn = connect(db)
+    cli_env.add_symbol("AAPL", price="101.00")
+    EngineService(conn, cli_env).init(symbols=["AAPL"], strategies=["breakout"])
+    instrument = InstrumentRepo(conn).get_by_symbol("AAPL")
+    assert instrument is not None
+    PriceRepo(conn).upsert_daily(instrument.id, breakout_series())
+    conn.close()
+    db.chmod(stat.S_IRUSR)
+
+    os.environ["TRD_HOME"] = str(home)
+    try:
+        result = CliRunner().invoke(app, ["engine", "backtest", "--json"])
+        assert result.exit_code == 0, result.output
+        assert json.loads(result.output)["symbols"] == ["AAPL"]
+    finally:
+        os.environ.pop("TRD_HOME", None)
+        db.chmod(stat.S_IRUSR | stat.S_IWUSR)
+
+
 # ------------------------------------------------------------------ day mode
 
 
