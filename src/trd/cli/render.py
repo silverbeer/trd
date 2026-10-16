@@ -35,6 +35,7 @@ from trd.services.backtest import BacktestResult as EngineBacktestResult
 from trd.services.dashboard import Dashboard, Holding
 from trd.services.dca_detail import PlanDetail
 from trd.services.dca_projection import BacktestResult, ForecastResult
+from trd.services.edge import EdgeGroup, EdgeReport, Measure
 from trd.services.engine import ScanResult
 from trd.services.equity_curve import EquityCurve
 from trd.services.history import HistoryResult
@@ -2478,3 +2479,61 @@ def ai_review_renderables(run) -> list:
         + "[/dim]"
     )
     return out
+
+
+def _edge_cell(m: Measure, unit: str = "R", places: int = 2) -> str:
+    """An edge with its standard error; bold when it clears 2 SE."""
+    if m.edge is None:
+        return "—"
+    se = f" ±{m.edge_se:.{places}f}" if m.edge_se is not None else ""
+    text = f"{m.edge:+.{places}f}{unit}{se}"
+    return f"[bold]{text}[/bold]" if m.significant else f"[dim]{text}[/dim]"
+
+
+def edge_table(report: EdgeReport) -> Table:
+    """Taken entries beside random entries in the same name and session.
+
+    Every edge is paired — taken minus the mean of that signal's own draws — and
+    printed with its standard error. Bold clears 2 SE; dim does not, and dim is
+    the expected answer for a rule with no edge.
+    """
+    table = Table(
+        title=(
+            f"Entry edge vs random — {report.measured} taken signals x {report.samples} "
+            f"random entries each, {report.horizon_bars} bars ahead on {report.timeframe}"
+        ),
+        title_justify="left",
+        caption="Each cell: taken minus random, ±1 SE. net = MFE + MAE. Bold = past 2 SE. "
+        "Both sides' means: --json. 'trd learn entry-edge'",
+        caption_justify="left",
+    )
+    table.add_column("Slice", style="bold", no_wrap=True)
+    table.add_column("n", justify="right")
+    table.add_column("Net", justify="right")
+    table.add_column("MFE", justify="right")
+    table.add_column("MAE", justify="right")
+    table.add_column("2R first", justify="right")
+    table.add_column("1R stop first", justify="right")
+    table.add_column("At horizon", justify="right")
+
+    def add(group: EdgeGroup) -> None:
+        table.add_row(
+            group.label,
+            str(group.signals),
+            _edge_cell(group.net_r),
+            _edge_cell(group.mfe_r),
+            _edge_cell(group.mae_r),
+            _edge_cell(group.target_first_pct, unit="pt", places=1),
+            _edge_cell(group.stop_first_pct, unit="pt", places=1),
+            _edge_cell(group.forward_r),
+        )
+
+    add(report.overall)
+    table.add_section()
+    for group in report.by_strategy:
+        add(group)
+    if report.by_time:
+        table.add_section()
+        for group in report.by_time:
+            add(group)
+    return table

@@ -1132,6 +1132,39 @@ _ENTRIES: list[GlossaryEntry] = [
         used_in=["trd engine outcomes"],
     ),
     GlossaryEntry(
+        key="entry-edge",
+        term="Entry edge (vs a random entry)",
+        category=Category.ENGINE,
+        definition=(
+            "Whether an entry rule's TIMING beats chance. Each signal the engine acted on "
+            "is set beside K random entries in the same symbol on the same session, drawn "
+            "only from bars the engine could have entered on, each priced with the stop "
+            "plan_entry would have set and walked by the same function. Same name, same "
+            "day, same unit: the only difference is when the entry happened, which is the "
+            "one thing an entry rule claims to know.\n\n"
+            "Paired per signal — each taken entry minus the mean of its own draws — so a "
+            "strong day in a strong name lifts both sides and cancels. The edge carries a "
+            "standard error over those differences; it is 'distinguishable' only past "
+            "2 SE.\n\n"
+            "Read net (MFE + MAE) first. An entry that finds bigger moves in BOTH "
+            "directions has higher MFE and worse MAE than random and no net edge: it has "
+            "found volatility, not direction. 2R-first and 1R-stop-first say the same "
+            "thing in the terms the exits actually trade."
+        ),
+        formula=(
+            "per taken signal s:  null(s) = mean over K random bars in the same session\n"
+            "edge(s) = measure(s) - null(s)       measure = MFE, MAE, MFE+MAE, ...\n"
+            "edge = mean(edge(s)),  SE = sd(edge(s)) / sqrt(n)"
+        ),
+        example=(
+            "day engine, 891 taken signals: MFE +0.15R and MAE -0.16R vs random, both "
+            "past 2 SE; net -0.01R +/-0.06. The rules pick moments that move more, not "
+            "moments that move up."
+        ),
+        related=["mfe", "mae", "passed-signals", "survivorship"],
+        used_in=["trd engine edge"],
+    ),
+    GlossaryEntry(
         key="survivorship",
         term="Survivorship bias",
         category=Category.ENGINE,
