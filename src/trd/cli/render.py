@@ -38,6 +38,7 @@ from trd.services.dca_projection import BacktestResult, ForecastResult
 from trd.services.edge import EdgeGroup, EdgeReport, Measure
 from trd.services.engine import ScanResult
 from trd.services.equity_curve import EquityCurve
+from trd.services.exit_whatif import WhatIfArm, WhatIfResult
 from trd.services.history import HistoryResult
 from trd.services.movers import MoverRow
 from trd.services.outcomes import OutcomeSummary
@@ -1550,6 +1551,76 @@ def engine_exits_table(params: dict[str, float] | None = None, timeframe: str = 
         table.caption = "  ".join(parts)
         table.caption_justify = "left"
     return table
+
+
+def _r(value: float | None, signed: bool = True) -> str:
+    if value is None:
+        return "—"
+    return f"{value:+.3f}" if signed else f"{value:.3f}"
+
+
+def exit_whatif_renderables(result: WhatIfResult) -> list[RenderableType]:
+    """The exit what-if: one row per arm, paired difference against the baseline
+    replay last, because that column is the only one a decision reads."""
+    window = (
+        f"{result.start or 'first'} → {result.end or 'last'}"
+        if result.start or result.end
+        else "every closed trade"
+    )
+    excluded = ", ".join(f"{n} {why}" for why, n in result.excluded.items())
+    header = (
+        f"[bold]exit what-if[/bold]  {window}  ·  {result.trades} live entries  ·  "
+        f"{result.timeframe}  ·  fill: {result.fill}"
+        + (f"\nleft out: {excluded}" if excluded else "")
+        + (
+            f"\nreplay error: the baseline replay sits {_r(result.replay_gap_r)}R from what "
+            "the trades really booked"
+            + (
+                f"; same exit rule on {result.replay_same_rule_pct:.0f}% of trades that "
+                "recorded one"
+                if result.replay_same_rule_pct is not None
+                else ""
+            )
+            if result.replay_gap_r is not None
+            else ""
+        )
+    )
+    table = Table(title="exits replayed on the live entries — R is the live trade's R")
+    table.add_column("arm")
+    for name in ("exp R", "± se", "win %", "capture", "Δ vs base", "± se", "t", "changed"):
+        table.add_column(name, justify="right")
+    table.add_column("exits")
+
+    def row(arm: WhatIfArm, style: str | None = None) -> None:
+        t = arm.diff_t
+        verdict = "" if t is None else ("bold green" if t >= 2 else "bold red" if t <= -2 else "")
+        table.add_row(
+            arm.label,
+            _r(arm.expectancy_r),
+            _r(arm.se_r, signed=False),
+            f"{arm.win_rate:.0f}" if arm.win_rate is not None else "—",
+            f"{arm.capture * 100:.0f}%" if arm.capture is not None else "—",
+            Text(_r(arm.diff_r), style=verdict) if arm.diff_r is not None else "",
+            _r(arm.diff_se, signed=False) if arm.diff_se is not None else "",
+            f"{t:+.1f}" if t is not None else "",
+            str(arm.changed) if arm.changed is not None else "",
+            " ".join(f"{k} {v}" for k, v in arm.rules.items()),
+            style=style,
+        )
+
+    row(result.actual, style="dim")
+    row(result.baseline, style="bold")
+    for arm in result.variants:
+        row(arm)
+    return [
+        Panel(header, expand=False, border_style="cyan"),
+        table,
+        Text(
+            "Δ is variant minus baseline on the same trades (paired). |t| ≥ 2 is the bar "
+            "for a live change; anything under it is noise whatever its sign. " + result.caveat,
+            style="dim",
+        ),
+    ]
 
 
 def engine_backtest_renderables(

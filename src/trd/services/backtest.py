@@ -277,6 +277,59 @@ def _check_exit(
     return None
 
 
+def step_exit(
+    position: EnginePosition,
+    bars: list[Bar],
+    i: int,
+    params: dict[str, float],
+    now: datetime,
+    fill: FillMode,
+    timeframe: str,
+) -> tuple[list[tuple[Decimal, Decimal]], ExitDecision | None]:
+    """One bar of an open position's life under the exit rules.
+
+    Returns the (price, quantity) fills booked on this bar and, when the trade
+    ended on it, the decision that ended it. Shared by `simulate` and the exit
+    what-if (SB-1343), so a replayed exit on a live entry and a backtested one
+    are the same walk — a second copy of the scale-out handling below is how the
+    two would quietly stop agreeing.
+    """
+    bar = bars[i]
+    hit = _check_exit(position, bars, i, params, now, fill, timeframe)
+    if hit is None:
+        position.trail_high = max(position.trail_high, bar.close)
+        return [], None
+    exit_price, decision = hit
+    # Booked through the model so the backtest and the live engine score a
+    # trade the same way — including a scaled-out one, where R must weigh
+    # each piece against the size taken at entry. The size comes from the
+    # same helper the live scanner calls, for the same reason.
+    sold = exit_quantity(position, decision)
+    position.book_exit(sold, exit_price)
+    fills = [(exit_price, sold)]
+    if decision.partial:
+        # A runner: cash and part of the R are booked, the trade stays open on
+        # its original stop and trail, and it keeps its slot. It is not a closed
+        # trade and must not be scored as one — doing so would let a scale-out
+        # inflate the trade count and report each piece as a separate win.
+        position.trail_high = max(position.trail_high, bar.close)
+        # The runner is then re-probed against the SAME bar. Deliberately
+        # pessimistic, in keeping with the rest of the fill model: bar data
+        # cannot say whether the spike into the target came before or after a
+        # reversal through the stop, and a study of whether runners pay must not
+        # resolve that ambiguity in the runner's favour. `scale_out` and `target`
+        # both decline a partial position, so only a stop, trail, thesis or time
+        # exit can fire.
+        again = _check_exit(position, bars, i, params, now, fill, timeframe)
+        if again is None:
+            return fills, None
+        exit_price, decision = again
+        sold = exit_quantity(position, decision)
+        position.book_exit(sold, exit_price)
+        fills.append((exit_price, sold))
+    return fills, decision
+
+
 def _window_stats(
     closed: list[EnginePosition], trading_start: date, end: date
 ) -> list[WindowStats]:
@@ -465,48 +518,19 @@ def simulate(
             if i is None:
                 continue
             bars = series[symbol]
-            bar = bars[i]
             position.bars_held += 1
             position.last_bar_date = today
-            hit = _check_exit(position, bars, i, exit_params, now, fill, timeframe)
-            if hit is None:
-                position.trail_high = max(position.trail_high, bar.close)
+            fills, decision = step_exit(position, bars, i, exit_params, now, fill, timeframe)
+            cash += sum((price * sold for price, sold in fills), Decimal(0))
+            if decision is None:
                 continue
-            exit_price, decision = hit
-            # Booked through the model so the backtest and the live engine score a
-            # trade the same way — including a scaled-out one, where R must weigh
-            # each piece against the size taken at entry. The size comes from the
-            # same helper the live scanner calls, for the same reason.
-            sold = exit_quantity(position, decision)
-            position.book_exit(sold, exit_price)
-            if decision.partial:
-                # A runner: cash and part of the R are booked, the trade stays
-                # open on its original stop and trail, and it keeps its slot. It
-                # is not a closed trade and must not be scored as one — doing so
-                # would let a scale-out inflate the trade count and report each
-                # piece as a separate win.
-                cash += exit_price * sold
-                position.trail_high = max(position.trail_high, bar.close)
-                # The runner is then re-probed against the SAME bar. Deliberately
-                # pessimistic, in keeping with the rest of the fill model: bar
-                # data cannot say whether the spike into the target came before or
-                # after a reversal through the stop, and a study of whether
-                # runners pay must not resolve that ambiguity in the runner's
-                # favour. `scale_out` and `target` both decline a partial
-                # position, so only a stop, trail, thesis or time exit can fire.
-                again = _check_exit(position, bars, i, exit_params, now, fill, timeframe)
-                if again is None:
-                    continue
-                exit_price, decision = again
-                sold = exit_quantity(position, decision)
-                position.book_exit(sold, exit_price)
+            exit_price = fills[-1][0]
             position.status = PositionStatus.CLOSED
             position.closed_at = (
                 stamp if source.is_intraday else datetime.combine(today, _FILL_TIME)
             )
             position.exit_reason = decision.reason
             position.exit_rule = decision.rule
-            cash += exit_price * sold
             closed.append(position)
             del open_positions[symbol]
             just_closed.add(symbol)

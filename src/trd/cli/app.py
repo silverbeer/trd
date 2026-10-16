@@ -43,6 +43,7 @@ from trd.cli.render import (
     equity_curve_renderables,
     equity_daily_table,
     exit_table,
+    exit_whatif_renderables,
     fmt_money,
     fmt_signed,
     fmt_signed_pct,
@@ -124,6 +125,7 @@ from trd.services.engine import (
     ScanResult,
     scan_events,
 )
+from trd.services.exit_whatif import ExitWhatIfService, parse_variants
 from trd.services.indicators import seed_defaults
 from trd.services.outcomes import OutcomeService
 from trd.services.plan import PlanStatus
@@ -3254,6 +3256,72 @@ def engine_backtest(
         console.print_json(result.model_dump_json())
         return
     for renderable in engine_backtest_renderables(result, width=max(40, console.size.width - 20)):
+        console.print(renderable)
+
+
+@engine_app.command("what-if")
+def engine_what_if(
+    param: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--param",
+            "-p",
+            help="An exit knob and the values to try, KEY=V1[,V2...] (repeatable). "
+            "Each value is its own row; each -p is its own axis against the same "
+            "baseline, never a grid.",
+        ),
+    ] = None,
+    start: Annotated[
+        str | None, typer.Option("--start", help="First entry date to include (ISO).")
+    ] = None,
+    end: Annotated[
+        str | None, typer.Option("--end", help="Last entry date to include (ISO).")
+    ] = None,
+    fill: Annotated[
+        str | None,
+        typer.Option(
+            "--fill",
+            help="Exit fill model: 'intrabar' or 'close'. Default: the one the backtest "
+            "uses on this timeframe.",
+        ),
+    ] = None,
+    as_json: JsonOpt = False,
+) -> None:
+    """Replay different exit rules on the entries the engine really took.
+
+    Every closed live trade keeps its real fill; only the exits are re-run, over
+    the bars stored after it. Each variant is scored against a replay of the live
+    config on the SAME trades — paired, so a few hundredths of an R is visible
+    where a backtest sweep could not see a tenth. Read-only: safe during a session.
+    """
+    _use_json(as_json)
+    try:
+        variants = parse_variants(param or [])
+        fill_mode = FillMode(fill) if fill else None
+    except TrdError as exc:
+        _fail(exc)
+        return
+    except ValueError:
+        _fail(TrdError(f"--fill must be 'intrabar' or 'close', not {fill!r}"))
+        return
+    start_at = _parse_date(start)
+    end_at = _parse_date(end)
+    try:
+        service = ExitWhatIfService(connect_read_only(get_settings().db_path))
+        with _spinner("Replaying exits on the live entries..."):
+            result = service.run(
+                variants,
+                start=start_at.date() if start_at else None,
+                end=end_at.date() if end_at else None,
+                fill=fill_mode,
+            )
+    except TrdError as exc:
+        _fail(exc)
+        return
+    if as_json:
+        _emit_json(result)
+        return
+    for renderable in exit_whatif_renderables(result):
         console.print(renderable)
 
 

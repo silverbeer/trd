@@ -277,6 +277,21 @@ trd engine backtest -p KEY=VALUE [-p ...]   # override any exit param for one ru
                                       # the same walk 'trd engine outcomes' does on live trades.
                                       # trail_activate_r and entry_delay_minutes are live knobs too,
                                       # both 0 = off; change the live config only on a measured win
+trd engine what-if -p KEY=V1,V2 [-p ...] [--start ISO] [--end ISO] [--json]
+                                      # replay EXIT params on the entries the engine really
+                                      # took (SB-1343). Each value is a row, each -p its own
+                                      # axis, never a grid. Scored PAIRED against a replay of
+                                      # the live config on the same trades, in the live trade's
+                                      # R — paired SE ~0.015R where the backtest sweep's was
+                                      # ~0.05R, and 4s instead of 35min a run. Read-only, so it
+                                      # runs against a live home mid-session. Entry knobs
+                                      # (entry_delay_minutes, regime_*) are refused: entries are
+                                      # fixed here. |t| >= 2 is the bar; check neighbours and
+                                      # --start/--end halves before believing one row.
+                                      # MEASURED 2026-10-16, day engine, 897 trades: max_sessions
+                                      # 0.3-0.75 all t>=2.3, 0.6 best (+0.043R, t=4.5, both
+                                      # halves); target_r=1.5 t=2.3 but first half only;
+                                      # stop_atr_mult=2.5 worse (t=-3.3)
 trd engine backtest --regime/--no-regime        # same history with the regime gate on and off —
                                       # the comparison the gate should be judged on, never assumed
                                       # replay the rules against stored history — same scorecard as
