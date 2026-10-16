@@ -44,6 +44,7 @@ from trd.cli.render import (
     equity_daily_table,
     exit_table,
     exit_whatif_renderables,
+    fidelity_renderables,
     fmt_money,
     fmt_signed,
     fmt_signed_pct,
@@ -107,7 +108,7 @@ from trd.services.agenda import (
     DEFAULT_WINDOW_SESSIONS,
     agenda,
 )
-from trd.services.backtest import BacktestService, FillMode
+from trd.services.backtest import BacktestService, EntryFill, FillMode
 from trd.services.commands import CommandQueueService
 from trd.services.daily_report import (
     DEFAULT_WINDOW_DAYS,
@@ -126,6 +127,7 @@ from trd.services.engine import (
     scan_events,
 )
 from trd.services.exit_whatif import ExitWhatIfService, parse_variants
+from trd.services.fidelity import FidelityService, window_start
 from trd.services.indicators import seed_defaults
 from trd.services.outcomes import OutcomeService
 from trd.services.plan import PlanStatus
@@ -3210,6 +3212,15 @@ def engine_backtest(
             "runner ride, and compare expectancy in R.",
         ),
     ] = None,
+    entry_fill: Annotated[
+        str | None,
+        typer.Option(
+            "--entry-fill",
+            help="Entry fill model: 'open' reads the next bar just opened and fills at "
+            "its open, as a live scan does; 'close' reads the signal bar complete and "
+            "fills at its close. Default: open on intraday bars, close on daily.",
+        ),
+    ] = None,
     param: Annotated[
         list[str] | None,
         typer.Option(
@@ -3238,6 +3249,11 @@ def engine_backtest(
     except ValueError:
         err_console.print(f"[red]error:[/red] --fill must be 'intrabar' or 'close', not {fill!r}")
         raise typer.Exit(code=1) from None
+    try:
+        entry_mode = EntryFill(entry_fill) if entry_fill else None
+    except ValueError:
+        _fail(TrdError(f"--entry-fill must be 'open' or 'close', not {entry_fill!r}"))
+        return
     start_at = _parse_date(start)
     end_at = _parse_date(end)
     try:
@@ -3254,6 +3270,7 @@ def engine_backtest(
             regime_filter=regime_filter,
             scale_out_pct=scale_out,
             params_override=_parse_params(param or []),
+            entry_fill=entry_mode,
         )
     except TrdError as exc:
         _fail(exc)
@@ -3339,6 +3356,53 @@ def engine_what_if(
         _emit_json(result)
         return
     for renderable in exit_whatif_renderables(result):
+        console.print(renderable)
+
+
+@engine_app.command("fidelity")
+def engine_fidelity(
+    days: Annotated[
+        int, typer.Option("--days", "-d", help="Trailing window of live entries, in days.")
+    ] = 30,
+    start: Annotated[
+        str | None, typer.Option("--start", help="First entry date (ISO). Overrides --days.")
+    ] = None,
+    end: Annotated[str | None, typer.Option("--end", help="Last entry date (ISO).")] = None,
+    entry_fill: Annotated[
+        str | None,
+        typer.Option(
+            "--entry-fill",
+            help="Entry fill model: 'open' reads the next bar just opened and fills at "
+            "its open, as a live scan does; 'close' reads the signal bar complete and "
+            "fills at its close. Default: open on intraday bars, close on daily.",
+        ),
+    ] = None,
+    as_json: JsonOpt = False,
+) -> None:
+    """Does the backtest trade the way the engine did? Replays the window and lays
+    it against the live book: trades only one side took, and on the trades both
+    took, how much of the difference is the entry and how much the exit.
+
+    Read before believing any backtest. Read-only, so it is safe mid-session.
+    """
+    _use_json(as_json)
+    start_at = _parse_date(start)
+    end_at = _parse_date(end)
+    try:
+        service = FidelityService(connect_read_only(get_settings().db_path))
+        with _spinner("Replaying the window and pairing it with the live trades..."):
+            result = service.run(
+                start=start_at.date() if start_at else window_start(days),
+                end=end_at.date() if end_at else None,
+                entry_fill=EntryFill(entry_fill) if entry_fill else None,
+            )
+    except (TrdError, ValueError) as exc:
+        _fail(exc if isinstance(exc, TrdError) else TrdError(f"--entry-fill: {exc}"))
+        return
+    if as_json:
+        _emit_json(result)
+        return
+    for renderable in fidelity_renderables(result):
         console.print(renderable)
 
 

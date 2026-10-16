@@ -39,6 +39,7 @@ from trd.services.edge import EdgeGroup, EdgeReport, Measure
 from trd.services.engine import ScanResult
 from trd.services.equity_curve import EquityCurve
 from trd.services.exit_whatif import WhatIfArm, WhatIfResult
+from trd.services.fidelity import FidelityResult
 from trd.services.history import HistoryResult
 from trd.services.movers import MoverRow
 from trd.services.outcomes import OutcomeSummary
@@ -1557,6 +1558,53 @@ def _r(value: float | None, signed: bool = True) -> str:
     if value is None:
         return "—"
     return f"{value:+.3f}" if signed else f"{value:.3f}"
+
+
+def fidelity_renderables(result: FidelityResult) -> list[RenderableType]:
+    """How far the replay sits from the live book, split into named parts that
+    sum to the gap. The parts are the point; the headline is only their total."""
+
+    def mean(value: float | None) -> str:
+        return f"{value:+.3f}R" if value is not None else "—"
+
+    header = (
+        f"[bold]backtest fidelity[/bold]  {result.start} → {result.end}  ·  {result.timeframe}"
+        f"  ·  fill: {result.fill}\n"
+        f"live {result.live_trades} trades at {mean(result.live_expectancy_r)}  ·  "
+        f"replay {result.replay_trades} at {mean(result.replay_expectancy_r)}  ·  "
+        f"{result.matched} matched (same name, same session)"
+        + (
+            f"\nmatched entries: live landed a median "
+            f"{result.entry_offset_minutes_median:+.1f} min after the replay's bar; same "
+            f"strategy {result.same_strategy_pct:.0f}%, same exit rule "
+            f"{result.same_exit_rule_pct:.0f}%"
+            if result.entry_offset_minutes_median is not None
+            and result.same_strategy_pct is not None
+            and result.same_exit_rule_pct is not None
+            else ""
+        )
+    )
+    table = Table(title=f"where the {result.gap_total_r:+.2f}R total gap comes from")
+    table.add_column("part")
+    table.add_column("trades", justify="right")
+    table.add_column("total R", justify="right")
+    table.add_column("per trade", justify="right")
+    for part in result.parts:
+        table.add_row(part.label, str(part.trades), f"{part.total_r:+.2f}", mean(part.mean_r))
+    table.add_row("[dim]residual (must be 0)[/dim]", "", f"[dim]{result.residual_r:+.2f}[/dim]", "")
+    unmatched = "  ·  ".join(
+        f"{side}: " + ", ".join(f"{k} {v}" for k, v in counts.items())
+        for side, counts in (
+            ("live only", result.live_only_by_strategy),
+            ("replay only", result.replay_only_by_strategy),
+        )
+        if counts
+    )
+    out: list[RenderableType] = [Panel(header, expand=False, border_style="cyan"), table]
+    if unmatched:
+        out.append(Text(unmatched))
+    out.append(Text(result.caveat, style="dim"))
+    return out
 
 
 def exit_whatif_renderables(result: WhatIfResult) -> list[RenderableType]:
