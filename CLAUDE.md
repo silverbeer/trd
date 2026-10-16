@@ -163,6 +163,11 @@ trd engine status [--json]            # what this engine is + whether it's healt
                                       # refuse (a day engine on 1d bars). init can't catch that — the
                                       # engine already exists — and it reads as a flat strategy, not a
                                       # broken one. 'config_refused' in --json
+                                      # also flags a configured strategy that has fired NO signal
+                                      # (taken or passed) in 10 scanned sessions: a rule that
+                                      # cannot fire reads as a quiet market everywhere else.
+                                      # pullback sat silent 45 sessions on the day engine
+                                      # (SB-1341). 'silent_strategies' in --json
 trd engine outcomes [--backfill] [--recompute] [--trades] [--json]
                                       # did we enter early, did we exit early, and what did the
                                       # signals we PASSED OVER do next. MAE (heat taken), MFE
