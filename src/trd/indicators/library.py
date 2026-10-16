@@ -235,13 +235,25 @@ class VolumeRatio(Indicator):
 
     def compute(self, bars: Sequence[Bar], **params: Any) -> dict[str, list[float | None]]:
         period = params["period"]
-        vols = [float(b.volume) if b.volume else None for b in bars]
+        # Integer volumes, summed with a running window: O(n), where re-summing
+        # each window was O(n x period) — on a 5-minute engine period is twenty
+        # sessions (1,560 bars), and this one indicator was 95% of a backtest's
+        # runtime (SB-1345). Integer sums are exact, so every ratio is the same
+        # float the re-summing loop produced, to the bit.
+        vols = [int(b.volume) if b.volume else None for b in bars]
         out: list[float | None] = [None] * len(bars)
-        for i in range(period, len(bars)):
-            window = [v for v in vols[i - period : i] if v is not None]
-            v = vols[i]
-            if v is not None and window and sum(window) > 0:
-                out[i] = v / (sum(window) / len(window))
+        total = count = 0
+        for i, v in enumerate(vols):
+            if i >= period:
+                if v is not None and count and total > 0:
+                    out[i] = v / (total / count)
+                gone = vols[i - period]
+                if gone is not None:
+                    total -= gone
+                    count -= 1
+            if v is not None:
+                total += v
+                count += 1
         return {"ratio": out}
 
     def interpret(self, series: dict[str, list[float | None]], bars: Sequence[Bar]) -> str:

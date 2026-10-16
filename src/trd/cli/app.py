@@ -63,6 +63,7 @@ from trd.cli.render import (
     review_renderables,
     sunday_prep_markdown,
     sunday_prep_renderables,
+    sweep_renderables,
 )
 from trd.config import DEFAULT_ACCOUNT, get_settings
 from trd.db.connection import connect, connect_read_only
@@ -139,6 +140,7 @@ from trd.services.review import (
     engine_pack,
     review,
 )
+from trd.services.sweep import parse_axes, sweep
 from trd.services.watchdog import (
     DEFAULT_MAX_AGE_MINUTES as WATCHDOG_MAX_AGE,
 )
@@ -3403,6 +3405,60 @@ def engine_fidelity(
         _emit_json(result)
         return
     for renderable in fidelity_renderables(result):
+        console.print(renderable)
+
+
+@engine_app.command("sweep")
+def engine_sweep(
+    param: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--param",
+            "-p",
+            help="A knob and the values to try, KEY=V1[,V2...] (repeatable). Each value "
+            "is its own row; each -p its own axis against the same baseline.",
+        ),
+    ] = None,
+    start: Annotated[str | None, typer.Option("--start", help="First date (ISO).")] = None,
+    end: Annotated[str | None, typer.Option("--end", help="Last date (ISO).")] = None,
+    workers: Annotated[
+        int | None, typer.Option("--workers", help="Parallel replays. Default: cores - 2, max 6.")
+    ] = None,
+    as_json: JsonOpt = False,
+) -> None:
+    """Sweep backtest params one axis at a time, with the error bars on: each row's
+    expectancy ± SE, its difference from the baseline, drawdown, capture, and
+    whether both halves of the window agree. For knobs that change which trades
+    exist; exit-only knobs measure tighter with 'trd engine what-if'. Read-only.
+    """
+    _use_json(as_json)
+    try:
+        variants = parse_axes(param or [])
+    except TrdError as exc:
+        _fail(exc)
+        return
+    db_path = get_settings().db_path
+    if not db_path.exists():
+        _fail(TrdError(f"No database at {db_path}. Run 'trd init' first."))
+        return
+    start_at = _parse_date(start)
+    end_at = _parse_date(end)
+    try:
+        with _spinner(f"Replaying the baseline and {len(variants)} variant(s)..."):
+            result = sweep(
+                db_path,
+                variants,
+                start=start_at.date() if start_at else None,
+                end=end_at.date() if end_at else None,
+                workers=workers,
+            )
+    except TrdError as exc:
+        _fail(exc)
+        return
+    if as_json:
+        _emit_json(result)
+        return
+    for renderable in sweep_renderables(result):
         console.print(renderable)
 
 
