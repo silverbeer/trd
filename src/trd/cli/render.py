@@ -46,6 +46,7 @@ from trd.services.outcomes import OutcomeSummary
 from trd.services.plan import PlanStatus
 from trd.services.review import MIN_TRADES_FOR_FINDING, EnginePack, ReviewResult
 from trd.services.sunday_prep import SundayPrepBriefing
+from trd.services.sweep import SweepResult, SweepRow
 from trd.timeframes import DAILY, sessions_to_bars
 
 MONEY = "{:,.2f}"
@@ -1558,6 +1559,51 @@ def _r(value: float | None, signed: bool = True) -> str:
     if value is None:
         return "—"
     return f"{value:+.3f}" if signed else f"{value:.3f}"
+
+
+def sweep_renderables(result: SweepResult) -> list[RenderableType]:
+    """One row per knob value against the baseline, with the two checks that
+    decide whether a row means anything printed beside it."""
+
+    def r(value: float | None) -> str:
+        return f"{value:+.3f}" if value is not None else "—"
+
+    table = Table(title=f"sweep {result.start} → {result.end}  ·  halves split at {result.split}")
+    table.add_column("row")
+    for name in ("trades", "exp R", "± se", "Δ", "t", "max DD", "capture", "1st half", "2nd half"):
+        table.add_column(name, justify="right")
+    table.add_column("")
+
+    def add(row: SweepRow, style: str | None = None) -> None:
+        t = row.diff_t
+        verdict = (
+            "[bold green]✓[/bold green]"
+            if row.significant and (row.diff_r or 0) > 0
+            else "[bold red]✗[/bold red]"
+            if row.significant
+            else "[yellow]halves disagree[/yellow]"
+            if row.halves_disagree
+            else ""
+        )
+        table.add_row(
+            row.label,
+            str(row.trades),
+            r(row.expectancy_r),
+            f"{row.se_r:.3f}" if row.se_r is not None else "—",
+            r(row.diff_r) if row.diff_r is not None else "",
+            f"{t:+.1f}" if t is not None else "",
+            f"{row.max_drawdown_pct:.1f}%",
+            f"{row.capture * 100:.0f}%" if row.capture is not None else "—",
+            r(row.first_half_r),
+            r(row.second_half_r),
+            verdict,
+            style=style,
+        )
+
+    add(result.baseline, style="bold")
+    for row in result.rows:
+        add(row)
+    return [table, Text(result.caveat, style="dim")]
 
 
 def fidelity_renderables(result: FidelityResult) -> list[RenderableType]:
