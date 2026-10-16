@@ -3225,8 +3225,14 @@ def engine_backtest(
     """Replay the engine's rules against stored history. Same rules, same
     scorecard as 'trd engine report' — hundreds of trades in one run instead of
     four years of waiting. Needs depth: run 'trd sync --years 10' first."""
-    settings = get_settings()
-    service = BacktestService(connect(settings.db_path))
+    _use_json(as_json)
+    db_path = get_settings().db_path
+    if not db_path.exists():
+        _fail(TrdError(f"No database at {db_path}. Run 'trd init' first."))
+        return
+    # Read-only (SB-1340): a replay writes nothing, and a writable connection
+    # would hold the single-writer lock a live scan needs.
+    service = BacktestService(connect_read_only(db_path))
     try:
         fill_mode = FillMode(fill) if fill else None
     except ValueError:
@@ -3251,6 +3257,17 @@ def engine_backtest(
         )
     except TrdError as exc:
         _fail(exc)
+        return
+    except duckdb.Error as exc:
+        # A database older than this build: read-only cannot migrate it, and on a
+        # live engine home it must not be migrated from here anyway — the image
+        # still running there would then be writing a schema it predates.
+        _fail(
+            TrdError(
+                f"{str(exc).splitlines()[0]} — this database's schema is older than this "
+                "build. Backtest a copy instead, or deploy this build to that engine first."
+            )
+        )
         return
     if as_json:
         console.print_json(result.model_dump_json())
