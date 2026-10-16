@@ -84,6 +84,13 @@ DEFAULT_EARNINGS_BLACKOUT_DAYS = 3
 # How long before a day-mode engine's flat time it stops taking new entries.
 ENTRY_CUTOFF_MINUTES = 30
 
+# Sessions a configured strategy may go without firing a single signal — taken
+# or passed over — before status says so. Ten is two weeks: long enough that a
+# rare setup (macd_cross fires a handful a week across a hundred names) is not
+# flagged, short enough that a rule which cannot fire at all is caught inside
+# the month rather than after two (SB-1341).
+SILENT_STRATEGY_SESSIONS = 10
+
 
 def entry_opens_at(params: dict[str, float]) -> int | None:
     """Minute-of-day before which no new trade is opened, or None when off.
@@ -1252,6 +1259,13 @@ class EngineService:
             (i.symbol, counts.get(i.id, 0)) for i in universe if counts.get(i.id, 0) < warmup
         )
 
+        last_fired = self.signals.last_fired()
+        silent = [
+            (key, quiet)
+            for key in config.strategies
+            if (quiet := self.runs.sessions_since(last_fired.get(key))) >= SILENT_STRATEGY_SESSIONS
+        ]
+
         recent = self.runs.list_recent(1)
         midnight = datetime.combine(date.today(), datetime.min.time())
         return EngineStatus(
@@ -1283,6 +1297,7 @@ class EngineService:
             bars_last=last_bar,
             warmup_bars=warmup,
             short_history=short,
+            silent_strategies=silent,
             last_scan=recent[0].started_at if recent else None,
             scans_today=self.runs.count_since(midnight),
         )

@@ -210,6 +210,23 @@ class EngineRunRepo:
         ).fetchone()
         return row[0] if row else 0
 
+    def sessions_since(self, when: datetime | None) -> int:
+        """Distinct sessions with at least one scan after `when` (all of them when
+        None). Sessions, not scans: a day engine scans ~78 times a session and a
+        swing engine a handful, and "quiet for ten sessions" must mean the same
+        on both."""
+        if when is None:
+            row = self.conn.execute(
+                "SELECT count(DISTINCT CAST(started_at AS DATE)) FROM engine_run"
+            ).fetchone()
+        else:
+            row = self.conn.execute(
+                "SELECT count(DISTINCT CAST(started_at AS DATE)) FROM engine_run "
+                "WHERE started_at > ?",
+                [when],
+            ).fetchone()
+        return row[0] if row else 0
+
 
 class EngineSignalRepo:
     def __init__(self, conn: duckdb.DuckDBPyConnection) -> None:
@@ -250,6 +267,13 @@ class EngineSignalRepo:
         ).fetchone()
         assert row is not None
         return _row_to_signal(row)
+
+    def last_fired(self) -> dict[str, datetime]:
+        """When each strategy last fired a signal, taken or not."""
+        rows = self.conn.execute(
+            "SELECT strategy, max(fired_at) FROM engine_signal GROUP BY strategy"
+        ).fetchall()
+        return {strategy: fired for strategy, fired in rows}
 
     def by_id(self, signal_id: int) -> EngineSignal | None:
         """The signal a position was opened from — the recorded 'why'."""

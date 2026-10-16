@@ -317,6 +317,12 @@ class EngineStatus(BaseModel):
     bars_last: date | None
     warmup_bars: int
     short_history: list[tuple[str, int]]  # (symbol, bars) below what a rule needs
+    # (strategy, sessions scanned since it last fired a signal — taken or not)
+    # for every configured strategy quiet past SILENT_STRATEGY_SESSIONS. A rule
+    # that can no longer fire reads as a quiet market from every other view:
+    # pullback on the day engine sat at zero signals for two months after its
+    # RSI lookback became 1,092 five-minute bars (SB-1341).
+    silent_strategies: list[tuple[str, int]] = []
 
     last_scan: datetime | None
     scans_today: int
