@@ -35,6 +35,7 @@ SERIALISED_SOURCES = [
     "src/trd/services/backtest.py",
     "src/trd/services/exit_whatif.py",
     "src/trd/services/fidelity.py",
+    "src/trd/services/sweep.py",
 ]
 
 
