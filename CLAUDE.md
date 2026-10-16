@@ -297,6 +297,27 @@ trd engine what-if -p KEY=V1,V2 [-p ...] [--start ISO] [--end ISO] [--json]
                                       # 0.3-0.75 all t>=2.3, 0.6 best (+0.043R, t=4.5, both
                                       # halves); target_r=1.5 t=2.3 but first half only;
                                       # stop_atr_mult=2.5 worse (t=-3.3)
+trd engine backtest --entry-fill open|close    # where a replayed ENTRY fills. 'open' (default on
+                                      # intraday bars) reads the settled bars plus the next bar
+                                      # just opened — the forming bar a live scan sees — and
+                                      # fills at its open. 'close' reads the signal bar complete
+                                      # and fills at its close (the only option on daily bars).
+                                      # MEASURED 2026-10-16 (SB-1342): 'close' bought +0.35R
+                                      # above the live fill on the same trades and scored the
+                                      # day engine -0.04R vs live +0.08R; 'open' scores +0.08R.
+                                      # Every intraday backtest number from before this was
+                                      # read with 'close' entries
+trd engine fidelity [--days 30] [--start ISO] [--end ISO] [--entry-fill open|close] [--json]
+                                      # does the backtest trade the way the engine did? Replays
+                                      # the window and pairs it with the live trades (same name,
+                                      # same session, nearest entry). Splits Σ replay R - Σ live R
+                                      # EXACTLY into replay-only trades, live-only trades, and on
+                                      # matched trades the ENTRY part (fill/timing) and the EXIT
+                                      # part (the live entry's own exit replay vs what it booked).
+                                      # Residual must be 0. Read it before believing any backtest.
+                                      # Read-only. ~20 min for 30 days of 5m bars (it is a replay).
+                                      # Last 30 days, open entries: gap +0.001R/trade, but only
+                                      # 129 of 220 trades match — trade SELECTION still differs
 trd engine backtest --regime/--no-regime        # same history with the regime gate on and off —
                                       # the comparison the gate should be judged on, never assumed
                                       # replay the rules against stored history — same scorecard as
