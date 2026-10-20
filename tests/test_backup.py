@@ -200,6 +200,38 @@ def test_engine_state_survives_a_round_trip(
     assert signal.instrument.symbol == "AAA"
 
 
+def test_the_entry_budget_and_cash_ledger_survive_a_round_trip(
+    tmp_path: Path, conn: duckdb.DuckDBPyConnection, provider
+) -> None:
+    """Both were dropped by every backup before SB-1368. A restore that switched
+    the ledger off would hand a cash-account engine back refilling slots with
+    proceeds the broker will not let it spend."""
+    from trd.services import EngineService
+
+    _populate_engine(conn, provider)
+    EngineService(conn, provider).set_capital(Decimal("50000"))
+    conn.execute("UPDATE engine_config SET max_entries_per_day = 3")
+
+    fresh = connect(tmp_path / "restored.duckdb")
+    restore_data(fresh, export_data(conn))
+    config = EngineService(fresh, provider).config()
+    assert config.capital == Decimal("50000")
+    assert config.max_entries_per_day == 3
+
+
+def test_a_ledger_that_was_off_restores_off(
+    tmp_path: Path, conn: duckdb.DuckDBPyConnection, provider
+) -> None:
+    from trd.services import EngineService
+
+    _populate_engine(conn, provider)
+    data = export_data(conn)
+    assert data["engine"]["config"]["capital"] is None
+    fresh = connect(tmp_path / "restored.duckdb")
+    restore_data(fresh, data)
+    assert EngineService(fresh, provider).config().capital is None
+
+
 def test_exit_triggers_survive_a_round_trip(
     tmp_path: Path, conn: duckdb.DuckDBPyConnection, provider
 ) -> None:
