@@ -9,6 +9,7 @@ from rich.text import Text
 
 from trd.engine import EXIT_RULES
 from trd.engine import REGISTRY as STRATEGIES
+from trd.engine.settlement import CashLedger
 from trd.models import (
     BoardRow,
     EarningsEvent,
@@ -1756,6 +1757,13 @@ def engine_backtest_renderables(
             if result.reentry_blocked
             else ""
         )
+        + (
+            f"\nT+1 settlement on: {result.cash_blocked} entr"
+            f"{'y' if result.cash_blocked == 1 else 'ies'} skipped waiting for proceeds "
+            "to settle"
+            if result.settlement
+            else ""
+        )
     )
     out.append(Panel(header, expand=False, border_style="cyan"))
     if result.equity:
@@ -1806,6 +1814,34 @@ def engine_backtest_windows_table(result: EngineBacktestResult) -> Table:
     table.caption = "trade counts in parentheses; dim = under 30 trades, read as noise"
     table.caption_justify = "left"
     return table
+
+
+def engine_cash_renderables(cash: CashLedger | None) -> list[RenderableType]:
+    """The settled-cash ledger: what may be spent now, and when the rest lands."""
+    if cash is None:
+        return [
+            Text(
+                "Cash ledger off — capacity is the slot count alone. "
+                "'trd engine cash --set AMOUNT' turns it on.",
+                style="dim",
+            )
+        ]
+    table = Table(title="Cash (T+1)", title_justify="left", show_header=False, box=None)
+    table.add_column(style="dim")
+    table.add_column(justify="right")
+    table.add_row("capital", fmt_money(cash.capital))
+    table.add_row("[bold]settled[/bold]", f"[bold]{fmt_money(cash.settled)}[/bold]")
+    table.add_row("unsettled", fmt_money(cash.unsettled))
+    for when, amount in cash.pending:
+        table.add_row(f"  settles {when}", fmt_money(amount))
+    return [
+        table,
+        Text(
+            "Settled is buying power. Sale proceeds settle one business day after the "
+            "trade and cannot fund an entry before then — 'trd learn settlement'.",
+            style="dim",
+        ),
+    ]
 
 
 def engine_status_renderables(status: EngineStatus) -> list[RenderableType]:
@@ -1888,6 +1924,16 @@ def engine_status_renderables(status: EngineStatus) -> list[RenderableType]:
             else f"  ·  {left} left"
         )
         book.add_row("entry budget", budget)
+    # Only with the ledger on. Settled is what the next entry can spend; a refill
+    # that reads "room for 1" above can still be refused here until T+1.
+    if status.capital is not None:
+        cash = (
+            f"{fmt_money(status.cash_settled)} settled  ·  "
+            f"{fmt_money(status.cash_unsettled)} unsettled"
+        )
+        if status.cash_next_settle is not None:
+            cash += f"  ·  next settles {status.cash_next_settle}"
+        book.add_row("cash", cash + f" [dim](of {fmt_money(status.capital)} capital)[/dim]")
     book.add_row("committed", fmt_money(status.committed))
     # Committed capital reads as the exposure, and it is not: every position has
     # a stop under it. The share says how much of the committed money is actually

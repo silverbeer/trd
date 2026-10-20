@@ -36,6 +36,7 @@ from trd.engine.bars import (
 from trd.engine.base import StrategyContext, indicator, last
 from trd.engine.exits import exit_quantity
 from trd.engine.regime import REGIME_SYMBOLS
+from trd.engine.settlement import CashLedger, ledger
 from trd.errors import ProviderError, TrdError
 from trd.learn import GLOSSARY
 from trd.models import (
@@ -374,6 +375,7 @@ class EngineService:
         sizing_mode: SizingMode = SizingMode.EXPOSURE,
         timeframe: str = DAILY,
         max_entries_per_day: int = 0,
+        capital: Decimal | None = None,
     ) -> tuple[EngineConfig, Account, list[str]]:
         """Create (or re-point) the engine: a simulation account, a watchlist
         universe, and the rule set. Returns the symbols now in the universe."""
@@ -385,6 +387,8 @@ class EngineService:
             raise TrdError("Max entries per day cannot be negative (0 disables the budget).")
         if max_positions < 1:
             raise TrdError("Max positions must be at least 1.")
+        if capital is not None and capital <= 0:
+            raise TrdError("Capital must be positive (omit it to leave the cash ledger off).")
 
         keys = strategies if strategies is not None else sorted(STRATEGIES)
         unknown = [k for k in keys if k not in STRATEGIES]
@@ -436,6 +440,7 @@ class EngineService:
             sizing_mode,
             timeframe,
             max_entries_per_day,
+            capital,
         )
         universe = [i.symbol for _, i in self.watchlists.items(board.id)]
         return config, account, universe
@@ -445,6 +450,70 @@ class EngineService:
         if config is None:
             raise TrdError("No engine configured. Run 'trd engine init' first.")
         return config
+
+    # ------------------------------------------------------------- settled cash
+
+    def cash(self, today: date | None = None) -> CashLedger | None:
+        """The engine account's settled-cash ledger, or None when it is off.
+
+        Built from the account's own txns, which is every fill the engine has
+        made — so the same rows that drive FIFO and the equity curve drive this,
+        and there is no second cash balance to drift from them.
+        """
+        config = self.config()
+        if config.capital is None:
+            return None
+        return self._ledger(config, self.account(), today or date.today())
+
+    def _ledger(self, config: EngineConfig, account: Account, today: date) -> CashLedger:
+        assert config.capital is not None
+        flows = [
+            (t.executed_at.date(), t.side, t.quantity, t.price, t.fees)
+            for t in self.txns.list_chronological(account.id)
+        ]
+        return ledger(config.capital, flows, today)
+
+    def set_capital(self, capital: Decimal | None) -> EngineConfig:
+        """Switch the cash ledger on at `capital`, or off with None.
+
+        Rewrites ONLY the capital. Not routed through `init`, which rewrites the
+        whole row and re-seeds the universe: changing how much cash an engine has
+        must not quietly reset its rule set — which is why `engine init` is never
+        the way to reconfigure a live engine.
+        """
+        if capital is not None and capital <= 0:
+            raise TrdError("Capital must be positive. Use --off to switch the ledger off.")
+        config = self.config()
+        if capital is not None:
+            # The ledger replays the account's whole history from `capital`, so it
+            # is the cash the account STARTED with. Set below what that history
+            # already spent, it would open negative and refuse every entry for a
+            # reason no one could read off the screen.
+            # Replayed from zero, the cash left is minus what the history spent.
+            history = self._ledger(
+                config.model_copy(update={"capital": Decimal(0)}), self.account(), date.today()
+            )
+            spent = -(history.settled + history.unsettled)
+            if capital < spent:
+                raise TrdError(
+                    f"Capital {capital:,.2f} is less than this account's history has "
+                    f"already spent ({spent:,.2f} net of sales). The ledger replays every "
+                    "fill from the starting cash, so pass the cash the account began with "
+                    "— or start a fresh engine home for a cash-account book."
+                )
+        return self.configs.upsert(
+            config.account_id,
+            config.watchlist,
+            config.position_size,
+            config.max_positions,
+            list(config.strategies),
+            dict(config.exit_params),
+            config.earnings_blackout_days,
+            config.sizing_mode,
+            config.timeframe,
+            config.max_entries_per_day,
+            capital,
+        )
 
     @staticmethod
     def _verify_rules(config: EngineConfig) -> None:
@@ -997,6 +1066,14 @@ class EngineService:
         if capacity <= 0 or not paper:
             return
 
+        # Settled cash, when the engine trades a cash account. Built here, after
+        # the exits have written their sells, so this pass's proceeds land in the
+        # ledger as unsettled — which is the whole point: a slot an exit just freed
+        # is not cash a broker will let the refill spend until T+1. Like the
+        # budget, it gates the fill and not the signal, so a cash-blocked signal
+        # stays recorded and unacted.
+        cash = self._ledger(config, account, today) if config.capital is not None else None
+
         candidates.sort(key=lambda c: (-c[0], c[1].symbol))
         taken: set[int] = set()
         for _score, instrument, bars, signal_id, scan_signal in candidates:
@@ -1014,10 +1091,12 @@ class EngineService:
                 )
                 continue
             fill = self._open_position(
-                config, account, instrument, bars, signal_id, scan_signal, now, result
+                config, account, instrument, bars, signal_id, scan_signal, now, result, cash
             )
             if fill is None:
                 continue
+            if cash is not None:
+                cash = cash.spend(fill.quantity * fill.price)
             result.opened.append(fill)
             taken.add(instrument.id)
             capacity -= 1
@@ -1033,12 +1112,20 @@ class EngineService:
         scan_signal: ScanSignal,
         now: datetime,
         result: ScanResult,
+        cash: CashLedger | None = None,
     ) -> ScanFill | None:
         price = bars[-1].close
         plan, skip = plan_entry(bars, config.position_size, config.exit_params, config.sizing_mode)
         if plan is None:
             if skip is not None:
                 result.skipped.append(f"{instrument.symbol}: {skip}")
+            return None
+        # Checked against the sized plan, not position_size: under risk sizing the
+        # committed capital floats, so only the plan knows what this entry costs.
+        # Fees are zero on every fill the engine records today.
+        cost = plan.quantity * price
+        if cash is not None and cost > cash.settled:
+            result.skipped.append(cash.shortfall(instrument.symbol, cost))
             return None
 
         self.txns.insert(
@@ -1268,6 +1355,8 @@ class EngineService:
 
         recent = self.runs.list_recent(1)
         midnight = datetime.combine(date.today(), datetime.min.time())
+        cash = self._ledger(config, account, date.today()) if config.capital is not None else None
+        nxt = cash.next_settle if cash is not None else None
         return EngineStatus(
             build=build_version(),
             db_path=db_path,
@@ -1284,6 +1373,10 @@ class EngineService:
             entries_today=self.positions.count_opened_on(account.id, date.today()),
             regime_sma=int(config.exit_params.get("regime_sma", 0)),
             regime_vix_max=float(config.exit_params.get("regime_vix_max", 0)),
+            capital=config.capital,
+            cash_settled=cash.settled if cash is not None else None,
+            cash_unsettled=cash.unsettled if cash is not None else None,
+            cash_next_settle=nxt[0] if nxt is not None else None,
             open_positions=len(open_pairs),
             closed_trades=len(closed_pairs),
             committed=committed,
