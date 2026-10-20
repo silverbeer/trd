@@ -20,7 +20,7 @@ DEFAULT_EARNINGS_BLACKOUT_DAYS = 3
 
 _CONFIG_COLS = (
     "id, account_id, watchlist, position_size, max_positions, strategies, exit_params, "
-    "earnings_blackout_days, sizing_mode, timeframe, max_entries_per_day"
+    "earnings_blackout_days, sizing_mode, timeframe, max_entries_per_day, capital"
 )
 _SIGNAL_COLS = "id, run_id, instrument_id, strategy, bar_ts, fired_at, price, score, reason, acted"
 _POSITION_COLS = (
@@ -54,6 +54,10 @@ def _row_to_config(row: tuple) -> EngineConfig:
         # that silently acquired a trade cap it was never configured with would be
         # the same unasked-for surprise the earnings blackout was.
         max_entries_per_day=row[10] if row[10] is not None else 0,
+        # NULL is the ledger switched off — every engine created before migration
+        # 026, and any engine since that was never given a capital. Read as None,
+        # not a guess: a made-up balance would start refusing entries unasked.
+        capital=row[11],
     )
 
 
@@ -136,14 +140,15 @@ class EngineConfigRepo:
         sizing_mode: SizingMode = SizingMode.EXPOSURE,
         timeframe: str = "1d",
         max_entries_per_day: int = 0,
+        capital: Decimal | None = None,
     ) -> EngineConfig:
         self.conn.execute("DELETE FROM engine_config WHERE account_id = ?", [account_id])
         row = self.conn.execute(
             f"""
             INSERT INTO engine_config
                 (account_id, watchlist, position_size, max_positions, strategies, exit_params,
-                 earnings_blackout_days, sizing_mode, timeframe, max_entries_per_day)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 earnings_blackout_days, sizing_mode, timeframe, max_entries_per_day, capital)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             RETURNING {_CONFIG_COLS}
             """,
             [
@@ -157,6 +162,7 @@ class EngineConfigRepo:
                 sizing_mode.value,
                 timeframe,
                 max_entries_per_day,
+                capital,
             ],
         ).fetchone()
         assert row is not None

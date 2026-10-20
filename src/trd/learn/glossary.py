@@ -720,6 +720,46 @@ _ENTRIES: list[GlossaryEntry] = [
         used_in=["trd engine scan", "trd engine backtest", "trd earnings"],
     ),
     GlossaryEntry(
+        key="settlement",
+        term="Settlement (T+1) and settled cash",
+        category=Category.ENGINE,
+        definition=(
+            "A trade happens on its trade date; the cash and shares actually change hands "
+            "on its settlement date. For US stocks that is T+1 — one business day later. "
+            "Until a sale settles, its proceeds are unsettled: the money is yours, but in "
+            "a cash account it is not buying power yet. Settled cash is.\n\n"
+            "A margin account papers over the gap with credit. A cash account has none, so "
+            "proceeds cannot be reused the same day. Buying with unsettled proceeds and "
+            "then selling that position before the proceeds settle is a good-faith "
+            "violation — you sold something that was never fully paid for. Three in twelve "
+            "months typically restricts the account for 90 days (Fidelity's statement of "
+            "the rule; check your broker's current terms). "
+            "Robinhood's cash account leaves unsettled proceeds out of buying power "
+            "altogether, so the order is simply rejected.\n\n"
+            "That matters to the engine because it runs exits first and refills the freed "
+            "slot in the same pass. Replayed on the swing paper book, 77% of entries "
+            "needed proceeds from an exit earlier that day. With a capital set (trd "
+            "engine cash --set), the scan, paper fills and the backtest all build this "
+            "ledger and skip the same entries. trd has no holiday calendar, so around a "
+            "market holiday its settle date is a day early; the broker's own buying power "
+            "is the authority."
+        ),
+        formula=(
+            "settle date = next weekday after the trade date\n"
+            "settled     = capital - sum(buys: qty x price + fees)\n"
+            "              + sum(sells settled by today: qty x price - fees)\n"
+            "unsettled   = sum(sells not yet settled: qty x price - fees)\n"
+            "entry taken only if  plan qty x price <= settled"
+        ),
+        example=(
+            "$1,000 capital, fully invested. Friday a $500 position stops out at $480: "
+            "settled stays $0, $480 unsettled, settles Monday. A signal Friday afternoon is "
+            "logged but not taken; Monday the $480 is spendable."
+        ),
+        related=["position-sizing", "risk-at-stop", "backtest"],
+        used_in=["trd engine cash", "trd engine status", "trd engine scan", "trd engine backtest"],
+    ),
+    GlossaryEntry(
         key="session-close",
         term="Flat by the bell (day mode)",
         category=Category.ENGINE,

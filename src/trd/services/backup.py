@@ -218,7 +218,8 @@ def export_data(conn: duckdb.DuckDBPyConnection) -> dict:
     for r in rows(
         """
         SELECT a.name, c.watchlist, c.position_size, c.max_positions, c.strategies, c.exit_params,
-               c.earnings_blackout_days, c.sizing_mode, c.timeframe
+               c.earnings_blackout_days, c.sizing_mode, c.timeframe, c.max_entries_per_day,
+               c.capital
         FROM engine_config c JOIN account a ON a.id=c.account_id
         ORDER BY c.id DESC LIMIT 1
         """
@@ -236,6 +237,10 @@ def export_data(conn: duckdb.DuckDBPyConnection) -> dict:
             "earnings_blackout_days": r[6],
             "sizing_mode": r[7],
             "timeframe": r[8],
+            "max_entries_per_day": r[9],
+            # A string, like position_size: money stays Decimal across the JSON.
+            # None is the cash ledger switched off, and must restore as off.
+            "capital": str(r[10]) if r[10] is not None else None,
         }
 
     # Signals are keyed by (symbol, strategy, bar_ts) — the same natural key the
@@ -551,8 +556,8 @@ def restore_data(conn: duckdb.DuckDBPyConnection, data: dict) -> BackupStats:
         conn.execute(
             """INSERT INTO engine_config
                  (account_id, watchlist, position_size, max_positions, strategies, exit_params,
-                  earnings_blackout_days, sizing_mode, timeframe)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                  earnings_blackout_days, sizing_mode, timeframe, max_entries_per_day, capital)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             [
                 account_id[config["account"]],
                 config["watchlist"],
@@ -565,6 +570,12 @@ def restore_data(conn: duckdb.DuckDBPyConnection, data: dict) -> BackupStats:
                 config.get("earnings_blackout_days", DEFAULT_EARNINGS_BLACKOUT_DAYS),
                 config.get("sizing_mode") or SizingMode.EXPOSURE.value,
                 config.get("timeframe") or "1d",
+                # Both were dropped by every backup before SB-1368, so a restore
+                # quietly switched off the entry budget — and, once it existed,
+                # would have switched off the cash ledger on a live cash account,
+                # where every same-day refill is then an order the broker rejects.
+                config.get("max_entries_per_day") or 0,
+                Decimal(config["capital"]) if config.get("capital") is not None else None,
             ],
         )
 

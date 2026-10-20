@@ -170,6 +170,9 @@ class ConfigSummary(BaseModel):
     strategies: list[str]
     regime_sma: int = 0
     regime_vix_max: float = 0.0
+    # Starting cash when the engine trades a cash account (T+1 ledger on), None
+    # when off. A refill skipped for unsettled cash is the ledger, not a quiet tape.
+    capital: Decimal | None = None
 
     @classmethod
     def of(cls, config: EngineConfig, account: str) -> "ConfigSummary":
@@ -184,6 +187,7 @@ class ConfigSummary(BaseModel):
             strategies=list(config.strategies),
             regime_sma=int(config.exit_params.get("regime_sma", 0)),
             regime_vix_max=float(config.exit_params.get("regime_vix_max", 0)),
+            capital=config.capital,
         )
 
 

@@ -154,6 +154,18 @@ trd engine rules                      # what each entry strategy looks for + the
 trd engine why SYMBOL                 # why THIS trade was taken: the numbers the rule saw at entry,
                                       # what each indicator means, and which exit is in force
 trd engine runs [-n N] [--today]      # scan history + interval between passes; ⚠ marks missing scans
+trd engine cash [--set AMOUNT | --off] [--json]
+                                      # T+1 settled-cash ledger for a cash account: capital,
+                                      # settled (buying power), unsettled sale proceeds and when
+                                      # each settles. With a capital set, scan and backtest skip
+                                      # an entry settled cash can't pay for — a same-pass refill
+                                      # off an exit's proceeds is what a broker rejects. Off
+                                      # (NULL) by default. --set/--off touch ONLY the capital;
+                                      # 'engine init --capital' sets it at creation.
+                                      # 'trd learn settlement'
+                                      # --set refuses a capital below what the account's history
+                                      # already spent: the ledger replays every fill from it, so
+                                      # a cash-account book wants a fresh engine home
 trd engine status [--json]            # what this engine is + whether it's healthy: build, DB, rule set,
                                       # capacity, bar depth, last scan. No network — answers when yfinance doesn't
                                       # also: realized / unrealized / NET (all three, never the total alone)
@@ -329,6 +341,14 @@ trd engine fidelity [--days 30] [--start ISO] [--end ISO] [--entry-fill open|clo
                                       # Read-only. ~1 min for 30 days of 5m bars.
                                       # Last 30 days, open entries: gap +0.001R/trade, but only
                                       # 129 of 220 trades match — trade SELECTION still differs
+trd engine backtest --settlement/--no-settlement
+                                      # T+1: exit proceeds wait a business day before funding an
+                                      # entry ('cash_blocked' counts the skips). Default follows
+                                      # the engine's capital, as does --capital; fidelity and
+                                      # sweep inherit both. MEASURED 2026-10-20, swing config,
+                                      # 8y, capital 1000: +0.126R/3,058 trades off vs +0.129R/
+                                      # 2,977 on (466 refills deferred), max DD -31.3% -> -28.2%.
+                                      # The T+1 rule costs no measurable edge
 trd engine backtest --regime/--no-regime        # same history with the regime gate on and off —
                                       # the comparison the gate should be judged on, never assumed
                                       # replay the rules against stored history — same scorecard as

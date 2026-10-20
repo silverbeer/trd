@@ -47,6 +47,10 @@ class EngineConfig(BaseModel):
     # *flow* of trades, where max_positions caps the stock of them — a day engine
     # recycles its slots as exits fire, so the two are different limits.
     max_entries_per_day: int = 0
+    # The cash this engine trades with. None is off: no settled-cash ledger, and
+    # capacity is the slot count alone. Set, an entry also needs settled cash —
+    # sale proceeds settle T+1 in a cash account (see trd.engine.settlement).
+    capital: Decimal | None = None
 
     @computed_field  # type: ignore[prop-decorator]
     @property
@@ -294,6 +298,13 @@ class EngineStatus(BaseModel):
     # Market-regime gate on new entries. 0 = off, which is the default.
     regime_sma: int = 0
     regime_vix_max: float = 0.0
+    # The T+1 settled-cash ledger. capital None = off, and then all four are None.
+    # Settled is buying power; unsettled is sale proceeds a cash account may not
+    # spend until the next settle date.
+    capital: Decimal | None = None
+    cash_settled: Decimal | None = None
+    cash_unsettled: Decimal | None = None
+    cash_next_settle: date | None = None
 
     open_positions: int
     closed_trades: int = 0

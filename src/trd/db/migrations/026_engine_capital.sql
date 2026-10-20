@@ -1,0 +1,23 @@
+-- The cash an engine trades with, for the T+1 settled-cash ledger.
+--
+-- Capacity has only ever been a slot count, and a scan runs its exits first and
+-- refills the freed slot in the same pass. A cash account cannot do that: sale
+-- proceeds settle T+1 and are not buying power until they do. Replayed on the
+-- live swing paper book since 2026-07-12, 105 of 112 entries came the same day as
+-- an earlier exit and 86 of them (77%) would have needed unsettled proceeds.
+-- Robinhood rejects those orders, so after the first exit a live engine and its
+-- paper twin would be trading different books. With a capital set, the live scan,
+-- paper and the backtest all build the same ledger and skip the same entries.
+--
+-- NULL means the ledger is off, and that is every engine that predates this
+-- column. An engine that silently started refusing entries for want of a cash
+-- balance nobody gave it would be the earnings blackout's unasked-for surprise
+-- again, and a capital cannot be guessed: position_size x max_positions is the
+-- wrong number under risk sizing (see BacktestService), so no backfill.
+--
+-- Its own column rather than exit_params, for the reason 012 gave: that JSON is
+-- named for the exit rules and validated against their key set.
+--
+-- Added bare: DuckDB rejects ALTER TABLE ... ADD COLUMN with a constraint
+-- ("Adding columns with constraints not yet supported").
+ALTER TABLE engine_config ADD COLUMN capital DECIMAL(18,6);

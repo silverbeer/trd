@@ -51,6 +51,7 @@ from trd.engine import evaluate_exits, regime
 from trd.engine.bars import DAILY, BarSource
 from trd.engine.base import StrategyContext
 from trd.engine.exits import DEFAULT_EXIT_PARAMS, RULES, ExitDecision, exit_quantity
+from trd.engine.settlement import settles_on
 from trd.errors import TrdError
 from trd.models import (
     Bar,
@@ -211,6 +212,10 @@ class BacktestResult(BaseModel):
     # bar. Counted rather than silently dropped: a non-zero number here is the
     # rules arguing with themselves, which is worth seeing.
     reentry_blocked: int = 0
+    # Whether exit proceeds waited T+1 before they could fund an entry, and how
+    # many ranked entries were skipped for want of settled cash. 0 when off.
+    settlement: bool = False
+    cash_blocked: int = 0
     equity: list[EquityPoint]
     start_value: Decimal
     end_value: Decimal
@@ -417,6 +422,7 @@ def simulate(
     timeframe: str = DAILY,
     regime_bars: Mapping[str, Sequence[DailyBar]] | None = None,
     daily_by_symbol: Mapping[str, Sequence[DailyBar]] | None = None,
+    settlement: bool = False,
 ) -> BacktestResult:
     """Walk history forward and run the live rules at every step.
 
@@ -426,6 +432,10 @@ def simulate(
     up to and including *t*; the prefix slice is the whole lookahead guarantee.
     `start` gates when trading may begin — earlier bars still feed the
     indicators as warmup.
+
+    `settlement` runs the cash account's T+1 rule: exit proceeds wait for
+    `settles_on` before they can fund an entry, the same rule the live scan
+    applies through `trd.engine.settlement`, so the two skip the same refills.
     """
     source = BarSource.stamper(timeframe)
     if entry_fill is EntryFill.OPEN and not source.is_intraday:
@@ -536,6 +546,10 @@ def simulate(
     regime_series = {k.upper(): list(v) for k, v in (regime_bars or {}).items()}
     regime_on = regime.is_configured(exit_params)
     next_id = 1
+    # Sale proceeds not yet settled, by the day they settle. Only ever filled with
+    # settlement on; with it off every exit pays straight into `cash`, as before.
+    pending: dict[date, Decimal] = {}
+    cash_blocked = 0
 
     equity_by_session: dict[date, Decimal] = {}
     for stamp in stamps:
@@ -543,6 +557,10 @@ def simulate(
         # An intraday bar carries its own clock, which is what lets session_close
         # fire at the bell here exactly as it does live.
         now = stamp if source.is_intraday else datetime.combine(today, _EVAL_TIME)
+        # Proceeds whose settle date has arrived become buying power before
+        # anything on this stamp trades.
+        for settle in [d for d in pending if d <= today]:
+            cash += pending.pop(settle)
 
         # Exits first, freeing capacity — the same order scan() uses. A position
         # whose symbol has no bar today simply rides.
@@ -570,7 +588,12 @@ def simulate(
             position.bars_held += 1
             position.last_bar_date = today
             fills, decision = step_exit(position, bars, i, exit_params, now, fill, timeframe)
-            cash += sum((price * sold for price, sold in fills), Decimal(0))
+            proceeds = sum((price * sold for price, sold in fills), Decimal(0))
+            if settlement and fills:
+                settle = settles_on(today)
+                pending[settle] = pending.get(settle, Decimal(0)) + proceeds
+            else:
+                cash += proceeds
             if decision is None:
                 return
             exit_price = fills[-1][0]
@@ -712,6 +735,11 @@ def simulate(
                 if plan is None:
                     continue
                 price = prefix[-1].close
+                if settlement and price * plan.quantity > cash:
+                    # Same place the live scan refuses it: sized, then checked
+                    # against settled cash alone. Counted, like the other blocks.
+                    cash_blocked += 1
+                    continue
                 position = EnginePosition(
                     id=next_id,
                     account_id=0,
@@ -751,6 +779,11 @@ def simulate(
             value = cash + sum(
                 (open_positions[s].quantity * last_close[s] for s in open_positions), Decimal(0)
             )
+            if pending:
+                # Pending proceeds are the account's money, merely not spendable
+                # yet — leaving them out would dip the curve on every exit and
+                # recover it a day later, a drawdown made of settlement timing.
+                value += sum(pending.values(), Decimal(0))
             # One point per session, not per bar: an intraday run holds thousands
             # of bars, and the curve is read as a daily equity line either way.
             # The last write for a session wins, which is its closing value.
@@ -786,6 +819,8 @@ def simulate(
         blackout_blocked=blackout_blocked,
         reentry_blocked=reentry_blocked,
         regime_blocked=regime_blocked,
+        settlement=settlement,
+        cash_blocked=cash_blocked,
         equity=equity,
         start_value=start_value,
         end_value=equity[-1].value if equity else start_value,
@@ -823,10 +858,20 @@ class BacktestService:
         scale_out_pct: float | None = None,
         params_override: dict[str, float] | None = None,
         entry_fill: EntryFill | None = None,
+        settlement: bool | None = None,
     ) -> BacktestResult:
         config = self.configs.get()
         if config is None:
             raise TrdError("No engine configured. Run 'trd engine init' first.")
+        # An engine with a capital trades a cash account, so its replay starts
+        # from that cash and honours T+1 unless told otherwise. Fidelity and the
+        # sweep reach here without either argument, so they inherit it too — a
+        # replay that refilled slots the live engine could not would be comparing
+        # two different books.
+        if capital is None:
+            capital = config.capital
+        if settlement is None:
+            settlement = config.capital is not None
         if fill is None:
             fill = default_fill(config.timeframe)
 
@@ -953,6 +998,7 @@ class BacktestService:
             timeframe=config.timeframe,
             regime_bars=regime_series,
             daily_by_symbol=daily_by_symbol or None,
+            settlement=settlement,
         )
         result.overrides = overrides
         result.skipped = no_history + result.skipped

@@ -30,6 +30,7 @@ from trd.cli.render import (
     earnings_table,
     edge_table,
     engine_backtest_renderables,
+    engine_cash_renderables,
     engine_exits_table,
     engine_monitor_view,
     engine_positions_table,
@@ -1918,6 +1919,17 @@ def engine_init(
             ),
         ),
     ] = 0.0,
+    capital: Annotated[
+        str | None,
+        typer.Option(
+            "--capital",
+            help=(
+                "Cash the engine trades with. Turns on the T+1 settled-cash ledger: "
+                "an entry needs settled cash, and sale proceeds wait a business day. "
+                "Omit for no ledger."
+            ),
+        ),
+    ] = None,
 ) -> None:
     """Set up the engine: a simulation account, a 10-name universe, and the rule set."""
     service = _engine_service()
@@ -1952,6 +1964,7 @@ def engine_init(
             sizing_mode=mode,
             timeframe=timeframe,
             max_entries_per_day=max_entries_per_day,
+            capital=_parse_decimal(capital, "capital") if capital else None,
         )
         # SPY and ^VIX become tracked instruments so `trd sync` pulls their bars.
         # Registered unconditionally: the backtest needs them to answer "what
@@ -3097,6 +3110,45 @@ def engine_status(
         console.print(renderable)
 
 
+@engine_app.command("cash")
+def engine_cash(
+    set_to: Annotated[
+        str | None,
+        typer.Option("--set", help="Turn the ledger on (or re-base it) at this capital."),
+    ] = None,
+    off: Annotated[bool, typer.Option("--off", help="Turn the settled-cash ledger off.")] = False,
+    as_json: JsonOpt = False,
+) -> None:
+    """Settled cash: what this engine may spend now, and what is waiting on T+1.
+
+    In a cash account a sale's proceeds settle one business day later and cannot
+    fund a buy until they do. With a capital set, scans and backtests skip any
+    entry the settled cash cannot pay for. --set and --off change the capital
+    only; every other part of the config is carried over untouched.
+    """
+    _use_json(as_json)
+    if set_to is not None and off:
+        _fail(TrdError("Give --set or --off, not both."))
+        return
+    service = _engine_service()
+    try:
+        if set_to is not None:
+            service.set_capital(_parse_decimal(set_to, "capital"))
+        elif off:
+            service.set_capital(None)
+        cash = service.cash()
+    except TrdError as exc:
+        _fail(exc)
+        return
+    if as_json:
+        # Off is `capital: null`, the same NULL the schema stores for it, so one
+        # check reads both shapes.
+        _emit_json(cash if cash is not None else {"capital": None})
+        return
+    for renderable in engine_cash_renderables(cash):
+        console.print(renderable)
+
+
 @engine_app.command("reconcile")
 def engine_reconcile(
     snapshot: Annotated[
@@ -3205,6 +3257,15 @@ def engine_backtest(
             "compare the same history with it on and off.",
         ),
     ] = None,
+    settlement: Annotated[
+        bool | None,
+        typer.Option(
+            "--settlement/--no-settlement",
+            help="Override T+1 settled cash for this run: exit proceeds wait a business "
+            "day before they can fund an entry. Default: on when the engine has a "
+            "capital ('trd engine cash'), off otherwise.",
+        ),
+    ] = None,
     scale_out: Annotated[
         float | None,
         typer.Option(
@@ -3273,6 +3334,7 @@ def engine_backtest(
             scale_out_pct=scale_out,
             params_override=_parse_params(param or []),
             entry_fill=entry_mode,
+            settlement=settlement,
         )
     except TrdError as exc:
         _fail(exc)
