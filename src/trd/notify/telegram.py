@@ -2,11 +2,16 @@ import json
 import os
 import urllib.error
 import urllib.request
+from collections.abc import Callable
 
 from trd.errors import NotifyError
 
 API_ROOT = "https://api.telegram.org"
 TIMEOUT_SECONDS = 10
+
+# What a live engine calls itself when nothing else is configured. Real money
+# reads differently from paper at a glance, and the label is the first thing read.
+LIVE_LABEL = "💵 live"
 
 
 class TelegramNotifier:
@@ -51,7 +56,9 @@ class TelegramNotifier:
 
 
 def label_from_env(
-    exit_params: dict[str, float] | None = None, env: dict[str, str] | None = None
+    exit_params: dict[str, float] | None = None,
+    env: dict[str, str] | None = None,
+    live: bool = False,
 ) -> str:
     """Which engine a pushed fill came from.
 
@@ -61,11 +68,15 @@ def label_from_env(
     engine, and everything else carries overnight. That fallback means the label
     is right with no configuration at all, which matters because the failure mode
     is silent — an unlabelled fill still looks like a perfectly good message.
+    A live engine falls back to LIVE_LABEL before either: that it trades real
+    money matters more than how long it holds.
     """
     source = env if env is not None else dict(os.environ)
     explicit = source.get("TRD_ENGINE_LABEL", "").strip()
     if explicit:
         return explicit
+    if live:
+        return LIVE_LABEL
     return "day" if (exit_params or {}).get("flat_at_minute", 0) > 0 else "swing"
 
 
@@ -80,4 +91,35 @@ def from_env(env: dict[str, str] | None = None) -> TelegramNotifier | None:
     chat_id = source.get("TELEGRAM_CHAT_ID", "").strip()
     if not token or not chat_id:
         return None
+    return TelegramNotifier(token, chat_id)
+
+
+def alert_notifier_from_env(
+    env: dict[str, str] | None = None, warn: Callable[[str], None] | None = None
+) -> TelegramNotifier | None:
+    """A notifier for the live engine's ALERT chat: the messages that need a
+    person to act — approve an order, look at a rejection.
+
+    TRD_LIVE_ALERT_CHAT_ID, else the first id in TRD_BOT_ALLOWED_USER_IDS (a
+    private chat with the bot has the user's own id), else TELEGRAM_CHAT_ID —
+    the channel, which works but mixes a call to action into the feed, so `warn`
+    is told. Same bot token as `from_env`; None when there is none.
+    """
+    source = env if env is not None else dict(os.environ)
+    token = source.get("TELEGRAM_BOT_TOKEN", "").strip()
+    if not token:
+        return None
+    chat_id = source.get("TRD_LIVE_ALERT_CHAT_ID", "").strip()
+    if not chat_id:
+        allowed = source.get("TRD_BOT_ALLOWED_USER_IDS", "").replace(",", " ").split()
+        chat_id = allowed[0] if allowed else ""
+    if not chat_id:
+        chat_id = source.get("TELEGRAM_CHAT_ID", "").strip()
+        if not chat_id:
+            return None
+        if warn is not None:
+            warn(
+                "TRD_LIVE_ALERT_CHAT_ID and TRD_BOT_ALLOWED_USER_IDS are not set — live "
+                "alerts go to TELEGRAM_CHAT_ID, the channel."
+            )
     return TelegramNotifier(token, chat_id)

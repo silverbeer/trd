@@ -59,18 +59,12 @@ class FillIngestService:
         self.intents = OrderIntentRepo(conn)
 
     def _live(self) -> tuple[EngineConfig, Account]:
-        config = self.configs.get()
-        if config is None:
-            raise TrdError("No engine configured. Run 'trd engine init' first.")
-        if not config.is_live:
-            raise TrdError(
-                "This is a paper engine: it fills its own decisions and has no broker "
-                "orders to ingest. 'trd engine fills' is for an engine created with --live."
-            )
-        account = next((a for a in self.accounts.list_all() if a.id == config.account_id), None)
-        if account is None:
-            raise TrdError("Engine account is missing. Run 'trd engine init' again.")
-        return config, account
+        return live_engine(
+            self.configs,
+            self.accounts,
+            "This is a paper engine: it fills its own decisions and has no broker "
+            "orders to ingest. 'trd engine fills' is for an engine created with --live.",
+        )
 
     def expire_stale(self, now: datetime) -> list[AppliedIntent]:
         """Expire open intents nothing at the broker took up before they lapsed.
@@ -191,12 +185,7 @@ class FillIngestService:
             # order already follows the order, not the approval.
             if intent.status != IntentStatus.PENDING:
                 return
-            updated = self.intents.update(
-                intent.id,
-                status=IntentStatus.AWAITING_APPROVAL,
-                approval_id=approval.approval_id,
-                submitted_at=intent.submitted_at or now,
-            )
+            updated = mark_awaiting_approval(self.intents, intent, approval.approval_id, now)
             result.applied.append(_applied(intent, instrument, updated.status))
             return
 
@@ -277,12 +266,7 @@ class FillIngestService:
             # booked until it finishes.
             if intent.status == IntentStatus.SUBMITTED:
                 return
-            updated = self.intents.update(
-                intent.id,
-                status=IntentStatus.SUBMITTED,
-                broker_order_id=order.id,
-                submitted_at=intent.submitted_at or order.created_at or now,
-            )
+            updated = mark_submitted(self.intents, intent, order.id, order.created_at or now)
             result.applied.append(
                 _applied(intent, instrument, updated.status, broker_order_id=order.id)
             )
@@ -436,8 +420,54 @@ class FillIngestService:
                 price=price,
                 broker_order_id=order.id,
                 note=None if order.state == BrokerOrderState.FILLED else "partial, then cancelled",
+                position_id=position.id,
             )
         )
+
+
+def live_engine(
+    configs: EngineConfigRepo, accounts: AccountRepo, refusal: str
+) -> tuple[EngineConfig, Account]:
+    """The live engine's config and account, or a TrdError. `refusal` is what a
+    paper engine is told — each command names itself in it."""
+    config = configs.get()
+    if config is None:
+        raise TrdError("No engine configured. Run 'trd engine init' first.")
+    if not config.is_live:
+        raise TrdError(refusal)
+    account = next((a for a in accounts.list_all() if a.id == config.account_id), None)
+    if account is None:
+        raise TrdError("Engine account is missing. Run 'trd engine init' again.")
+    return config, account
+
+
+# The two steps an intent takes once something at the broker has it. Shared by
+# the snapshot ingest and the outbox ack, so an approval or an order recorded
+# either way leaves the row in exactly the same shape.
+
+
+def mark_awaiting_approval(
+    intents: OrderIntentRepo, intent: OrderIntent, approval_id: str, at: datetime
+) -> OrderIntent:
+    """Placed, and held by the broker for a person to approve."""
+    return intents.update(
+        intent.id,
+        status=IntentStatus.AWAITING_APPROVAL,
+        approval_id=approval_id,
+        submitted_at=intent.submitted_at or at,
+    )
+
+
+def mark_submitted(
+    intents: OrderIntentRepo, intent: OrderIntent, broker_order_id: str, at: datetime
+) -> OrderIntent:
+    """Placed, and the broker holds a live order for it."""
+    return intents.update(
+        intent.id,
+        status=IntentStatus.SUBMITTED,
+        broker_order_id=broker_order_id,
+        submitted_at=intent.submitted_at or at,
+    )
 
 
 def _applied(
@@ -448,6 +478,7 @@ def _applied(
     price: Decimal | None = None,
     broker_order_id: str | None = None,
     note: str | None = None,
+    position_id: int | None = None,
 ) -> AppliedIntent:
     return AppliedIntent(
         intent_id=intent.id,
@@ -459,6 +490,8 @@ def _applied(
         to_status=to_status,
         broker_order_id=broker_order_id or intent.broker_order_id,
         note=note,
+        ref_price=intent.ref_price,
+        position_id=position_id or intent.position_id,
     )
 
 

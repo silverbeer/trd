@@ -267,6 +267,23 @@ def intent_expiry_cutoff(now: datetime) -> datetime:
     return midnight
 
 
+# Minute-of-day (ET) from which a new intent is "late": placed now, an approval
+# has minutes, not hours, before the 16:00 expiry above takes it.
+INTENT_LATE_MINUTE = 15 * 60 + 45
+
+
+def intent_expires_at(created_at: datetime) -> datetime:
+    """The instant an intent stops being actionable: the 16:00 close of the session
+    it was written in. The same boundary `intent_expiry_cutoff` sweeps on."""
+    midnight = datetime.combine(created_at.date(), datetime.min.time())
+    return midnight + timedelta(minutes=INTENT_EXPIRY_MINUTE)
+
+
+def intent_is_late(created_at: datetime) -> bool:
+    """Written so close to the close that an approval may not be given in time."""
+    return created_at.hour * 60 + created_at.minute >= INTENT_LATE_MINUTE
+
+
 class OrderIntent(BaseModel):
     """An order a live engine decided to place, and what became of it.
 

@@ -1,13 +1,18 @@
-# Robinhood MCP — read-only
+# Robinhood MCP
 
-Connects a Claude Code session to Robinhood's agentic MCP so it can *read* the
-brokerage: balances, positions, quotes. Every write tool — placing an order,
-cancelling one, exercising an option, mutating a watchlist — is denied by
-policy, not by good intentions.
+Connects a Claude Code session to Robinhood's agentic MCP so it can read the
+brokerage — balances, positions, quotes, orders — and, for the live engine
+only, place and cancel **equity** orders. Every other write tool — options,
+advanced and crypto orders, option exercise, watchlist, scan and alert
+mutations — is denied by policy, not by good intentions. The three equity
+order tools are `ask`: every call prompts in Claude Code, and with trade
+approvals on the order also waits for the customer in the Robinhood app.
 
-**trd's engine does not use this.** The engine calling a broker is a separate,
-deliberately harder problem ([SB-515]); nothing in `src/trd` imports or knows
-about MCP. This is agent-side only.
+**trd itself never calls the broker.** Nothing in `src/trd` imports or knows
+about MCP. A live engine writes order intents; an agent session drains them
+through the MCP and writes the broker's answers back as files trd reads
+(see "Draining the outbox" and "Ingesting fills" below). This is agent-side
+only.
 
 ## Why the split exists
 
@@ -125,10 +130,12 @@ claude mcp list
 
 ## Lifting the write ban
 
-Don't, for now. The ticket that built this gate ([SB-500]) explicitly excludes
-order placement even behind a flag. When that changes, the opt-in is an explicit
-per-tool `allow` entry plus removing that tool from `deny` — one tool at a time,
-in the **committed** `.claude/settings.json`, reviewed as a diff. Not
+Done once, for the equity order path only (SB-1373, PR #143):
+`review_equity_order`, `place_equity_order` and `cancel_equity_order` moved
+from `deny` to `ask` — not `allow`, so the Robinhood app's trade approval is
+never the only gate. Any further write follows the same rule: one tool at a
+time, out of `deny`, in the **committed** `.claude/settings.json`, reviewed as
+a diff. Not
 `settings.local.json`: a lifted ban is exactly the change that must be visible
 in version control on every machine, not just the one that made it.
 
@@ -218,6 +225,112 @@ and approvals that match no intent — manual trades, history — are listed and
 left alone. Re-running on the same file changes nothing; anything contradictory
 (symbol or side disagree, a sell for a position already closed) is shown, never
 applied, and the command exits non-zero.
+
+`--notify` posts each booked fill to the channel (`TELEGRAM_CHAT_ID`) — side,
+size, fill price, what the scan saw and the slippage between them, plus realized
+P&L and R on a sell — and anything rejected, expired or conflicting to the live
+alert chat (below).
+
+## Draining the outbox (live engine)
+
+A live scan writes order intents and places nothing. An agent session places
+them, through the three equity order tools that are `ask` (never `allow`) in
+`.claude/settings.json`, and tells trd what came back. trd never calls the broker:
+it emits a spec and records an id.
+
+Trade only the **agentic account** — the one `get_accounts` reports as the account
+the agent may trade. Its account number is the one every order call below takes.
+
+Follow these steps exactly, in order.
+
+1. **Read the outbox.**
+
+   ```bash
+   TRD_HOME=~/.trd-live trd engine outbox --json
+   ```
+
+   `orders` is every PENDING intent still actionable, oldest first. Each carries
+   `intent_id`, `ref_id`, `symbol`, `side`, `quantity` (a 6dp string), `type`
+   (`market`), `time_in_force` (`gfd`) and `market_hours` (`regular_hours`) — the
+   order parameters, unchanged — plus `ref_price`, `notional`, `reason`,
+   `created_at` and `expires_at` for the person approving it. An empty `orders`
+   means there is nothing to do: stop.
+
+2. **Review each spec.** Call `review_equity_order` with the same parameters. If
+   `order_checks` is non-empty, **stop and show the user**. Do not place it, do not
+   ack it; it stays pending and lapses on its own at 16:00.
+
+3. **Place it.** Call `place_equity_order` with the same parameters and the
+   spec's `ref_id` as the order's `ref_id`. The `ref_id` is the broker's
+   idempotency key: sending it twice cannot make two orders.
+
+4. **Record the answer** — exactly one of these per spec, with the `intent_id` (or
+   the `ref_id`):
+
+   - An **approval** (trade approvals on, the normal case): the broker holds the
+     order until the user approves it in the app.
+
+     ```bash
+     TRD_HOME=~/.trd-live trd engine outbox ack <intent_id> --approval-id <approval_id> --notify
+     ```
+
+     `--notify` sends the user "approve … in the Robinhood app — expires 16:00 ET"
+     in the live alert chat.
+   - An **order** (no approval needed): `--broker-order-id <order id>`.
+   - An **error** (the place call failed, nothing reached the broker):
+     `--error "<the error text>"`.
+
+   The same ack twice is a no-op. An ack against an intent already resolved, or
+   with a different approval or order id than the one recorded, is refused and
+   exits 1 — show it to the user rather than working around it.
+
+5. **Never re-place with a new `ref_id`.** While an approval is pending the order
+   exists; a second place is a second order. A retry after a failed place reuses
+   the spec's own `ref_id` — trd never mints another one for the same intent.
+
+6. **Later, bring the outcome back.** Call `get_equity_orders` and
+   `get_trade_approvals`, write the results as-is to one file as
+   `{"orders": [...], "approvals": [...]}`, then:
+
+   ```bash
+   TRD_HOME=~/.trd-live trd engine fills fills.json --notify
+   TRD_HOME=~/.trd-live trd engine reconcile positions.json
+   ```
+
+   The fill ingest books the fills (an approved order carries the approval's id as
+   its `ref_id`, which is how it finds the intent), and reconcile — fed a
+   positions snapshot ([Reconciliation](#reconciliation)) — confirms the book and
+   the broker agree.
+
+### Timing
+
+- Every intent expires at the **16:00 ET** close of the session it was written
+  in, with its trade approval. After that the outbox no longer lists it and the
+  next scan or fill ingest marks it expired.
+- An intent written at or after **15:45 ET** comes out with `"late": true` and a
+  `note` saying how many minutes are left. Place it if you can, but tell the user
+  the approval has minutes, not hours.
+
+### The database is single-writer
+
+`outbox` only reads. `outbox ack` and `fills` write, and DuckDB allows one writer:
+if a scan holds the lock, they wait briefly and then fail with
+`DatabaseBusyError`. That is not a failure of the order — retry after a few
+seconds. Never re-place an order because an ack failed; the ack is what to retry.
+
+### Where the messages go
+
+| Moment | Destination |
+|---|---|
+| a live scan writes an intent | alert chat |
+| `outbox ack --approval-id … --notify` | alert chat |
+| `fills --notify` books a fill | channel (`TELEGRAM_CHAT_ID`) |
+| `fills --notify` finds something rejected, expired or conflicting | alert chat |
+
+The alert chat is `TRD_LIVE_ALERT_CHAT_ID`; unset, the first id in
+`TRD_BOT_ALLOWED_USER_IDS` (a private chat with the bot has the user's own id);
+unset too, `TELEGRAM_CHAT_ID` with a warning. Same bot token throughout. Live
+messages are labelled `💵 live` unless `TRD_ENGINE_LABEL` names the engine.
 
 [SB-500]: https://linear.app/silverbeer/issue/SB-500
 [SB-515]: https://linear.app/silverbeer/issue/SB-515

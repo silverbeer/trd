@@ -619,6 +619,17 @@ class OrderIntentRepo:
         ).fetchone()
         return _row_to_intent(row) if row else None
 
+    def find(self, account_id: int, key: str) -> tuple[OrderIntent, Instrument] | None:
+        """One intent on the account by its id or its ref_id — the two handles an
+        agent holds after reading the outbox."""
+        key = key.strip()
+        intent_id = int(key) if key.isdigit() else -1
+        rows = self._list(
+            "WHERE o.account_id = ? AND (o.id = ? OR o.ref_id = ?)",
+            [account_id, intent_id, key],
+        )
+        return rows[0] if rows else None
+
     def has_open(self, account_id: int, instrument_id: int) -> bool:
         """Whether an order on this name is still in flight on the account."""
         marks = ", ".join("?" for _ in OPEN_INTENT_STATUSES)

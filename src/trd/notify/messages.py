@@ -26,7 +26,16 @@ from typing import Any
 from trd.engine import EXIT_REGISTRY
 from trd.engine import REGISTRY as STRATEGIES
 from trd.engine.bars import DAILY
-from trd.models import OrderIntentRow, StrategyStat
+from trd.models import (
+    FillIngestResult,
+    IntentStatus,
+    OrderIntent,
+    OrderIntentRow,
+    OutboxAck,
+    Side,
+    StrategyStat,
+)
+from trd.notify.telegram import LIVE_LABEL
 from trd.services.daily_report import DailyReport, EngineDay, ExitEvent
 from trd.services.engine import ScanFill, ScanResult
 from trd.services.review import EnginePack, ReviewResult
@@ -235,28 +244,124 @@ def close_message(fill: ScanFill, label: str | None = None) -> str:
     return "\n".join(lines)
 
 
+# ------------------------------------------------------------------ live engine
+
+
+def _live_head(label: str | None) -> str:
+    """How a live call to action opens. "💵 LIVE:" already names the engine, so
+    the bracketed label is added only when it says something else."""
+    tag = "" if label in (None, LIVE_LABEL) else _tag(label)
+    return f"{tag}💵 LIVE:"
+
+
+def _shares(quantity: Decimal) -> str:
+    """Every digit the order carries. A fractional order is approved by its exact
+    size in the broker's app, so the message must not round it."""
+    return f"{quantity.normalize():f}"
+
+
+def _order_terms(intent: OrderIntent, symbol: str) -> str:
+    return (
+        f"{intent.side.value.upper()} {symbol} {_shares(intent.quantity)} sh "
+        f"(~${_money(intent.notional)} @ {_money(intent.ref_price)})"
+    )
+
+
+def _why(intent: OrderIntent) -> str:
+    """The entry strategy that wanted a buy, the exit rule that wanted a sell."""
+    if intent.side == Side.SELL:
+        return f"{_rule_name(intent.rule) or 'exit'} exit"
+    return _strategy_name(intent.strategy)
+
+
 def intent_message(row: OrderIntentRow, label: str | None = None) -> str:
     """A live engine's order, stated as an order and not as a fill: nothing has
-    traded yet. Deliberately minimal until SB-1376 gives intents their own
-    messages."""
+    traded yet, and nothing will until the outbox is drained and it is approved."""
     intent = row.intent
-    lines = [
-        f"{_tag(label)}ORDER INTENT · {intent.side.value.upper()} {row.instrument.symbol} — "
-        f"{_strategy_name(intent.strategy)}",
-        f"{intent.quantity:g} sh @ ~{_money(intent.ref_price)} ({_money(intent.notional)}) · "
-        f"{intent.status.value}",
-        intent.reason,
-    ]
-    return "\n".join(lines)
+    return "\n".join(
+        [
+            f"{_live_head(label)} {_order_terms(intent, row.instrument.symbol)} — "
+            f"{_why(intent)}. Waiting for the outbox; approve in Robinhood when it "
+            "arrives, expires 16:00",
+            intent.reason,
+        ]
+    )
+
+
+def approval_message(ack: OutboxAck, label: str | None = None) -> str:
+    """The order is at the broker, held for a person. This is the message that
+    person acts on, so it carries what the app will show."""
+    intent = ack.intent
+    return "\n".join(
+        [
+            f"{_live_head(label)} approve {_order_terms(intent, ack.symbol)} in the "
+            "Robinhood app — expires 16:00 ET",
+            f"{_why(intent)}: {intent.reason}",
+        ]
+    )
+
+
+def fill_messages(result: FillIngestResult, label: str | None = None) -> list[str]:
+    """One line per fill the ingest booked, against the price the scan saw. A sell
+    adds what it realized, in dollars and in R."""
+    booked = {b.position_id: b for b in [*result.closed, *result.trimmed]}
+    out = []
+    for applied in result.applied:
+        if applied.to_status != IntentStatus.FILLED or applied.price is None:
+            continue
+        line = (
+            f"{_tag(label)}filled {applied.side.value.upper()} {applied.symbol} "
+            f"{_shares(applied.quantity)} @ {_money(applied.price)}"
+        )
+        if applied.ref_price:
+            slip = (applied.price - applied.ref_price) / applied.ref_price * 100
+            line += f" (scan saw {_money(applied.ref_price)}, {float(slip):+.2f}%)"
+        lines = [line]
+        sold = booked.get(applied.position_id) if applied.side == Side.SELL else None
+        if sold is not None and sold.pnl is not None:
+            realized = f"realized {_signed(sold.pnl)}"
+            if sold.r_multiple is not None:
+                realized += f" ({float(sold.r_multiple):+.2f}R)"
+            lines.append(realized)
+        out.append("\n".join(lines))
+    return out
+
+
+def fill_alert_message(result: FillIngestResult, label: str | None = None) -> str | None:
+    """Everything the ingest could not book, in one message, or None. Rejected and
+    expired intents bought or sold nothing; a conflict was not applied at all."""
+    problems = []
+    for applied in [*result.applied, *result.expired]:
+        if applied.to_status not in (IntentStatus.REJECTED, IntentStatus.EXPIRED):
+            continue
+        problems.append(
+            f"{applied.to_status.value.upper()} {applied.side.value.upper()} {applied.symbol} "
+            f"{_shares(applied.quantity)}" + (f" — {applied.note}" if applied.note else "")
+        )
+    problems += [f"CONFLICT — {c.message}" for c in result.conflicts]
+    if not problems:
+        return None
+    return "\n".join(
+        [
+            f"{_live_head(label)} {len(problems)} order(s) not booked",
+            *problems,
+            "Nothing was traded on these in trd; 'trd engine intents' has the detail.",
+        ]
+    )
 
 
 def scan_messages(result: ScanResult, label: str | None = None) -> list[str]:
-    """Closes first — an exit that freed capital explains the entry that follows."""
-    return (
-        [close_message(f, label) for f in result.closed]
-        + [open_message(f, label) for f in result.opened]
-        + [intent_message(row, label) for row in result.intents]
-    )
+    """Fills, for the channel. Closes first — an exit that freed capital explains
+    the entry that follows."""
+    return [close_message(f, label) for f in result.closed] + [
+        open_message(f, label) for f in result.opened
+    ]
+
+
+def scan_alert_messages(result: ScanResult, label: str | None = None) -> list[str]:
+    """A live scan's order intents, for the alert chat: each one is a call to act,
+    not a report of something done."""
+    return [intent_message(row, label) for row in result.intents]
 
 
 # ------------------------------------------------------------- daily report

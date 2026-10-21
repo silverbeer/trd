@@ -65,6 +65,11 @@ class OpenIntentConflictError(EnginePositionConflictError):
         self.account = account
 
 
+class IntentAckError(TrdError):
+    """An outbox ack trd refuses: the intent is already resolved, or the broker id
+    offered disagrees with the one already recorded."""
+
+
 class ProviderError(TrdError):
     """Market data provider failed (network, upstream change, unknown symbol)."""
 

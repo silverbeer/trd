@@ -194,6 +194,8 @@ class AppliedIntent(BaseModel):
     to_status: IntentStatus
     broker_order_id: str | None = None
     note: str | None = None
+    ref_price: Decimal | None = None  # what the scan saw, for the slippage on a fill
+    position_id: int | None = None  # the position a fill opened, closed or trimmed
 
 
 class BookedPosition(BaseModel):
