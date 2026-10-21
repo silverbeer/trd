@@ -46,25 +46,32 @@ That blocks the reads too, which is correct for a checkout that has not been
 through stage two — nothing is trusted before it has been named.
 
 **Stage two**, once authenticated, replaces it with every tool listed by name:
-53 reads allowed, 30 denied. `deny` beats `allow`, so a tool in both stays
+53 reads allowed, 3 asked, 27 denied. `deny` beats `allow`, so a tool in both stays
 blocked. Permission rules match MCP tools as `mcp__<server>` (all tools) or
 `mcp__<server>__<tool>` (exactly one) — there is no mid-name wildcard, so each
 tool needs its own line. That is the point: a tool Robinhood adds next month
 matches neither list, so it is neither silently allowed nor silently denied — it
 surfaces as an unlisted tool that requires an explicit decision.
 
-The 30 denied are the 26 that mutate broker state — `place_equity_order`,
-`place_option_order`, `place_advanced_order`, `place_crypto_order`,
-`cancel_equity_order`, `cancel_option_order`, `cancel_advanced_order`,
-`cancel_crypto_order`, `exercise_option`, `cancel_option_exercise`,
-`decline_trade_approval`, the six watchlist mutations, the four scan mutations
-and the four alert mutations (`create_alert`, `update_alert`, `delete_alert`,
-`mark_alerts_read`) — plus the four that price an order without placing it:
-`review_equity_order`, `review_option_order`, `review_advanced_order` and
-`preview_crypto_order`.
+The 3 asked are the equity order path the live swing engine needs (SB-1373):
+`review_equity_order`, `place_equity_order` and `cancel_equity_order`. `ask`
+prompts on every call, so each order is approved twice — once in Claude Code,
+once in the Robinhood app, where trade approvals are on for the agentic account
+(with approvals on, the agent proposes and the customer places). An `allow`
+here would leave the app as the only gate.
 
-The four order previews do not place anything; they price an order and return
-pre-trade alerts. They are denied anyway. trd decides what to trade from its own
+The 27 denied are the 24 other writes — `place_option_order`,
+`place_advanced_order`, `place_crypto_order`, `cancel_option_order`,
+`cancel_advanced_order`, `cancel_crypto_order`, `exercise_option`,
+`cancel_option_exercise`, `decline_trade_approval`, the six watchlist
+mutations, the four scan mutations and the four alert mutations
+(`create_alert`, `update_alert`, `delete_alert`, `mark_alerts_read`) — plus the
+three that price a non-equity order without placing it: `review_option_order`,
+`review_advanced_order` and `preview_crypto_order`.
+
+The order previews do not place anything; they price an order and return
+pre-trade alerts. The equity one is asked because the place workflow runs
+review first; the other three are denied anyway. trd decides what to trade from its own
 data, so the order path has no read that trd needs, and leaving the
 order-shaped surface reachable invites a session to drift toward it one harmless
 call at a time.
