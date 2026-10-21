@@ -396,6 +396,27 @@ def test_one_engine_says_nothing_about_both() -> None:
     assert not any(line.startswith("both") for line in text.splitlines())
 
 
+def test_two_engines_total_as_both() -> None:
+    """Exactly two engines: the combined rows say "both", and nothing says "all"."""
+    text = daily_report_message(DailyReport(on=TODAY, engines=[day("swing"), day("day")]))
+    totals = [line for line in text.splitlines() if line.split()[:1] == ["both"]]
+    assert len(totals) == 2  # TODAY and OPEN BOOK
+    assert "both engines" in text
+    assert not any(line.split()[:1] == ["all"] for line in text.splitlines())
+
+
+def test_three_engines_total_as_all_not_both() -> None:
+    """A third engine (swing20) makes "both" a miscount of the book it sums."""
+    text = daily_report_message(
+        DailyReport(on=TODAY, engines=[day("swing"), day("day"), day("swing20")])
+    )
+    lines = text.splitlines()
+    totals = [line for line in lines if line.split()[:1] == ["all"]]
+    assert len(totals) == 2  # TODAY and OPEN BOOK
+    assert "all engines" in text
+    assert "both" not in text
+
+
 # ----------------------------------------------------------------------- the CLI
 
 

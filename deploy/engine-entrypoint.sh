@@ -133,8 +133,18 @@ fi
 # NDJSON because the consumer is promtail, not a human — one event per line, each
 # independently queryable in Loki. --notify pushes fills to Telegram; with no
 # token configured it degrades to a warning, so an unconfigured cluster still scans.
-# shellcheck disable=SC2086  # $scan_args is empty or one flag, never quoted text
-trd engine scan --ndjson --notify $scan_args
+#
+# TRD_SCAN_NOTIFY=0 scans without --notify: the engine still trades and still
+# shows up in the daily report, it just does not push each fill. swing20 runs
+# that way — a third engine's fills in the shared chat would be the noise the
+# daily report exists to replace. Only the scan: apply-queue above keeps
+# --notify, because a command typed in chat must still be answered.
+notify_args="--notify"
+if [ "${TRD_SCAN_NOTIFY:-1}" = "0" ]; then
+    notify_args=""
+fi
+# shellcheck disable=SC2086  # both are empty or one flag, never quoted text
+trd engine scan --ndjson $notify_args $scan_args
 
 # --- measure what today's trades actually did ---------------------------------
 # Only on the last pass of the day. The measurement walks the bars a trade lived
