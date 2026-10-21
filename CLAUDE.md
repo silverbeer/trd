@@ -115,8 +115,9 @@ trd engine init [--account NAME] [--size 1000] [--max 5] [--symbols A,B,...] [--
                                       # An open buy intent holds a slot, the name, its entry-budget
                                       # place and its notional in settled cash; an open sell intent
                                       # leaves the position open and blocks a second exit for it.
-                                      # 'engine trim' is refused live. Fill ingest (1b) and the
-                                      # outbox (1c) are not built: nothing resolves an intent yet
+                                      # 'engine trim' is refused live. Fills are ingested from a
+                                      # broker snapshot ('trd engine fills'); the outbox (1c) that
+                                      # places intents is not built yet
 trd engine scan [--paper/--no-paper] [--json] [--exits-only]
                                       # one pass: exits first, then best-ranked entries.
                                       # --exits-only manages the book and ranks but buys nothing:
@@ -135,6 +136,33 @@ trd engine intents [--status S] [--json]
                                       # rejected | cancelled | expired; the first three are open)
                                       # and the fill when one lands. Empty on a paper engine.
                                       # 'trd learn order-intent'
+trd engine fills SNAPSHOT.json [--json]
+                                      # ingest a LIVE engine's broker fills (refused on paper).
+                                      # SNAPSHOT is the broker's own reads written as-is, no
+                                      # reshaping: {"orders": [get_equity_orders rows],
+                                      # "approvals": [get_trade_approvals rows], "taken_at"}.
+                                      # An order matches an intent when its ref_id is the intent's
+                                      # ref_id OR its approval_id — with trade approvals on the
+                                      # broker stamps the order with the APPROVAL's id, not ours
+                                      # (measured 2026-10-21) — or its id is the broker_order_id
+                                      # already recorded. Symbol/side disagreeing = CONFLICT, never
+                                      # applied, exit non-zero. filled (or partial-then-cancelled)
+                                      # writes the txn at the broker's price/fees/time (UTC → ET):
+                                      # a buy opens the position at the FILL with the stop and
+                                      # target re-derived from atr_at_entry, so live R is measured
+                                      # from what was paid; a sell closes with the intent's rule,
+                                      # or trims when less than the remainder sold. queued/
+                                      # confirmed/partially_filled → submitted; rejected/failed →
+                                      # rejected; cancelled → cancelled; approval DECLINED →
+                                      # cancelled, EXPIRED → expired, PENDING → awaiting_approval.
+                                      # Unmatched orders/approvals are REPORTED, never adopted.
+                                      # Idempotent: keyed on intent status + broker_order_id, so
+                                      # re-ingesting a snapshot writes nothing. Then sweeps:
+                                      # pending/awaiting_approval from an earlier session, or
+                                      # today's once it is 16:00 ET (approvals lapse at the close),
+                                      # → expired. Submitted never expires. A live scan runs the
+                                      # same sweep first, so a stale buy stops holding its slot.
+                                      # 'trd sell'/'trd buy' on a name with an open intent is refused
 trd engine positions [--all]          # open trades: entry, stop (↑ = trailing in force), risk, target, R
                                       # risk = (mark − stop in force) × remaining qty, floored at 0 —
                                       # what this trade loses from here, not what it committed

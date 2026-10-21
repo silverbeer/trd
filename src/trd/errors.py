@@ -45,6 +45,26 @@ class EnginePositionConflictError(TrdError):
         self.account = account
 
 
+class OpenIntentConflictError(EnginePositionConflictError):
+    """A manual trade on a name a live engine has an order in flight for.
+
+    A subclass so every caller that already refuses an engine-held symbol refuses
+    this too: the shares are not on the book yet, but the fill that puts them
+    there is already on its way.
+    """
+
+    def __init__(self, symbol: str, account: str) -> None:
+        TrdError.__init__(
+            self,
+            f"{symbol} has an open order intent from the live engine on '{account}'. A "
+            f"manual trade now would be booked beside the engine's own fill when it "
+            f"arrives, and the engine's position would disagree with the account. Wait "
+            f"for the order to resolve ('trd engine intents'), then trade.",
+        )
+        self.symbol = symbol
+        self.account = account
+
+
 class ProviderError(TrdError):
     """Market data provider failed (network, upstream change, unknown symbol)."""
 
