@@ -116,8 +116,8 @@ trd engine init [--account NAME] [--size 1000] [--max 5] [--symbols A,B,...] [--
                                       # place and its notional in settled cash; an open sell intent
                                       # leaves the position open and blocks a second exit for it.
                                       # 'engine trim' is refused live. Fills are ingested from a
-                                      # broker snapshot ('trd engine fills'); the outbox (1c) that
-                                      # places intents is not built yet
+                                      # broker snapshot ('trd engine fills'); an agent session
+                                      # places intents from 'trd engine outbox'
 trd engine scan [--paper/--no-paper] [--json] [--exits-only]
                                       # one pass: exits first, then best-ranked entries.
                                       # --exits-only manages the book and ranks but buys nothing:
@@ -136,7 +136,7 @@ trd engine intents [--status S] [--json]
                                       # rejected | cancelled | expired; the first three are open)
                                       # and the fill when one lands. Empty on a paper engine.
                                       # 'trd learn order-intent'
-trd engine fills SNAPSHOT.json [--json]
+trd engine fills SNAPSHOT.json [--notify] [--json]
                                       # ingest a LIVE engine's broker fills (refused on paper).
                                       # SNAPSHOT is the broker's own reads written as-is, no
                                       # reshaping: {"orders": [get_equity_orders rows],
@@ -163,6 +163,31 @@ trd engine fills SNAPSHOT.json [--json]
                                       # → expired. Submitted never expires. A live scan runs the
                                       # same sweep first, so a stale buy stops holding its slot.
                                       # 'trd sell'/'trd buy' on a name with an open intent is refused
+                                      # --notify: each booked fill to the channel ("[💵 live] filled
+                                      # BUY X q @ p (scan saw r, ±s%)", realized P&L + R on a sell);
+                                      # rejected / expired / conflicts to the live ALERT chat
+trd engine outbox [--json]            # a LIVE engine's PENDING intents as order specs an agent
+                                      # passes straight to place_equity_order: intent_id, ref_id,
+                                      # symbol, side, quantity (6dp string, rounded down), type
+                                      # market, time_in_force gfd, market_hours regular_hours, plus
+                                      # ref_price, notional, reason, created_at, expires_at (16:00
+                                      # ET of its session). Oldest first; already-expired ones left
+                                      # out (not swept — read-only connection). Written at/after
+                                      # 15:45 ET = "late": true + a note: minutes left to approve.
+                                      # Refused on paper. Runbook: docs/robinhood-mcp.md
+                                      # "Draining the outbox"
+trd engine outbox ack INTENT (--approval-id X | --broker-order-id Y | --error MSG) [--notify] [--json]
+                                      # the agent's write-back after placing; INTENT = id or ref_id.
+                                      # approval: pending → awaiting_approval; order: pending/
+                                      # awaiting_approval → submitted; error: pending → rejected.
+                                      # Same ack twice = no-op (changed: false). A terminal intent,
+                                      # or a different approval/order id than the one recorded =
+                                      # IntentAckError, exit 1. Never mints a ref_id: a retry reuses
+                                      # the intent's. Same transition helpers as 'engine fills'.
+                                      # --notify with --approval-id: "approve … in the Robinhood
+                                      # app" to the ALERT chat = TRD_LIVE_ALERT_CHAT_ID, else first
+                                      # TRD_BOT_ALLOWED_USER_IDS id, else TELEGRAM_CHAT_ID (warned).
+                                      # A live scan's intents go to that chat too, not the channel
 trd engine positions [--all]          # open trades: entry, stop (↑ = trailing in force), risk, target, R
                                       # risk = (mark − stop in force) × remaining qty, floored at 0 —
                                       # what this trade loses from here, not what it committed
