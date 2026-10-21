@@ -32,6 +32,7 @@ from trd.cli.render import (
     engine_backtest_renderables,
     engine_cash_renderables,
     engine_exits_table,
+    engine_guard_renderables,
     engine_intents_table,
     engine_monitor_view,
     engine_positions_table,
@@ -57,7 +58,7 @@ from trd.cli.render import (
     indicator_panel,
     lots_table,
     movers_table,
-    outbox_table,
+    outbox_renderables,
     outcome_summary_renderables,
     outcome_trades_table,
     plans_pnl_table,
@@ -94,6 +95,7 @@ from trd.notify.messages import (
     daily_report_message,
     fill_alert_message,
     fill_messages,
+    halt_message,
     review_message,
 )
 from trd.notify.telegram import TelegramNotifier
@@ -132,6 +134,7 @@ from trd.services.agenda import (
 from trd.services.backtest import BacktestService, EntryFill, FillMode
 from trd.services.commands import CommandQueueService
 from trd.services.daily_report import (
+    DEFAULT_LIVE_TWIN,
     DEFAULT_WINDOW_DAYS,
     DailyReport,
     EngineDay,
@@ -2076,6 +2079,8 @@ def _notify_scan(result: ScanResult, label: str | None = None) -> None:
     to do something, and the channel is a feed of things already done."""
     _send(scan_messages(result, label))
     _send(scan_alert_messages(result, label), alert=True)
+    if result.auto_halt:
+        _send([halt_message(result.auto_halt, label)], alert=True)
 
 
 def _send(messages: list[str], alert: bool = False) -> None:
@@ -2085,8 +2090,16 @@ def _send(messages: list[str], alert: bool = False) -> None:
     if not messages:
         return
     warn = lambda text: err_console.print(f"[yellow]warning:[/yellow] {text}")  # noqa: E731
-    notifier = alert_notifier_from_env(warn=warn) if alert else notify_from_env()
+    refused: list[str] = []
+
+    def error(text: str) -> None:
+        refused.append(text)
+        err_console.print(f"[red]error:[/red] {text}")
+
+    notifier = alert_notifier_from_env(warn=warn, error=error) if alert else notify_from_env()
     if notifier is None:
+        if refused:
+            return  # already said why, and it is not a missing token
         warn(
             "--notify set but TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID are not configured "
             "— nothing sent."
@@ -2594,7 +2607,12 @@ def engine_daily_report(
             if service is not None:
                 service.conn.close()
 
-    report = DailyReport(on=on, window_days=window, engines=days)
+    report = DailyReport(
+        on=on,
+        window_days=window,
+        engines=days,
+        live_twin=os.environ.get("TRD_LIVE_TWIN", "").strip() or DEFAULT_LIVE_TWIN,
+    )
     if as_json:
         _emit_json(report)
         return
@@ -2816,9 +2834,11 @@ def engine_watchdog(
         _emit_json(result)
     else:
         for pulse in result.engines:
-            mark = "[green]✓[/green]" if pulse.alive else "[red]✗[/red]"
+            mark = "[green]✓[/green]" if pulse.ok else "[red]✗[/red]"
             detail = pulse.problem or f"last scan {pulse.age_minutes} minutes ago"
             console.print(f"{mark} {pulse.engine}: {detail}", highlight=False)
+            for alarm in pulse.alarms:
+                console.print(f"  [yellow]⚠[/yellow] {alarm}", highlight=False, markup=True)
         if not result.in_session:
             console.print("[dim]Outside market hours — no scan is expected.[/dim]")
 
@@ -3246,6 +3266,101 @@ def engine_cash(
         console.print(renderable)
 
 
+@engine_app.command("halt")
+def engine_halt(
+    reason: Annotated[
+        str | None, typer.Option("--reason", help="Why, in your words. Shown wherever it is.")
+    ] = None,
+    as_json: JsonOpt = False,
+) -> None:
+    """Throw a live engine's kill switch.
+
+    While halted the scan writes no buy intents (exits are still decided and
+    recorded, so the book shows what the engine wants) and 'trd engine outbox'
+    emits nothing at all. Survives restarts, reconfiguring and 'trd backup'.
+    'trd engine resume' releases it. Paper engines are refused.
+    """
+    _use_json(as_json)
+    service = _engine_service()
+    try:
+        guard = service.halt(reason)
+    except TrdError as exc:
+        _fail(exc)
+        return
+    if as_json:
+        _emit_json(guard)
+        return
+    console.print(f"[bold red]HALTED[/bold red] — {guard.halt_reason}", highlight=False)
+
+
+@engine_app.command("resume")
+def engine_resume(as_json: JsonOpt = False) -> None:
+    """Release a live engine's kill switch. The caps stay as they were.
+
+    After a loss-stop halt, the next scan halts it again unless the loss is back
+    inside --max-loss or the cap has been raised ('trd engine guard --max-loss').
+    """
+    _use_json(as_json)
+    service = _engine_service()
+    try:
+        guard = service.resume()
+    except TrdError as exc:
+        _fail(exc)
+        return
+    if as_json:
+        _emit_json(guard)
+        return
+    console.print("Resumed — the kill switch is off.")
+
+
+@engine_app.command("guard")
+def engine_guard(
+    max_order: Annotated[
+        str | None, typer.Option("--max-order", help="Most one buy order may cost, in dollars.")
+    ] = None,
+    max_daily: Annotated[
+        str | None,
+        typer.Option("--max-daily", help="Most the engine may buy in one session, in dollars."),
+    ] = None,
+    max_positions: Annotated[
+        int | None,
+        typer.Option("--max-positions", help="Most open positions + open buy orders."),
+    ] = None,
+    max_loss: Annotated[
+        str | None,
+        typer.Option(
+            "--max-loss",
+            help="Dollars of realized + unrealized loss at which the engine halts itself.",
+        ),
+    ] = None,
+    as_json: JsonOpt = False,
+) -> None:
+    """A live engine's hard caps: show them, or set any of them.
+
+    Enforced by trd whatever the strategy config says, twice: the scan will not
+    write a buy that breaks one, and the outbox withholds a pending buy that
+    breaks one now. Caps apply to buys only — an exit is never withheld. No flags
+    shows the caps in force. Paper engines are refused.
+    """
+    _use_json(as_json)
+    service = _engine_service()
+    try:
+        guard = service.set_guard(
+            max_order=_parse_decimal(max_order, "max-order") if max_order else None,
+            max_daily=_parse_decimal(max_daily, "max-daily") if max_daily else None,
+            max_positions=max_positions,
+            max_loss=_parse_decimal(max_loss, "max-loss") if max_loss else None,
+        )
+    except TrdError as exc:
+        _fail(exc)
+        return
+    if as_json:
+        _emit_json(guard)
+        return
+    for renderable in engine_guard_renderables(guard):
+        console.print(renderable)
+
+
 @engine_app.command("reconcile")
 def engine_reconcile(
     snapshot: Annotated[
@@ -3258,6 +3373,14 @@ def engine_reconcile(
         str | None,
         typer.Option("--account", help="Which trd account to compare. Defaults to the engine's."),
     ] = None,
+    compare_cash: Annotated[
+        bool,
+        typer.Option(
+            "--compare-cash",
+            help="Also compare the snapshot's cash/unsettled with the engine's settled-cash "
+            "ledger. Only for a broker account whose cash is the engine's alone.",
+        ),
+    ] = False,
     as_json: JsonOpt = False,
 ) -> None:
     """Diff a brokerage against what trd believes it holds.
@@ -3267,6 +3390,12 @@ def engine_reconcile(
     broker is an authenticated, interactive step done outside trd (see
     docs/robinhood-mcp.md); this command does the deterministic comparison, so
     it needs no network and no credentials.
+
+    --compare-cash also diffs the broker's settled cash (and unsettled, when the
+    snapshot has it) against the engine's T+1 ledger, beyond $0.05 a CASH
+    MISMATCH. Off by default: the account funding an engine usually holds more
+    than the engine's capital ($300 deposited for a $100 engine), and that
+    surplus is not a mismatch. Use it when the account's cash is dedicated.
 
     Exits non-zero when the two disagree, so a scheduled check can act on it.
     """
@@ -3284,8 +3413,17 @@ def engine_reconcile(
 
     service = _reconcile_service()
     try:
-        name = account or EngineService(service.conn, YFinanceProvider()).account().name
-        result = service.reconcile(parsed, name)
+        engine = EngineService(service.conn, YFinanceProvider())
+        name = account or engine.account().name
+        ledger = None
+        if compare_cash:
+            ledger = engine.cash()
+            if ledger is None:
+                raise TrdError(
+                    "--compare-cash needs the engine's settled-cash ledger, and this engine "
+                    "has no capital ('trd engine cash --set')."
+                )
+        result = service.reconcile(parsed, name, cash=ledger)
     except TrdError as exc:
         _fail(exc)
         return
@@ -3360,6 +3498,8 @@ def engine_fills(
         _send(fill_messages(result, label))
         alert = fill_alert_message(result, label)
         _send([alert] if alert else [], alert=True)
+        if result.auto_halt:
+            _send([halt_message(result.auto_halt, label)], alert=True)
     if not result.ok:
         raise typer.Exit(code=1)
 
@@ -3371,7 +3511,17 @@ engine_app.add_typer(outbox_app, name="outbox")
 
 
 @outbox_app.callback(invoke_without_command=True)
-def engine_outbox(ctx: typer.Context, as_json: JsonOpt = False) -> None:
+def engine_outbox(
+    ctx: typer.Context,
+    include_stale: Annotated[
+        bool,
+        typer.Option(
+            "--include-stale",
+            help="List buys older than the stale limit too (flagged in their note).",
+        ),
+    ] = False,
+    as_json: JsonOpt = False,
+) -> None:
     """The live engine's PENDING intents as order specs an agent passes straight
     to the broker's order tool: ref_id, symbol, side, quantity, type, time in
     force, market hours — plus what a person approving it wants to see.
@@ -3380,6 +3530,10 @@ def engine_outbox(ctx: typer.Context, as_json: JsonOpt = False) -> None:
     or after 15:45 ET is flagged late: an approval raised then has minutes to be
     given. Read-only. Placing is the agent's job (docs/robinhood-mcp.md); record
     what came back with 'trd engine outbox ack'.
+
+    The guardrails apply here too: halted, nothing is emitted (`halted: true`);
+    a buy that breaks a hard cap, or one sized off a quote more than 30 minutes
+    old, is listed under `withheld` with the reason and is never in `orders`.
     """
     if ctx.invoked_subcommand is not None:
         return
@@ -3390,7 +3544,7 @@ def engine_outbox(ctx: typer.Context, as_json: JsonOpt = False) -> None:
             raise TrdError(f"No database at {db_path}. Run 'trd init' first.")
         conn = connect_read_only(db_path)
         try:
-            outbox = OutboxService(conn).pending(datetime.now())
+            outbox = OutboxService(conn).pending(datetime.now(), include_stale=include_stale)
         finally:
             conn.close()
     except TrdError as exc:
@@ -3399,10 +3553,8 @@ def engine_outbox(ctx: typer.Context, as_json: JsonOpt = False) -> None:
     if as_json:
         _emit_json(outbox)
         return
-    if not outbox.orders:
-        console.print(f"Outbox empty on [bold]{outbox.account}[/bold]: nothing pending to place.")
-        return
-    console.print(outbox_table(outbox))
+    for renderable in outbox_renderables(outbox):
+        console.print(renderable)
 
 
 @outbox_app.command("ack")

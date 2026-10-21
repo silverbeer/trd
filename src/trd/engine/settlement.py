@@ -113,3 +113,36 @@ def ledger(capital: Decimal, flows: Iterable[Flow], today: date) -> CashLedger:
         unsettled=sum((amount for _, amount in ordered), Decimal(0)),
         pending=ordered,
     )
+
+
+# Sub-cent slack when asking whether a buy fit inside settled cash: fractional
+# fills round, and a buy that overshoots settled cash by a fraction of a cent was
+# not funded with anybody's unsettled proceeds.
+FUNDING_TOLERANCE = Decimal("0.01")
+
+
+def unsettled_funding(
+    capital: Decimal, prior: Iterable[Flow], trade_date: date, cost: Decimal
+) -> date | None:
+    """When the unsettled cash a buy spent settles, or None if settled cash paid
+    for all of it.
+
+    `prior` is every flow before the buy, in order. The good-faith-violation test
+    hangs off this: a cash account that sells a position before the cash which
+    bought it has settled has sold something not yet paid for. The ledger refuses
+    such buys in the first place (an entry needs settled cash), so for any book
+    the engine built this returns None — it exists so the live exit path can say
+    so loudly if that ever stops being true.
+    """
+    before = ledger(capital, prior, trade_date)
+    short = cost - before.settled
+    if short <= FUNDING_TOLERANCE:
+        return None
+    covered = Decimal(0)
+    for when, amount in before.pending:
+        covered += amount
+        if covered >= short - FUNDING_TOLERANCE:
+            return when
+    # Spent more than settled and pending together: funded by nothing trd knows
+    # about. The latest pending date is the earliest it could have been paid for.
+    return before.pending[-1][0] if before.pending else trade_date

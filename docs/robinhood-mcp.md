@@ -162,6 +162,7 @@ same reason all market data goes through `MarketDataProvider`.
   "source": "robinhood",
   "account": "***REMOVED***",
   "cash": "1204.11",
+  "unsettled": "0.00",
   "positions": [
     {"symbol": "AMZN", "quantity": "3.759964", "price": "284.56"},
     {"symbol": "MU",   "quantity": "1.263104", "price": "796.21"}
@@ -171,7 +172,8 @@ same reason all market data goes through `MarketDataProvider`.
 
 `as_of` is load-bearing: a snapshot taken before the last engine fill shows a
 gap that is timing, not error. `price` is optional — without it the price
-columns read `—` and only share counts are compared.
+columns read `—` and only share counts are compared. `cash` is settled buying
+power and `unsettled` is sale proceeds still waiting on T+1; both are optional.
 
 ### Reading it
 
@@ -189,8 +191,20 @@ disagrees, so a scheduled check can act on it.
 next to matching share counts is a stale-bar problem (`trd sync`), not a
 bookkeeping one — which is why the date is printed next to the number.
 
-Broker cash is reported but never diffed: trd tracks positions, not cash, so a
-"delta" there would be invented.
+Broker cash is reported, and diffed only with `--compare-cash`:
+
+```bash
+TRD_HOME=~/.trd-live trd engine reconcile broker.json --compare-cash
+```
+
+That compares the snapshot's `cash` (and `unsettled`, when present) with the
+engine's T+1 settled-cash ledger (`trd engine cash`) and reports a **CASH
+MISMATCH** — exit non-zero — beyond $0.05. It is opt-in because the broker
+account usually holds more than the engine's capital: the account funding the
+$100 live engine was given $300, and that surplus is not a mismatch. Pass the
+flag only when the account's cash is the engine's alone. Compare after the
+outbox is drained: the ledger reserves every open buy intent's notional, and
+the broker only reserves what has been placed.
 
 ## Ingesting fills
 
@@ -249,12 +263,26 @@ Follow these steps exactly, in order.
    TRD_HOME=~/.trd-live trd engine outbox --json
    ```
 
+   **Check `halted` first.** `"halted": true` means the kill switch is on (`trd
+   engine halt`, or the engine's own loss stop): `orders` is empty and
+   `halt_reason` says why. Place nothing, show the user the reason, and stop.
+   Never work around a halt by placing from `intents` or `withheld`.
+
    `orders` is every PENDING intent still actionable, oldest first. Each carries
    `intent_id`, `ref_id`, `symbol`, `side`, `quantity` (a 6dp string), `type`
    (`market`), `time_in_force` (`gfd`) and `market_hours` (`regular_hours`) — the
    order parameters, unchanged — plus `ref_price`, `notional`, `reason`,
    `created_at` and `expires_at` for the person approving it. An empty `orders`
    means there is nothing to do: stop.
+
+   `withheld` lists pending buys trd will **not** hand over, each with a
+   `reason`: one that breaks a hard cap as it stands now (`trd engine guard` —
+   caps can be lowered after an intent was written), or one sized off a quote
+   more than 30 minutes old (`"stale": true`). **Never place anything from
+   `withheld`.** Tell the user what was held back and why; a stale buy lapses at
+   16:00 on its own. `--include-stale` moves stale buys back into `orders`
+   (flagged in their `note`) for a person who has looked at them — not for an
+   unattended session.
 
 2. **Review each spec.** Call `review_equity_order` with the same parameters. If
    `order_checks` is non-empty, **stop and show the user**. Do not place it, do not
@@ -327,10 +355,36 @@ seconds. Never re-place an order because an ack failed; the ack is what to retry
 | `fills --notify` books a fill | channel (`TELEGRAM_CHAT_ID`) |
 | `fills --notify` finds something rejected, expired or conflicting | alert chat |
 
+| a scan or fill ingest trips the loss stop (engine halts itself) | alert chat |
+
 The alert chat is `TRD_LIVE_ALERT_CHAT_ID`; unset, the first id in
-`TRD_BOT_ALLOWED_USER_IDS` (a private chat with the bot has the user's own id);
-unset too, `TELEGRAM_CHAT_ID` with a warning. Same bot token throughout. Live
-messages are labelled `💵 live` unless `TRD_ENGINE_LABEL` names the engine.
+`TRD_BOT_ALLOWED_USER_IDS` (a private chat with the bot has the user's own id).
+With neither set, a live alert is **refused** with an error, never posted to the
+public channel (`TELEGRAM_CHAT_ID`): a call to action on real money belongs in a
+private chat. Fill reports still go to the channel. Same bot token throughout.
+Live messages are labelled `💵 live` unless `TRD_ENGINE_LABEL` names the engine.
+
+## Guardrails before approvals go off (SB-1377)
+
+Trade approvals are the person between the engine and the market. Before they
+are switched off, trd enforces its own limits, independent of the strategy
+config:
+
+- **Kill switch** — `trd engine halt [--reason]` / `trd engine resume`. Halted, a
+  scan writes no buys (exits are still recorded) and the outbox emits nothing.
+- **Hard caps** — `trd engine guard [--max-order D] [--max-daily D]
+  [--max-positions N] [--max-loss D]`. Defaults at `init --live`: max-order =
+  size x 1.25, max-daily = capital, max-positions = `--max`, max-loss = 20% of
+  capital. Checked at the scan and again at the outbox; buys only.
+- **Loss stop** — realized + unrealized at or below -max-loss halts the engine
+  itself, from a scan or a fill ingest, with an alert.
+- **Drift alarms** — stale specs withheld, stuck intents counted in `engine
+  status` and alerted by `trd engine watchdog`, broker cash vs the ledger under
+  `reconcile --compare-cash`.
+
+**Go-live criterion.** Approvals stay ON until N live trades match the swing20
+paper copy within tolerance and every guard has fired in a test (N decided at
+review). The daily report's `vs swing20` line is where the match is read.
 
 [SB-500]: https://linear.app/silverbeer/issue/SB-500
 [SB-515]: https://linear.app/silverbeer/issue/SB-515

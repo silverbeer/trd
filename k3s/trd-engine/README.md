@@ -227,7 +227,9 @@ channel. Same bot token; the chat is resolved in this order:
 1. `TRD_LIVE_ALERT_CHAT_ID`, if set;
 2. else the first id in `TRD_BOT_ALLOWED_USER_IDS` — a private chat with the bot
    has your own user id, so the bot's allowlist already names it;
-3. else `TELEGRAM_CHAT_ID` (the channel), with a warning on every send.
+3. else **nothing is sent** and the command prints an error (SB-1377). A call to
+   action on a real-money order is never posted to the public channel; set one
+   of the two variables above.
 
 ```bash
 kubectl patch secret trd-engine-telegram -n trd \
@@ -296,6 +298,17 @@ It reads only the `status.json` each scan publishes, never a database, so it can
 for the writer lock. It alerts when the market is open and no scan has landed for fifteen
 minutes, repeats at most hourly, and says when scanning resumes. Out of hours it says
 nothing, because silence is then correct.
+
+It also reads two live-engine alarms from the same file (SB-1377), with the same repeat and
+recovery rules: `stuck_intents` > 0 (an order the broker held past its session, or an
+approval past its 16:00 expiry) and a halt thrown by the engine's own loss stop
+(`halted_by: max_loss`). A halt someone threw by hand is not an alarm. Those alerts lead
+with "🟠 trd live engine needs a person" rather than "not scanning", and exit non-zero like
+any other failure. Add the live home to `--engines` for it to be watched:
+
+```bash
+trd engine watchdog --engines "swing=$HOME/.trd-engine,day=$HOME/.trd-day,live=$HOME/.trd-live"
+```
 
 **It must not be deployed into the cluster it watches.** That is the whole point.
 

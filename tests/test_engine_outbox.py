@@ -474,7 +474,9 @@ def test_alert_chat_fallback_order():
     base = {"TELEGRAM_BOT_TOKEN": "tok", "TELEGRAM_CHAT_ID": "-100"}
 
     def chat(env: dict[str, str]) -> str | None:
-        notifier = alert_notifier_from_env(env, warn=warnings.append)
+        # The channel fallback is opt-in since SB-1377 (a live call to action is
+        # refused rather than posted publicly); this pins the order when it is on.
+        notifier = alert_notifier_from_env(env, warn=warnings.append, channel_fallback=True)
         return notifier.chat_id if notifier else None
 
     allowed = {**base, "TRD_BOT_ALLOWED_USER_IDS": "111, 222"}

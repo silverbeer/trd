@@ -215,7 +215,7 @@ def test_the_backup_version_refuses_to_be_read_by_older_code() -> None:
     silently, losing every dividend rather than refusing."""
     from trd.services.backup import BACKUP_VERSION, SUPPORTED_VERSIONS
 
-    assert BACKUP_VERSION == 6  # v6 added live-engine order intents (SB-1375)
+    assert BACKUP_VERSION == 7  # v7 added the live engine guard (SB-1377)
     assert 4 in SUPPORTED_VERSIONS and 5 in SUPPORTED_VERSIONS  # older files still read
 
 

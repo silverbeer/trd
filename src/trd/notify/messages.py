@@ -36,7 +36,7 @@ from trd.models import (
     StrategyStat,
 )
 from trd.notify.telegram import LIVE_LABEL
-from trd.services.daily_report import DailyReport, EngineDay, ExitEvent
+from trd.services.daily_report import DailyReport, EngineDay, ExitEvent, TwinDivergence
 from trd.services.engine import ScanFill, ScanResult
 from trd.services.review import EnginePack, ReviewResult
 
@@ -350,6 +350,19 @@ def fill_alert_message(result: FillIngestResult, label: str | None = None) -> st
     )
 
 
+def halt_message(reason: str, label: str | None = None) -> str:
+    """The engine stopped itself. Nobody chose this, so it is the one message
+    that must reach a person the moment it happens."""
+    return "\n".join(
+        [
+            f"{_live_head(label)} HALTED — the loss stop tripped",
+            reason,
+            "No buy intents and an empty outbox until 'trd engine resume'. Exits are "
+            "still decided and recorded, but nothing is placed while halted.",
+        ]
+    )
+
+
 def scan_messages(result: ScanResult, label: str | None = None) -> list[str]:
     """Fills, for the channel. Closes first — an exit that freed capital explains
     the entry that follows."""
@@ -430,7 +443,10 @@ def _pct(value: Decimal | None) -> str:
 
 
 def _money_section(
-    report: DailyReport, live: list[EngineDay], total_label: str | None
+    report: DailyReport,
+    live: list[EngineDay],
+    total_label: str | None,
+    paper_only: bool = False,
 ) -> list[str]:
     """The headline a person actually asked for: I put in X, it is worth Y.
 
@@ -460,11 +476,75 @@ def _money_section(
 
     label = max(len(k) for k, _, _ in rows)
     value = max(len(v) for _, v, _ in rows)
-    lines = ["MONEY — what went in, what it is worth"]
+    # "paper" only when a live engine shares the message: alone, every engine is
+    # paper and the word would be noise; beside real money it is the point.
+    head = "MONEY (paper)" if paper_only else "MONEY"
+    lines: list[str] = [f"{head} — what went in, what it is worth"]
     for key, val, note in rows:
         line = f"  {key.ljust(label)}  {val.rjust(value)}"
         lines.append(f"{line}  {note}" if note else line)
 
+    return lines
+
+
+def _aligned(rows: list[tuple[str, str, str]]) -> list[str]:
+    label = max(len(k) for k, _, _ in rows)
+    value = max(len(v) for _, v, _ in rows)
+    out = []
+    for key, val, note in rows:
+        line = f"  {key.ljust(label)}  {val.rjust(value)}"
+        out.append(f"{line}  {note}" if note else line)
+    return out
+
+
+def _live_section(
+    engine: EngineDay, divergence: list[TwinDivergence], window_days: int
+) -> list[str]:
+    """A live engine's own block, above everything paper.
+
+    Real money is never summed with paper, so it is never in MONEY or a combined
+    row — it is here, with what only a live engine has: the cash the broker will
+    let it spend (settled vs waiting on T+1), the orders still in flight, and
+    whether the kill switch is on.
+    """
+    rows: list[tuple[str, str, str]] = [
+        ("capital", _money(engine.capital), "real money this engine trades"),
+        ("worth now", _money(engine.live_worth), ""),
+        ("return", _signed(engine.net), _pct(engine.live_return_pct)),
+        ("  cash booked", _signed(engine.realized_all), "out of trades that are done"),
+        ("  still open", _signed(engine.unrealized), "not sold yet"),
+        (
+            "cash",
+            f"{_money(engine.cash_settled)} settled",
+            f"{_money(engine.cash_unsettled)} unsettled (T+1)",
+        ),
+        (
+            "orders",
+            f"{engine.open_intents} open",
+            f"{engine.awaiting_approval} awaiting approval",
+        ),
+        (
+            ("state", "HALTED", engine.halt_reason or "")
+            if engine.halted
+            else ("state", "trading", "kill switch off")
+        ),
+    ]
+    lines = [f"💵 LIVE (real money) — {engine.engine}", *_aligned(rows)]
+    for d in divergence:
+        if d.live != engine.engine:
+            continue
+        line = (
+            f"  vs {d.twin}: closed today {d.live_closed_today} live / "
+            f"{d.twin_closed_today} paper · "
+        )
+        if d.shared_entries and d.avg_entry_gap_pct is not None:
+            line += (
+                f"entry {float(d.avg_entry_gap_pct):+.2f}% vs paper fill, avg of "
+                f"n={d.shared_entries} shared buy(s) ({window_days}d)"
+            )
+        else:
+            line += f"no shared buys in {window_days}d (n=0)"
+        lines.append(line)
     return lines
 
 
@@ -510,8 +590,9 @@ def daily_report_message(report: DailyReport) -> str:
     engines = report.engines
     width = _pad(engines)
     # The combined row's name. "both" is only true of two; a third engine
-    # (swing20) made it a word that miscounted the book it summed.
-    total_label = _total_label(len(engines))
+    # (swing20) made it a word that miscounted the book it summed. Counted over
+    # paper engines: a live engine is never in a combined row.
+    total_label = _total_label(len(report.paper))
 
     def row(name: str, body: str) -> str:
         return f"{name.ljust(width)}  {body}"
@@ -533,7 +614,12 @@ def daily_report_message(report: DailyReport) -> str:
     if not live:
         return "\n".join(lines)
 
-    lines += ["", *_money_section(report, live, total_label)]
+    # Real money first, in its own block, and never in a total below it.
+    for engine in report.live:
+        lines += ["", *_live_section(engine, report.divergence, report.window_days)]
+    paper = [e for e in live if not e.is_live]
+    if paper:
+        lines += ["", *_money_section(report, paper, total_label, paper_only=bool(report.live))]
     # Where the per-engine breakdown goes if the screen can afford it. Recorded
     # now and spliced last, because it is the lowest-priority section on the
     # message and its cost cannot be known until everything else is built.
@@ -599,7 +685,7 @@ def daily_report_message(report: DailyReport) -> str:
         lines[insert:insert] = bad + trades
     # Last, and at an index recorded before the splice above — which lands
     # further down the list, so this one is still where it was.
-    legs = _money_legs(live, budget=MAX_LINES - len(lines))
+    legs = _money_legs(paper, budget=MAX_LINES - len(lines))
     lines[legs_at:legs_at] = legs
     return "\n".join(lines)
 

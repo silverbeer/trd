@@ -166,7 +166,8 @@ trd engine fills SNAPSHOT.json [--notify] [--json]
                                       # --notify: each booked fill to the channel ("[💵 live] filled
                                       # BUY X q @ p (scan saw r, ±s%)", realized P&L + R on a sell);
                                       # rejected / expired / conflicts to the live ALERT chat
-trd engine outbox [--json]            # a LIVE engine's PENDING intents as order specs an agent
+trd engine outbox [--include-stale] [--json]
+                                      # a LIVE engine's PENDING intents as order specs an agent
                                       # passes straight to place_equity_order: intent_id, ref_id,
                                       # symbol, side, quantity (6dp string, rounded down), type
                                       # market, time_in_force gfd, market_hours regular_hours, plus
@@ -176,6 +177,15 @@ trd engine outbox [--json]            # a LIVE engine's PENDING intents as order
                                       # 15:45 ET = "late": true + a note: minutes left to approve.
                                       # Refused on paper. Runbook: docs/robinhood-mcp.md
                                       # "Draining the outbox"
+                                      # GUARDRAILS (SB-1377), applied again here against the caps
+                                      # as they stand NOW: halted = "halted": true, halt_reason,
+                                      # orders EMPTY (sells too). A buy that breaks a hard cap, or
+                                      # one older than STALE_INTENT_MINUTES (30) — "stale — sized
+                                      # off a quote from HH:MM" — goes to "withheld" with its
+                                      # reason, never "orders". --include-stale lists stale buys
+                                      # in orders (flagged in note, still capped). Sells are never
+                                      # withheld by a cap or as stale: an exit nobody places sits
+                                      # unmanaged until 16:00, since nothing re-plans it
 trd engine outbox ack INTENT (--approval-id X | --broker-order-id Y | --error MSG) [--notify] [--json]
                                       # the agent's write-back after placing; INTENT = id or ref_id.
                                       # approval: pending → awaiting_approval; order: pending/
@@ -186,8 +196,31 @@ trd engine outbox ack INTENT (--approval-id X | --broker-order-id Y | --error MS
                                       # the intent's. Same transition helpers as 'engine fills'.
                                       # --notify with --approval-id: "approve … in the Robinhood
                                       # app" to the ALERT chat = TRD_LIVE_ALERT_CHAT_ID, else first
-                                      # TRD_BOT_ALLOWED_USER_IDS id, else TELEGRAM_CHAT_ID (warned).
+                                      # TRD_BOT_ALLOWED_USER_IDS id, else REFUSED with an error —
+                                      # a call to action on real money never falls back to the
+                                      # public channel (SB-1377). Fill reports still go there.
                                       # A live scan's intents go to that chat too, not the channel
+trd engine halt [--reason TEXT] [--json]
+trd engine resume [--json]            # a LIVE engine's kill switch. Halted: the scan writes no buy
+                                      # intents (sells still recorded, so the book shows what it
+                                      # wants; signals still logged) and the outbox emits nothing.
+                                      # Stored in engine_guard (migration 028), keyed by account,
+                                      # so it survives 'engine cash --set', a re-init and
+                                      # backup/restore (v7). Paper refused. 'trd learn kill-switch'
+trd engine guard [--max-order D] [--max-daily D] [--max-positions N] [--max-loss D] [--json]
+                                      # a LIVE engine's hard caps, independent of the strategy
+                                      # config; no flags = show. Defaults at init --live (or, for a
+                                      # live engine with no stored row, derived on read):
+                                      # max-order = size x 1.25, max-daily = capital, max-positions
+                                      # = --max, max-loss = 20% of capital. Enforced twice: the
+                                      # scan writes no intent that breaks one (why in skipped), the
+                                      # outbox withholds a pending one that breaks one now. Buys
+                                      # only. max-daily = notional of today's buys not rejected/
+                                      # cancelled/expired (filled at the fill price). Loss stop:
+                                      # realized + unrealized <= -max-loss AUTO-HALTS (halted_by
+                                      # max_loss), checked on every live scan and fill ingest;
+                                      # --notify alerts the ALERT chat once. A cap cannot be set to
+                                      # 0 (off) — set it as high as you mean it
 trd engine positions [--all]          # open trades: entry, stop (↑ = trailing in force), risk, target, R
                                       # risk = (mark − stop in force) × remaining qty, floored at 0 —
                                       # what this trade loses from here, not what it committed
@@ -251,6 +284,10 @@ trd engine status [--json]            # what this engine is + whether it's healt
                                       # cannot fire reads as a quiet market everywhere else.
                                       # pullback sat silent 45 sessions on the day engine
                                       # (SB-1341). 'silent_strategies' in --json
+                                      # live: HALTED panel at the top when the kill switch is on;
+                                      # halted / halt_reason / halted_at / halted_by, guard (caps),
+                                      # awaiting_approval and stuck_intents in --json — published
+                                      # in status.json, which is what the watchdog reads
 trd engine outcomes [--backfill] [--recompute] [--trades] [--json]
                                       # did we enter early, did we exit early, and what did the
                                       # signals we PASSED OVER do next. MAE (heat taken), MFE
@@ -463,6 +500,16 @@ trd engine daily-report [--json] [--date ISO] [--engines swing=/a,day=/b] [--win
                                       # --engines defaults to TRD_BOT_ENGINES, the same variable
                                       # the bot uses, so chat and the report cannot name engines
                                       # differently. 'trd learn daily-report' defines every line.
+                                      # REAL MONEY IS NEVER SUMMED WITH PAPER (SB-1377): a live
+                                      # engine gets its own "💵 LIVE (real money)" block FIRST —
+                                      # capital, worth now, return $/%, settled vs unsettled cash,
+                                      # open intents / awaiting approval, halted — and is excluded
+                                      # from MONEY (headed "MONEY (paper)" then) and every both/all
+                                      # row; it keeps its own per-engine rows. With the paper twin
+                                      # (TRD_LIVE_TWIN, default swing20) in the report: one line,
+                                      # trades closed today live vs twin + avg entry gap (live fill
+                                      # vs twin fill, %) on names both bought the same session in
+                                      # the window, with n. No live engine = byte-identical message
                                       # Every term used carries its definition in the message: the
                                       # report is read by someone learning the vocabulary, so R,
                                       # expectancy and 'at risk' are glossed where they appear
@@ -496,6 +543,10 @@ trd engine watchdog [--engines ...] [--max-age 15] [--repeat 60] [--notify] [--j
                                       # hours is correct and never reported; an unchanged alert
                                       # repeats at most hourly; recovery is announced only to
                                       # whoever heard the alarm.
+                                      # Live engines also alarm (same file, same dedupe) on
+                                      # stuck_intents > 0 — SUBMITTED past its session, or an
+                                      # approval past 16:00 unswept — and on a loss-stop halt
+                                      # (halted_by max_loss; a hand halt is not an alarm)
                                       # Install: deploy/io.silverbeer.trd.watchdog.plist (every
                                       # 5 min). It must NOT live in k3s: on 2026-09-09 and
                                       # 2026-09-11 the cluster's host channel died, k3s stayed
@@ -513,7 +564,7 @@ trd bot serve [--passes N]            # Telegram command bot: /add SYM [engines]
                                       # one-way. EXACTLY ONE process per bot token (Telegram 409s
                                       # a second). No order placement by design
 trd bot check                         # validate the bot's config without taking the poll slot
-trd engine reconcile broker.json [--account NAME]
+trd engine reconcile broker.json [--account NAME] [--compare-cash]
                                       # diff a broker snapshot against what trd believes it holds:
                                       # per symbol ok / QUANTITY / MISSING AT BROKER / UNTRACKED,
                                       # plus how far trd's stored close sits from the broker's mark
@@ -521,6 +572,11 @@ trd engine reconcile broker.json [--account NAME]
                                       # Exits non-zero when they disagree. No network, no credentials:
                                       # the brokerage read is an authenticated MCP session that writes
                                       # the snapshot ([docs/robinhood-mcp.md](docs/robinhood-mcp.md))
+                                      # --compare-cash: snapshot "cash" (settled) and optional
+                                      # "unsettled" vs the engine's T+1 ledger; beyond CASH_TOLERANCE
+                                      # ($0.05) = CASH MISMATCH, exit 1. OPT-IN because the broker
+                                      # account usually holds more than the engine's capital ($300
+                                      # funded for a $100 engine) — only for dedicated cash
 ```
 
 ## Deployment

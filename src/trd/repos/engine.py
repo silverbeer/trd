@@ -9,6 +9,7 @@ from trd.models import (
     EXPIRABLE_INTENT_STATUSES,
     OPEN_INTENT_STATUSES,
     EngineConfig,
+    EngineGuard,
     EngineMode,
     EnginePosition,
     EngineRun,
@@ -677,6 +678,20 @@ class OrderIntentRepo:
             self.update(intent.id, status=IntentStatus.EXPIRED, resolved_at=resolved_at)
         return stale
 
+    def expire_pending_buys_before(
+        self, account_id: int, cutoff: datetime, resolved_at: datetime
+    ) -> list[tuple[OrderIntent, Instrument]]:
+        """Expire unplaced BUY intents written before `cutoff` — sized off a quote
+        too old to trust. Only PENDING: an approval or an order already exists for
+        anything further along, and only the broker may resolve that."""
+        stale = self._list(
+            "WHERE o.account_id = ? AND o.status = ? AND o.side = ? AND o.created_at < ?",
+            [account_id, IntentStatus.PENDING.value, Side.BUY.value, cutoff],
+        )
+        for intent, _ in stale:
+            self.update(intent.id, status=IntentStatus.EXPIRED, resolved_at=resolved_at)
+        return stale
+
     def count_buys_on(self, account_id: int, session: date) -> int:
         """Buy intents written during one session that did, or still may, become a
         position. Rejected, cancelled and expired ones bought nothing and do not
@@ -692,3 +707,94 @@ class OrderIntentRepo:
             [account_id, Side.BUY.value, session, *(s.value for s in live)],
         ).fetchone()
         return int(row[0]) if row else 0
+
+    def buy_notional_on(self, account_id: int, session: date) -> Decimal:
+        """Dollars of buying written during one session that did, or still may,
+        become a position — the hard cap's daily total. A filled buy counts what
+        the broker actually charged; an open one what it was sized at. Rejected,
+        cancelled and expired ones bought nothing."""
+        live = (*OPEN_INTENT_STATUSES, IntentStatus.FILLED)
+        marks = ", ".join("?" for _ in live)
+        row = self.conn.execute(
+            f"""
+            SELECT coalesce(sum(CASE
+                WHEN status = ? AND fill_price IS NOT NULL AND filled_quantity IS NOT NULL
+                    THEN fill_price * filled_quantity
+                ELSE notional
+            END), 0)
+            FROM order_intent
+            WHERE account_id = ? AND side = ? AND CAST(created_at AS DATE) = ?
+              AND status IN ({marks})
+            """,
+            [
+                IntentStatus.FILLED.value,
+                account_id,
+                Side.BUY.value,
+                session,
+                *(s.value for s in live),
+            ],
+        ).fetchone()
+        return Decimal(row[0]) if row and row[0] is not None else Decimal(0)
+
+
+_GUARD_COLS = (
+    "account_id, halted, halt_reason, halted_at, halted_by, max_order, max_daily, "
+    "max_positions, max_loss"
+)
+
+
+def _row_to_guard(row: tuple) -> EngineGuard:
+    names = _GUARD_COLS.split(", ")
+    return EngineGuard.model_validate({**dict(zip(names, row, strict=True)), "stored": True})
+
+
+class EngineGuardRepo:
+    """A live engine's kill switch and hard caps, one row per account (see
+    migration 028 for why not columns on engine_config)."""
+
+    def __init__(self, conn: duckdb.DuckDBPyConnection) -> None:
+        self.conn = conn
+
+    def get(self, account_id: int) -> EngineGuard | None:
+        row = self.conn.execute(
+            f"SELECT {_GUARD_COLS} FROM engine_guard WHERE account_id = ?", [account_id]
+        ).fetchone()
+        return _row_to_guard(row) if row else None
+
+    def save(self, guard: EngineGuard, at: datetime) -> EngineGuard:
+        """Write the whole row. One path for halt, resume and every cap, so no
+        caller can update half of it."""
+        values = [
+            guard.halted,
+            guard.halt_reason,
+            guard.halted_at,
+            guard.halted_by.value if guard.halted_by is not None else None,
+            guard.max_order,
+            guard.max_daily,
+            guard.max_positions,
+            guard.max_loss,
+            at,
+        ]
+        if self.get(guard.account_id) is None:
+            self.conn.execute(
+                """
+                INSERT INTO engine_guard
+                    (halted, halt_reason, halted_at, halted_by, max_order, max_daily,
+                     max_positions, max_loss, updated_at, account_id)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                [*values, guard.account_id],
+            )
+        else:
+            self.conn.execute(
+                """
+                UPDATE engine_guard
+                SET halted = ?, halt_reason = ?, halted_at = ?, halted_by = ?, max_order = ?,
+                    max_daily = ?, max_positions = ?, max_loss = ?, updated_at = ?
+                WHERE account_id = ?
+                """,
+                [*values, guard.account_id],
+            )
+        found = self.get(guard.account_id)
+        assert found is not None
+        return found

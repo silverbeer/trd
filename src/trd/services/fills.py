@@ -44,6 +44,7 @@ from trd.models import (
 from trd.repos import AccountRepo, TransactionRepo
 from trd.repos.engine import EngineConfigRepo, EnginePositionRepo, OrderIntentRepo
 from trd.services.engine import entry_levels
+from trd.services.guard import GuardService
 
 # Order states the broker will not move again with nothing filled.
 _DEAD_STATES = {BrokerOrderState.REJECTED, BrokerOrderState.FAILED}
@@ -135,6 +136,9 @@ class FillIngestService:
             self._apply_order(config, account, current, instruments[intent.id], order, now, result)
 
         result.expired = self._expire(account, now)
+        # The loss stop, now that the book holds what the broker says it does. A
+        # fill at a worse price than the scan saw is exactly what can tip it.
+        result.auto_halt = GuardService(self.conn).check_loss(config, account, now)
         return result
 
     def _current(self, intent_id: int) -> OrderIntent:

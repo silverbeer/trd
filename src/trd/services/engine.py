@@ -40,7 +40,7 @@ from trd.engine.bars import (
 from trd.engine.base import StrategyContext, indicator, last
 from trd.engine.exits import exit_quantity
 from trd.engine.regime import REGIME_SYMBOLS
-from trd.engine.settlement import CashLedger, ledger
+from trd.engine.settlement import CashLedger, ledger, unsettled_funding
 from trd.errors import ProviderError, TrdError
 from trd.learn import GLOSSARY
 from trd.models import (
@@ -49,6 +49,7 @@ from trd.models import (
     Bar,
     DailyBar,
     EngineConfig,
+    EngineGuard,
     EngineMode,
     EnginePosition,
     EngineRun,
@@ -66,6 +67,7 @@ from trd.models import (
     TradeExplanation,
     intent_expiry_cutoff,
 )
+from trd.models.engine import STALE_INTENT_MINUTES
 from trd.providers.base import MarketDataProvider
 from trd.repos import (
     AccountRepo,
@@ -82,6 +84,7 @@ from trd.repos.engine import (
     EngineSignalRepo,
     OrderIntentRepo,
 )
+from trd.services.guard import CapTally, GuardService, stuck_intents
 from trd.timeframes import SESSION_OPEN_MINUTE
 
 DEFAULT_ENGINE_ACCOUNT = "engine-sim"
@@ -222,10 +225,21 @@ class ScanResult(BaseModel):
     # `closed` arrives here instead, as the orders it decided to place.
     mode: EngineMode = EngineMode.PAPER
     intents: list[OrderIntentRow] = []
+    # The kill switch as this pass found it (live only). `auto_halt` is set only
+    # on the pass whose loss check tripped it, so a notifier alerts exactly once.
+    halted: bool = False
+    halt_reason: str | None = None
+    auto_halt: str | None = None
 
     @property
     def quiet(self) -> bool:
-        return not self.signals and not self.opened and not self.closed and not self.intents
+        return (
+            not self.signals
+            and not self.opened
+            and not self.closed
+            and not self.intents
+            and not self.auto_halt
+        )
 
 
 class EntryPlan(BaseModel):
@@ -387,6 +401,7 @@ class EngineService:
         self.signals = EngineSignalRepo(conn)
         self.positions = EnginePositionRepo(conn)
         self.intents = OrderIntentRepo(conn)
+        self.guards = GuardService(conn)
 
     # ---------------------------------------------------------------- setup
 
@@ -493,6 +508,9 @@ class EngineService:
             capital,
             mode,
         )
+        # The hard caps, from the config they guard. Only when none are stored:
+        # a re-init must not quietly release a kill switch or reset a chosen cap.
+        self.guards.seed(config, datetime.now())
         universe = [i.symbol for _, i in self.watchlists.items(board.id)]
         return config, account, universe
 
@@ -614,6 +632,38 @@ class EngineService:
             capital,
             config.mode,
         )
+
+    # ------------------------------------------------------- guardrails (live)
+
+    def guard(self) -> EngineGuard:
+        """The kill switch and hard caps in force. Refused on paper."""
+        return self.guards.live_guard(self.config())
+
+    def set_guard(
+        self,
+        max_order: Decimal | None = None,
+        max_daily: Decimal | None = None,
+        max_positions: int | None = None,
+        max_loss: Decimal | None = None,
+        at: datetime | None = None,
+    ) -> EngineGuard:
+        return self.guards.set_caps(
+            self.config(),
+            at or datetime.now(),
+            max_order=max_order,
+            max_daily=max_daily,
+            max_positions=max_positions,
+            max_loss=max_loss,
+        )
+
+    def halt(self, reason: str | None = None, at: datetime | None = None) -> EngineGuard:
+        """Throw the kill switch: no buy intents from the scan, nothing from the
+        outbox. Sells are still decided and recorded, so the book shows what the
+        engine would do — they are simply not handed to anyone to place."""
+        return self.guards.halt(self.config(), reason, at or datetime.now())
+
+    def resume(self, at: datetime | None = None) -> EngineGuard:
+        return self.guards.resume(self.config(), at or datetime.now())
 
     @staticmethod
     def _verify_rules(config: EngineConfig) -> None:
@@ -836,9 +886,24 @@ class EngineService:
             # approved before the close must stop holding its slot and its cash.
             # Approvals lapse at 16:00 ET the day they are raised (measured).
             lapsed = self.intents.expire_before(account.id, intent_expiry_cutoff(now), now)
+            # A buy the outbox withholds as stale would otherwise hold its name and
+            # its cash until 16:00; expired here, this pass can re-plan it fresh.
+            lapsed += self.intents.expire_pending_buys_before(
+                account.id, now - timedelta(minutes=STALE_INTENT_MINUTES), now
+            )
             if lapsed:
                 names = ", ".join(f"{i.side.value} {inst.symbol}" for i, inst in lapsed)
                 result.skipped.append(f"expired {len(lapsed)} stale intent(s): {names}")
+            # The loss stop, before anything is decided: a book already past its
+            # limit must not be added to on this pass. Marked at this pass's quotes.
+            if paper:
+                tripped = self.guards.check_loss(config, account, now, quotes)
+                if tripped is not None:
+                    result.auto_halt = tripped
+        guard = self.guards.guard(config)
+        if guard is not None and guard.halted:
+            result.halted = True
+            result.halt_reason = guard.halt_reason
 
         # Orders a live engine already has in flight. An open sell means that
         # position's exit is decided and must not be asked for twice; an open buy
@@ -879,6 +944,7 @@ class EngineService:
                 just_closed,
                 run.id,
                 result,
+                guard,
             )
         else:
             result.capacity = max(0, config.max_positions - len(held))
@@ -974,6 +1040,9 @@ class EngineService:
                 trigger_price=decision.level,
             )
             if paper and config.is_live:
+                warning = self._good_faith_warning(config, account, position, instrument, today)
+                if warning is not None:
+                    result.skipped.append(warning)
                 # The exit is decided, not done: the position stays open and keeps
                 # its slot until the broker's fill says it sold. Sized exactly as
                 # paper would sell, so a partial (scale_out) asks for the same piece.
@@ -1019,6 +1088,46 @@ class EngineService:
             result.closed.append(fill)
         return closed_ids
 
+    def _good_faith_warning(
+        self,
+        config: EngineConfig,
+        account: Account,
+        position: EnginePosition,
+        instrument: Instrument,
+        today: date,
+    ) -> str | None:
+        """A warning when selling this position today would be a good-faith
+        violation: its buy spent unsettled cash that has not settled by today.
+
+        Should never fire. Every live entry needs settled cash (the ledger refuses
+        anything else), so no position the engine bought was paid for with
+        unsettled proceeds. It exists because "should never" is a claim about the
+        code, and a GFV is a claim the broker makes about the account — the sell
+        is still recorded, the warning says it needs a person.
+        """
+        if config.capital is None:
+            return None
+        txns = self.txns.list_chronological(account.id)
+        prior = []
+        for txn in txns:
+            if (
+                txn.side == Side.BUY
+                and txn.instrument_id == instrument.id
+                and txn.executed_at == position.opened_at
+            ):
+                cost = txn.quantity * txn.price + txn.fees
+                settles = unsettled_funding(config.capital, prior, txn.executed_at.date(), cost)
+                if settles is None or settles <= today:
+                    return None
+                return (
+                    f"{instrument.symbol}: GOOD-FAITH VIOLATION RISK — its buy on "
+                    f"{txn.executed_at:%Y-%m-%d} spent unsettled cash that settles {settles}; "
+                    "selling before then sells shares not yet paid for. Sell intent recorded "
+                    "anyway — check before placing it"
+                )
+            prior.append((txn.executed_at.date(), txn.side, txn.quantity, txn.price, txn.fees))
+        return None
+
     def _run_entries(
         self,
         config: EngineConfig,
@@ -1032,6 +1141,7 @@ class EngineService:
         just_closed: set[int],
         run_id: int,
         result: ScanResult,
+        guard: EngineGuard | None = None,
     ) -> None:
         # Without this a day-mode engine can enter at 15:50 and be flattened at
         # 15:55 by session_close — the spread paid twice for five minutes of
@@ -1209,9 +1319,25 @@ class EngineService:
                 )
             capacity = min(capacity, remaining)
 
+        # The kill switch. Applied here, after the signals are stored, for the
+        # budget's reason: a halted engine's signals are still real signals, and
+        # a halt that also blanked the signal log would hide what it was refusing.
+        if guard is not None and guard.halted:
+            wanted = len({instrument.id for _, instrument, _, _, _ in candidates})
+            result.skipped.append(
+                f"HALTED — no buy intents ({wanted} name(s) passed over): {guard.halt_reason}"
+            )
+            capacity = 0
+
         result.capacity = max(0, capacity)
         if capacity <= 0 or not paper:
             return
+
+        # The hard caps, counted from what today has already bought and what the
+        # book already holds. Live only — paper has nothing at a broker to cap.
+        tally = None
+        if guard is not None:
+            tally = CapTally(guard, self.intents.buy_notional_on(account.id, today), len(held))
 
         # Settled cash, when the engine trades a cash account. Built here, after
         # the exits have written their sells, so this pass's proceeds land in the
@@ -1239,7 +1365,16 @@ class EngineService:
                 continue
             if config.is_live:
                 row = self._write_buy_intent(
-                    config, account, instrument, bars, signal_id, scan_signal, now, result, cash
+                    config,
+                    account,
+                    instrument,
+                    bars,
+                    signal_id,
+                    scan_signal,
+                    now,
+                    result,
+                    cash,
+                    tally,
                 )
                 if row is None:
                     continue
@@ -1366,6 +1501,7 @@ class EngineService:
         now: datetime,
         result: ScanResult,
         cash: CashLedger | None,
+        tally: CapTally | None = None,
     ) -> OrderIntentRow | None:
         """A live entry: the order the engine wants, and no position.
 
@@ -1373,10 +1509,21 @@ class EngineService:
         the price actually paid, with the stop re-derived from `atr_at_entry` by
         `stop_distance` — so live R is measured from the real entry, not from the
         price this scan saw.
+
+        Checked against the hard caps after sizing, because only the sized plan
+        knows what the order costs. A refused intent is never written; the signal
+        stays recorded and unacted, like any other entry the engine passed over.
         """
         plan = self._affordable_plan(config, instrument, bars, result, cash)
         if plan is None:
             return None
+        if tally is not None:
+            notional = plan.quantity * bars[-1].close
+            refused = tally.refuse(instrument.symbol, notional)
+            if refused is not None:
+                result.skipped.append(refused)
+                return None
+            tally.take(notional)
         intent = self.intents.insert(
             account_id=account.id,
             instrument_id=instrument.id,
@@ -1610,6 +1757,7 @@ class EngineService:
         cash = self._ledger(config, account, date.today()) if config.capital is not None else None
         nxt = cash.next_settle if cash is not None else None
         in_flight = [intent for intent, _ in self.intents.list_open(account.id)]
+        guard = self.guards.guard(config)
         return EngineStatus(
             build=build_version(),
             db_path=db_path,
@@ -1633,6 +1781,15 @@ class EngineService:
             mode=config.mode,
             open_intents=len(in_flight),
             open_buy_intents=sum(1 for i in in_flight if i.side == Side.BUY),
+            awaiting_approval=sum(
+                1 for i in in_flight if i.status == IntentStatus.AWAITING_APPROVAL
+            ),
+            stuck_intents=stuck_intents(in_flight, datetime.now()),
+            halted=guard.halted if guard is not None else False,
+            halt_reason=guard.halt_reason if guard is not None else None,
+            halted_at=guard.halted_at if guard is not None else None,
+            halted_by=guard.halted_by if guard is not None else None,
+            guard=guard,
             open_positions=len(open_pairs),
             closed_trades=len(closed_pairs),
             committed=committed,
