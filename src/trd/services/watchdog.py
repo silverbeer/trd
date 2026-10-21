@@ -83,12 +83,21 @@ class EnginePulse(BaseModel):
     home: str
     last_scan: datetime | None = None
     age_minutes: int | None = None
-    problem: str | None = None  # None when the engine is fine
+    problem: str | None = None  # None when the engine is scanning
+    # A live engine that is scanning but needs a person: order intents stuck
+    # between trd and the broker, or a halt the engine's own loss stop threw.
+    # Read from the same status.json, so they cost the watchdog nothing new.
+    alarms: list[str] = []
 
     @computed_field  # type: ignore[prop-decorator]
     @property
     def alive(self) -> bool:
         return self.problem is None
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def ok(self) -> bool:
+        return self.alive and not self.alarms
 
 
 class WatchdogResult(BaseModel):
@@ -102,7 +111,13 @@ class WatchdogResult(BaseModel):
     @computed_field  # type: ignore[prop-decorator]
     @property
     def failing(self) -> list[str]:
-        return [e.engine for e in self.engines if not e.alive]
+        return [e.engine for e in self.engines if not e.ok]
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def scanning(self) -> bool:
+        """Every engine has a pulse — whatever its alarms say."""
+        return all(e.alive for e in self.engines)
 
     @computed_field  # type: ignore[prop-decorator]
     @property
@@ -130,6 +145,7 @@ def read_pulse(engine: str, home: Path, now: datetime, max_age: int) -> EnginePu
         pulse.problem = f"{STATUS_FILENAME} could not be read: {exc}"
         return pulse
 
+    pulse.alarms = guard_alarms(payload)
     raw = payload.get("last_scan")
     if not raw:
         pulse.problem = "no scan has ever been recorded"
@@ -154,6 +170,30 @@ def read_pulse(engine: str, home: Path, now: datetime, max_age: int) -> EnginePu
     return pulse
 
 
+def guard_alarms(payload: dict) -> list[str]:
+    """What a live engine's published status says needs a person.
+
+    Stuck intents (`stuck_intents` > 0) and a halt thrown by the loss stop
+    (`halted_by` = max_loss). A halt someone threw by hand is not an alarm — they
+    know. Absent keys read as nothing wrong, which is every paper engine and every
+    status.json written before SB-1377.
+    """
+    alarms: list[str] = []
+    try:
+        stuck = int(payload.get("stuck_intents") or 0)
+    except (TypeError, ValueError):
+        stuck = 0
+    if stuck > 0:
+        alarms.append(
+            f"{stuck} stuck order intent(s) — held at the broker past their session, or "
+            "an approval past its 16:00 expiry. Ingest a fresh snapshot ('trd engine "
+            "fills') and check 'trd engine intents'"
+        )
+    if payload.get("halted") and payload.get("halted_by") == "max_loss":
+        alarms.append(f"HALTED by its loss stop — {payload.get('halt_reason') or 'no reason'}")
+    return alarms
+
+
 def check(
     targets: list[tuple[str, Path]],
     now: datetime | None = None,
@@ -171,27 +211,47 @@ def check(
 
 
 def alert_message(result: WatchdogResult) -> str:
-    """What to say when the engine has stopped. Blunt, and it names the check."""
-    lines = ["🔴 trd engine is not scanning"]
+    """What to say when the engine has stopped. Blunt, and it names the check.
+
+    A live engine's alarms ride the same message, one line each under the
+    engine's pulse. Only alarms, and the heading says a person is needed rather
+    than that scanning stopped — those are different calls to make.
+    """
+    stopped = not result.scanning
+    lines = ["🔴 trd engine is not scanning" if stopped else "🟠 trd live engine needs a person"]
     for pulse in result.engines:
-        mark = "✗" if not pulse.alive else "✓"
+        mark = "✗" if not pulse.ok else "✓"
         detail = pulse.problem or (
             f"last scan {pulse.age_minutes} minutes ago" if pulse.age_minutes is not None else "ok"
         )
         lines.append(f"{mark} {pulse.engine}: {detail}")
-    lines += [
-        "",
-        "The market is open and no scan has landed. Open positions are unmanaged: "
-        "stops are only honoured by a scan.",
-        "Check the cluster first — 'kubectl get nodes'. Twice in September the VM "
-        "was healthy and only the host's channel into it had died, which empties "
-        "the engine homes and every pod then runs against nothing.",
-    ]
+        lines += [f"  ⚠ {alarm}" for alarm in pulse.alarms]
+    if stopped:
+        lines += [
+            "",
+            "The market is open and no scan has landed. Open positions are unmanaged: "
+            "stops are only honoured by a scan.",
+            "Check the cluster first — 'kubectl get nodes'. Twice in September the VM "
+            "was healthy and only the host's channel into it had died, which empties "
+            "the engine homes and every pod then runs against nothing.",
+        ]
+    else:
+        lines += [
+            "",
+            "Scans are landing. A halted engine writes no buys and its outbox emits "
+            "nothing; stuck intents still hold their slots and cash until resolved.",
+        ]
     return "\n".join(lines)
 
 
-def recovery_message(result: WatchdogResult) -> str:
-    lines = ["🟢 trd engine is scanning again"]
+def recovery_message(result: WatchdogResult, kind: str | None = None) -> str:
+    """The all-clear, worded for what the alarm was about."""
+    head = (
+        "🟢 trd live engine alarms cleared"
+        if kind == "guard"
+        else "🟢 trd engine is scanning again"
+    )
+    lines = [head]
     for pulse in result.engines:
         if pulse.age_minutes is not None:
             lines.append(f"✓ {pulse.engine}: last scan {pulse.age_minutes} minutes ago")
@@ -209,6 +269,10 @@ class WatchdogState(BaseModel):
 
     alerting: bool = False
     last_alert_at: datetime | None = None
+    # What the open alert was about: "scan" (no pulse) or "guard" (a live
+    # engine's alarms), so the all-clear names the right thing. None reads as
+    # "scan" — every state file written before SB-1377.
+    kind: str | None = None
 
     @classmethod
     def load(cls, path: Path) -> WatchdogState:
@@ -237,7 +301,9 @@ def decide(
     now = result.at
     if result.healthy:
         if state.alerting:
-            return recovery_message(result), WatchdogState(alerting=False, last_alert_at=now)
+            return recovery_message(result, state.kind), WatchdogState(
+                alerting=False, last_alert_at=now
+            )
         return None, state
     if not result.in_session:
         # Out of hours a stopped engine is not news. It becomes news at 09:35.
@@ -248,7 +314,8 @@ def decide(
         and now - state.last_alert_at < timedelta(minutes=repeat_minutes)
     ):
         return None, state
-    return alert_message(result), WatchdogState(alerting=True, last_alert_at=now)
+    kind = "scan" if not result.scanning else "guard"
+    return alert_message(result), WatchdogState(alerting=True, last_alert_at=now, kind=kind)
 
 
 def session_of(moment: datetime) -> date:

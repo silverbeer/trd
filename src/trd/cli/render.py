@@ -13,6 +13,7 @@ from trd.engine.settlement import CashLedger
 from trd.models import (
     BoardRow,
     EarningsEvent,
+    EngineGuard,
     EngineMode,
     EnginePosition,
     EngineRun,
@@ -20,6 +21,7 @@ from trd.models import (
     ExitCheckRow,
     ExitStatus,
     FillIngestResult,
+    HaltCause,
     Instrument,
     LotPosition,
     OrderIntentRow,
@@ -1193,6 +1195,10 @@ def engine_scan_renderables(result: ScanResult) -> list[RenderableType]:
         f"[bold]engine scan[/bold]  {stamp}  ·  {result.scanned} symbols  ·  {mode}\n"
         f"open {result.open_positions}  ·  room for {result.capacity} more"
     )
+    if result.auto_halt:
+        header += f"\n[bold red]HALTED by the loss stop this pass[/bold red] — {result.auto_halt}"
+    elif result.halted:
+        header += f"\n[bold red]HALTED[/bold red] — {result.halt_reason}"
     out.append(Panel(header, expand=False, border_style="cyan"))
 
     if result.closed:
@@ -1964,6 +1970,21 @@ def engine_status_renderables(status: EngineStatus) -> list[RenderableType]:
                 border_style="red",
             )
         )
+    # The kill switch, as loud as the misconfiguration above and for the same
+    # reason: a halted engine writes no buys, and that reads as a quiet market.
+    if status.halted:
+        who = "its own loss stop" if status.halted_by == HaltCause.MAX_LOSS else "hand"
+        when = f" at {status.halted_at:%Y-%m-%d %H:%M}" if status.halted_at else ""
+        out.append(
+            Panel(
+                f"[bold red]HALTED[/bold red] by {who}{when}\n[red]{status.halt_reason}[/red]\n"
+                "No buy intents, and the outbox emits nothing. 'trd engine resume' to restart.",
+                title="[red]kill switch on[/red]",
+                title_align="left",
+                expand=False,
+                border_style="red",
+            )
+        )
 
     rules = Table(title="Rule set", title_justify="left", show_header=False, box=None)
     rules.add_column(style="dim")
@@ -2003,7 +2024,19 @@ def engine_status_renderables(status: EngineStatus) -> list[RenderableType]:
     # An open intent is a position in all but the fill: it holds a slot and its
     # cash. Shown on a live engine always — zero is an answer there.
     if status.mode == EngineMode.LIVE:
-        book.add_row("open intents", f"{status.open_intents}  ·  'trd engine intents'")
+        book.add_row(
+            "open intents",
+            f"{status.open_intents}  ·  {status.awaiting_approval} awaiting approval  ·  "
+            "'trd engine intents'",
+        )
+        if status.stuck_intents:
+            book.add_row(
+                "[red]stuck[/red]",
+                f"[red]{status.stuck_intents} intent(s) the broker has not resolved in time "
+                "— ingest a fresh snapshot ('trd engine fills')[/red]",
+            )
+        if status.guard is not None:
+            book.add_row("hard caps", guard_caps_line(status.guard))
     # Two different limits, so both are shown when both are on: max_positions caps
     # how many trades are open, the budget caps how many may be opened. A day
     # engine recycles its slots as exits fire, so the book can read "room for 2"
@@ -2108,6 +2141,94 @@ def engine_status_renderables(status: EngineStatus) -> list[RenderableType]:
     return out
 
 
+def guard_caps_line(guard: EngineGuard) -> str:
+    """The four caps on one line, in the order an order meets them."""
+
+    def money(value: Decimal | None) -> str:
+        return fmt_money(value) if value is not None else "off"
+
+    return (
+        f"order {money(guard.max_order)}  ·  day {money(guard.max_daily)}  ·  "
+        f"positions {guard.max_positions if guard.max_positions is not None else 'off'}  ·  "
+        f"loss stop {money(guard.max_loss)}" + ("" if guard.stored else " [dim](defaults)[/dim]")
+    )
+
+
+def engine_guard_renderables(guard: EngineGuard) -> list[RenderableType]:
+    """`trd engine guard` with no flags: what the kill switch and caps are now."""
+    table = Table(title="Guardrails", title_justify="left", show_header=False, box=None)
+    table.add_column(style="dim")
+    table.add_column()
+    if guard.halted:
+        who = "its own loss stop" if guard.halted_by == HaltCause.MAX_LOSS else "hand"
+        table.add_row("kill switch", f"[bold red]HALTED[/bold red] by {who}: {guard.halt_reason}")
+    else:
+        table.add_row("kill switch", "off — trading")
+
+    def money(value: Decimal | None) -> str:
+        return fmt_money(value) if value is not None else "off"
+
+    table.add_row("max order", f"{money(guard.max_order)}  [dim]one buy's notional[/dim]")
+    table.add_row("max daily", f"{money(guard.max_daily)}  [dim]buying per session[/dim]")
+    table.add_row(
+        "max positions",
+        f"{guard.max_positions if guard.max_positions is not None else 'off'}  "
+        "[dim]open positions + open buys[/dim]",
+    )
+    table.add_row(
+        "max loss",
+        f"{money(guard.max_loss)}  [dim]realized + unrealized at which it halts itself[/dim]",
+    )
+    out: list[RenderableType] = [table]
+    if not guard.stored:
+        out.append(
+            Text.from_markup(
+                "[dim]Defaults derived from the config — nothing stored yet. Setting any "
+                "cap stores all four.[/dim]"
+            )
+        )
+    out.append(Text.from_markup("[dim]Caps apply to buys only: an exit is never withheld.[/dim]"))
+    return out
+
+
+def outbox_renderables(outbox: Outbox) -> list[RenderableType]:
+    """The outbox for a person: halted, the orders an agent would place, and what
+    was withheld and why."""
+    if outbox.halted:
+        return [
+            Text.from_markup(
+                f"[bold red]HALTED[/bold red] on [bold]{outbox.account}[/bold] — the outbox "
+                f"emits nothing. {outbox.halt_reason}"
+            )
+        ]
+    out: list[RenderableType] = []
+    if outbox.orders:
+        out.append(outbox_table(outbox))
+    else:
+        out.append(
+            Text.from_markup(
+                f"Outbox empty on [bold]{outbox.account}[/bold]: nothing pending to place."
+            )
+        )
+    if outbox.withheld:
+        table = Table(title="Withheld — not to be placed", title_justify="left")
+        table.add_column("ID", justify="right", style="dim")
+        table.add_column("Side")
+        table.add_column("Symbol", style="bold")
+        table.add_column("Notional", justify="right")
+        table.add_column("Why withheld", style="yellow")
+        for held in outbox.withheld:
+            table.add_row(
+                str(held.order.intent_id),
+                held.order.side.value,
+                held.order.symbol,
+                fmt_money(held.order.notional),
+                held.reason,
+            )
+        out.append(table)
+    return out
+
+
 def _fmt_qty_signed(value: Decimal | None) -> str:
     """A share-count delta at full precision. Money formatting would round a
     0.0004-share break to 0.00 and print it as if the books agreed."""
@@ -2170,13 +2291,28 @@ def reconcile_renderables(result: Reconciliation) -> list[RenderableType]:
         )
     out.append(table)
 
-    if result.broker_cash is not None:
-        # Reported, never diffed: trd has no cash ledger, so a "delta" here would
-        # be invented. Saying so is more useful than a column of dashes.
+    if result.cash is not None:
+        check = result.cash
+        verdict = "[green]ok[/green]" if check.matched else "[red]CASH MISMATCH[/red]"
+        line = (
+            f"cash  settled broker {fmt_money(check.broker_settled)} vs trd "
+            f"{fmt_money(check.trd_settled)}"
+        )
+        if check.broker_unsettled is not None:
+            line += (
+                f"  ·  unsettled broker {fmt_money(check.broker_unsettled)} vs trd "
+                f"{fmt_money(check.trd_unsettled)}"
+            )
+        out.append(
+            Text.from_markup(f"{line}  ·  {verdict} [dim](tolerance {check.tolerance})[/dim]")
+        )
+    elif result.broker_cash is not None:
+        # Reported, not diffed, unless asked: the broker account often holds more
+        # than the engine's capital, and that surplus is not a mismatch.
         out.append(
             Text.from_markup(
-                f"[dim]broker cash {fmt_money(result.broker_cash)} — "
-                "trd tracks positions, not cash, so there is nothing to compare it to[/dim]"
+                f"[dim]broker cash {fmt_money(result.broker_cash)} — not compared; pass "
+                "--compare-cash when this account's cash is the engine's alone[/dim]"
             )
         )
     return out

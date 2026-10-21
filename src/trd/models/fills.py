@@ -249,6 +249,8 @@ class FillIngestResult(BaseModel):
     expired: list[AppliedIntent] = []
     conflicts: list[FillConflict] = []
     unmatched: list[UnmatchedBrokerItem] = []
+    # Set when this ingest tripped the loss stop and halted the engine.
+    auto_halt: str | None = None
 
     @computed_field  # type: ignore[prop-decorator]
     @property

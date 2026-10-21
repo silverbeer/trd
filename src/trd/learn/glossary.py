@@ -742,7 +742,13 @@ _ENTRIES: list[GlossaryEntry] = [
             "engine cash --set), the scan, paper fills and the backtest all build this "
             "ledger and skip the same entries. trd has no holiday calendar, so around a "
             "market holiday its settle date is a day early; the broker's own buying power "
-            "is the authority."
+            "is the authority.\n\n"
+            "The same ledger is what keeps a live engine clear of good-faith violations. "
+            "Every live buy needs settled cash, so no position it holds was paid for with "
+            "proceeds still in flight, and selling one the day it was bought is fine. The "
+            "live exit path checks anyway and records a GOOD-FAITH VIOLATION RISK warning "
+            "if a position's buy ever spent cash that settles after today — it should "
+            "never fire, and it says so loudly if it does."
         ),
         formula=(
             "settle date = next weekday after the trade date\n"
@@ -756,8 +762,56 @@ _ENTRIES: list[GlossaryEntry] = [
             "settled stays $0, $480 unsettled, settles Monday. A signal Friday afternoon is "
             "logged but not taken; Monday the $480 is spendable."
         ),
-        related=["position-sizing", "risk-at-stop", "backtest"],
+        related=["position-sizing", "risk-at-stop", "backtest", "kill-switch"],
         used_in=["trd engine cash", "trd engine status", "trd engine scan", "trd engine backtest"],
+    ),
+    GlossaryEntry(
+        key="kill-switch",
+        term="Kill switch and hard caps (live engine)",
+        category=Category.ENGINE,
+        definition=(
+            "The limits trd enforces on a live engine whatever its strategy config says — "
+            "what has to exist before trade approvals are switched off and no person reads "
+            "an order before it fills.\n\n"
+            "The kill switch (trd engine halt / resume) stops all new buying: a halted scan "
+            "writes no buy intents and the outbox emits nothing at all. Exits are still "
+            "decided and recorded, so the book shows what the engine wants. It survives "
+            "restarts, reconfiguring and a backup/restore.\n\n"
+            "Four hard caps (trd engine guard) bound the buys: the most one order may cost, "
+            "the most the engine may buy in a session, the most positions (and open buys) "
+            "it may hold, and the loss at which it halts itself. Each is checked twice — "
+            "the scan will not write a buy that breaks one, and the outbox withholds a "
+            "pending buy that breaks one now, because a cap can be lowered after an order "
+            "was written. Caps never withhold a sell: an exit that cannot be placed leaves "
+            "a position unmanaged, which is the risk they exist to bound.\n\n"
+            "The loss stop halts the engine when booked plus open P&L reaches -max-loss, "
+            "checked on every live scan and fill ingest, with an alert. Resuming without "
+            "raising the cap just halts it again on the next scan."
+        ),
+        formula=(
+            "defaults at init --live:\n"
+            "  max-order     = position size x 1.25\n"
+            "  max-daily     = capital\n"
+            "  max-positions = --max\n"
+            "  max-loss      = 20% of capital\n"
+            "a buy is refused when  notional > max-order\n"
+            "                   or  bought today + notional > max-daily\n"
+            "                   or  positions + open buys + 1 > max-positions\n"
+            "halt when  realized + unrealized <= -max-loss"
+        ),
+        example=(
+            "$100 live engine, $100 a trade: max-order $125, max-daily $100, max-loss $20. "
+            "Its book falls to -$20.40 on a gap: the next scan halts it, writes no buys, "
+            "and the alert chat hears why."
+        ),
+        related=["order-intent", "settlement", "risk-at-stop"],
+        used_in=[
+            "trd engine halt",
+            "trd engine resume",
+            "trd engine guard",
+            "trd engine outbox",
+            "trd engine status",
+        ],
     ),
     GlossaryEntry(
         key="order-intent",
