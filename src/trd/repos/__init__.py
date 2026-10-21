@@ -5,6 +5,7 @@ from trd.repos.engine import (
     EnginePositionRepo,
     EngineRunRepo,
     EngineSignalRepo,
+    OrderIntentRepo,
 )
 from trd.repos.exit_triggers import ExitTriggerRepo
 from trd.repos.indicator_config import IndicatorConfigRepo
@@ -25,6 +26,7 @@ __all__ = [
     "ExitTriggerRepo",
     "IndicatorConfigRepo",
     "InstrumentRepo",
+    "OrderIntentRepo",
     "PrepSnapshotRepo",
     "PrepSnapshotRow",
     "PriceRepo",
