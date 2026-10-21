@@ -10,12 +10,20 @@ from trd.errors import (
     EnginePositionConflictError,
     InsufficientPositionError,
     NotTradableError,
+    OpenIntentConflictError,
     TrdError,
     UnknownAccountError,
 )
 from trd.models import AccountType, Instrument, LotPosition, Position, Side, Transaction
 from trd.providers.base import MarketDataProvider
-from trd.repos import AccountRepo, EnginePositionRepo, InstrumentRepo, PriceRepo, TransactionRepo
+from trd.repos import (
+    AccountRepo,
+    EnginePositionRepo,
+    InstrumentRepo,
+    OrderIntentRepo,
+    PriceRepo,
+    TransactionRepo,
+)
 from trd.services.fifo import fifo_position, open_lots
 
 CSV_COLUMNS = ["date", "account", "symbol", "side", "quantity", "price", "fees", "note"]
@@ -30,6 +38,7 @@ class PortfolioService:
         self.txns = TransactionRepo(conn)
         self.prices = PriceRepo(conn)
         self.engine_positions = EnginePositionRepo(conn)
+        self.intents = OrderIntentRepo(conn)
 
     def ensure_instrument(self, symbol: str) -> Instrument:
         """Find a tracked instrument, or resolve it via the provider and track it."""
@@ -72,6 +81,10 @@ class PortfolioService:
         # not this method, so its own entries and exits still work.
         if self.engine_positions.has_open(account.id, instrument.id):
             raise EnginePositionConflictError(instrument.symbol, account.name)
+        # Same desync one step earlier: a live engine's buy or sell is in flight,
+        # and its fill will be ingested on top of whatever is recorded here.
+        if self.intents.has_open(account.id, instrument.id):
+            raise OpenIntentConflictError(instrument.symbol, account.name)
         if price is None:
             price = self.provider.get_quote(instrument.symbol).price
         if side == Side.SELL:

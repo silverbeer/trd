@@ -25,6 +25,7 @@ from trd.models.core import (
     Watchlist,
 )
 from trd.models.engine import (
+    EXPIRABLE_INTENT_STATUSES,
     OPEN_INTENT_STATUSES,
     EngineConfig,
     EngineMode,
@@ -44,6 +45,20 @@ from trd.models.engine import (
     StrategyStat,
     TradeExplanation,
     TradeOutcome,
+    intent_expiry_cutoff,
+)
+from trd.models.fills import (
+    AppliedIntent,
+    ApprovalState,
+    BookedPosition,
+    BrokerApproval,
+    BrokerExecution,
+    BrokerOrder,
+    BrokerOrderState,
+    FillConflict,
+    FillIngestResult,
+    FillSnapshot,
+    UnmatchedBrokerItem,
 )
 from trd.models.reconcile import (
     QUANTITY_TOLERANCE,
@@ -55,12 +70,20 @@ from trd.models.reconcile import (
 )
 
 __all__ = [
+    "EXPIRABLE_INTENT_STATUSES",
     "OPEN_INTENT_STATUSES",
     "QUANTITY_TOLERANCE",
     "Account",
     "AccountType",
+    "AppliedIntent",
+    "ApprovalState",
     "Bar",
     "BoardRow",
+    "BookedPosition",
+    "BrokerApproval",
+    "BrokerExecution",
+    "BrokerOrder",
+    "BrokerOrderState",
     "BrokerPosition",
     "BrokerSnapshot",
     "DailyBar",
@@ -77,6 +100,9 @@ __all__ = [
     "ExitOutlook",
     "ExitStatus",
     "ExitTrigger",
+    "FillConflict",
+    "FillIngestResult",
+    "FillSnapshot",
     "Income",
     "IncomeKind",
     "IndicatorConfig",
@@ -103,5 +129,7 @@ __all__ = [
     "TradeExplanation",
     "TradeOutcome",
     "Transaction",
+    "UnmatchedBrokerItem",
     "Watchlist",
+    "intent_expiry_cutoff",
 ]

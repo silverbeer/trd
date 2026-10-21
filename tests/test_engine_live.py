@@ -256,7 +256,13 @@ def test_an_open_buy_intent_holds_its_slot(engine, provider, conn):
 def test_an_open_buy_intent_blocks_the_same_name_next_session(engine, provider, conn):
     _names(conn, provider, "AAA")
     _live(engine, ["AAA"], max_positions=3)
-    assert len(engine.scan(at=MONDAY).intents) == 1
+    first = engine.scan(at=MONDAY).intents
+    assert len(first) == 1
+    # Placed at the broker: a SUBMITTED intent survives the next session's expiry
+    # sweep (SB-1375), where an unplaced PENDING one would lapse.
+    OrderIntentRepo(conn).update(
+        first[0].intent.id, status=IntentStatus.SUBMITTED, broker_order_id="b-1"
+    )
     # A new session: a fresh bar, so a fresh signal — but the name is spoken for.
     provider.add_symbol("AAA", price=str(float(make_bars(uptrend())[-1].close) * 1.002))
     tuesday = engine.scan(at=datetime(2024, 9, 17, 10, 0))

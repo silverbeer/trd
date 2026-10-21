@@ -64,6 +64,7 @@ from trd.models import (
     SizingMode,
     StrategyStat,
     TradeExplanation,
+    intent_expiry_cutoff,
 )
 from trd.providers.base import MarketDataProvider
 from trd.repos import (
@@ -256,6 +257,21 @@ def stop_distance(atr: Decimal, exit_params: dict[str, float]) -> Decimal:
     return atr * Decimal(str(exit_params.get("stop_atr_mult", 2.0)))
 
 
+def entry_levels(
+    price: Decimal, atr: Decimal, exit_params: dict[str, float]
+) -> tuple[Decimal, Decimal]:
+    """Initial stop and target for an entry at `price`: stop one R below, target
+    `target_r` R above, with R = `stop_distance`.
+
+    Shared by `plan_entry` (a paper fill, at the bar's close) and live fill ingest
+    (at the broker's price), so a live position's levels are derived exactly the
+    way a paper one's are — only the entry price differs.
+    """
+    stop = price - stop_distance(atr, exit_params)
+    target = price + (price - stop) * Decimal(str(exit_params.get("target_r", 2.0)))
+    return stop, target
+
+
 def plan_entry(
     bars: Sequence[Bar],
     position_size: Decimal,
@@ -287,7 +303,7 @@ def plan_entry(
     if atr is None or atr <= 0:
         return None, "no ATR yet — cannot size the stop"
     atr_dec = Decimal(str(atr))
-    stop = price - stop_distance(atr_dec, exit_params)
+    stop, target = entry_levels(price, atr_dec, exit_params)
     if stop <= 0:
         return None, None
     risk_per_share = price - stop
@@ -306,7 +322,6 @@ def plan_entry(
             f"{'risk budget' if sizing_mode == SizingMode.RISK else 'position size'} "
             "rounds to nothing"
         )
-    target = price + risk_per_share * Decimal(str(exit_params.get("target_r", 2.0)))
     return EntryPlan(quantity=quantity, stop_price=stop, target_price=target, atr=atr_dec), None
 
 
@@ -815,6 +830,15 @@ class EngineService:
             capacity=config.max_positions,
             mode=config.mode,
         )
+
+        if config.is_live:
+            # Before anything reads the in-flight set: a buy nobody placed or
+            # approved before the close must stop holding its slot and its cash.
+            # Approvals lapse at 16:00 ET the day they are raised (measured).
+            lapsed = self.intents.expire_before(account.id, intent_expiry_cutoff(now), now)
+            if lapsed:
+                names = ", ".join(f"{i.side.value} {inst.symbol}" for i, inst in lapsed)
+                result.skipped.append(f"expired {len(lapsed)} stale intent(s): {names}")
 
         # Orders a live engine already has in flight. An open sell means that
         # position's exit is decided and must not be asked for twice; an open buy
