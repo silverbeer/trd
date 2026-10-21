@@ -25,12 +25,17 @@ from trd.models.core import (
     Watchlist,
 )
 from trd.models.engine import (
+    OPEN_INTENT_STATUSES,
     EngineConfig,
+    EngineMode,
     EnginePosition,
     EngineRun,
     EngineSignal,
     EngineStatus,
     ExitOutlook,
+    IntentStatus,
+    OrderIntent,
+    OrderIntentRow,
     PositionRow,
     PositionStatus,
     SignalOutcome,
@@ -50,6 +55,7 @@ from trd.models.reconcile import (
 )
 
 __all__ = [
+    "OPEN_INTENT_STATUSES",
     "QUANTITY_TOLERANCE",
     "Account",
     "AccountType",
@@ -62,6 +68,7 @@ __all__ = [
     "EarningsEvent",
     "EarningsResult",
     "EngineConfig",
+    "EngineMode",
     "EnginePosition",
     "EngineRun",
     "EngineSignal",
@@ -76,8 +83,11 @@ __all__ = [
     "Instrument",
     "InstrumentInfo",
     "InstrumentType",
+    "IntentStatus",
     "IntradayBar",
     "LotPosition",
+    "OrderIntent",
+    "OrderIntentRow",
     "Position",
     "PositionRow",
     "PositionStatus",

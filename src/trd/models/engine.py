@@ -4,7 +4,7 @@ from enum import StrEnum
 
 from pydantic import BaseModel, computed_field
 
-from trd.models.core import Instrument
+from trd.models.core import Instrument, Side
 from trd.timeframes import INTRADAY_MINUTES, day_mode_on_daily_bars
 
 
@@ -23,6 +23,18 @@ class SizingMode(StrEnum):
 
     EXPOSURE = "exposure"
     RISK = "risk"
+
+
+class EngineMode(StrEnum):
+    """Who fills the engine's decisions.
+
+    PAPER fills them itself, in a simulation account, at the price the scan saw.
+    LIVE trades a real account and only records order intents: the fill is the
+    broker's, arrives later, and is ingested separately (see OrderIntent).
+    """
+
+    PAPER = "paper"
+    LIVE = "live"
 
 
 class EngineConfig(BaseModel):
@@ -51,11 +63,18 @@ class EngineConfig(BaseModel):
     # capacity is the slot count alone. Set, an entry also needs settled cash —
     # sale proceeds settle T+1 in a cash account (see trd.engine.settlement).
     capital: Decimal | None = None
+    # Paper fills its own trades; live writes order intents for a real account.
+    mode: EngineMode = EngineMode.PAPER
 
     @computed_field  # type: ignore[prop-decorator]
     @property
     def is_intraday(self) -> bool:
         return self.timeframe != "1d"
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def is_live(self) -> bool:
+        return self.mode == EngineMode.LIVE
 
 
 class EngineSignal(BaseModel):
@@ -203,6 +222,80 @@ class EnginePosition(BaseModel):
         return self.booked_pnl / (self.risk_per_share * self.quantity)
 
 
+class IntentStatus(StrEnum):
+    """Where an order intent is in its life. The first three are open."""
+
+    PENDING = "pending"  # written by a scan, not yet handed to the broker
+    SUBMITTED = "submitted"  # placed; the broker has an order
+    AWAITING_APPROVAL = "awaiting_approval"  # placed, held for a trade approval
+    FILLED = "filled"
+    REJECTED = "rejected"
+    CANCELLED = "cancelled"
+    EXPIRED = "expired"  # an approval nobody gave before it lapsed
+
+
+# An open intent still claims what it asked for: a buy holds a slot and its cash,
+# a sell blocks a second exit on the same position.
+OPEN_INTENT_STATUSES = (
+    IntentStatus.PENDING,
+    IntentStatus.SUBMITTED,
+    IntentStatus.AWAITING_APPROVAL,
+)
+
+
+class OrderIntent(BaseModel):
+    """An order a live engine decided to place, and what became of it.
+
+    Written by the scan in place of a fill. A buy carries the entry plan it was
+    sized with, so the position can be opened at the REAL fill price with the stop
+    re-derived from `atr_at_entry` — live R is measured from what was paid. A sell
+    carries the exit rule that wanted it and the position it would close; the
+    position stays open until the fill says otherwise.
+    """
+
+    id: int
+    account_id: int
+    instrument_id: int
+    side: Side
+    quantity: Decimal
+    ref_price: Decimal  # the price the scan saw, not a fill
+    notional: Decimal
+    reason: str
+    rule: str | None = None
+    strategy: str
+    signal_id: int | None = None
+    position_id: int | None = None
+    stop_price: Decimal | None = None
+    target_price: Decimal | None = None
+    atr_at_entry: Decimal | None = None
+    # Ours, and the broker's idempotency key: re-sending cannot make two orders.
+    ref_id: str
+    status: IntentStatus = IntentStatus.PENDING
+    # With trade approvals on, the broker answers with an approval whose id the
+    # eventual order carries as its ref_id — ours is not what comes back.
+    approval_id: str | None = None
+    broker_order_id: str | None = None
+    created_at: datetime
+    submitted_at: datetime | None = None
+    resolved_at: datetime | None = None
+    error: str | None = None
+    filled_quantity: Decimal | None = None
+    fill_price: Decimal | None = None
+    fees: Decimal | None = None
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def is_open(self) -> bool:
+        return self.status in OPEN_INTENT_STATUSES
+
+
+class OrderIntentRow(BaseModel):
+    """An order intent joined to its instrument, for display."""
+
+    intent: OrderIntent
+    instrument: Instrument
+
+
 class EngineRun(BaseModel):
     id: int
     started_at: datetime
@@ -305,6 +398,12 @@ class EngineStatus(BaseModel):
     cash_settled: Decimal | None = None
     cash_unsettled: Decimal | None = None
     cash_next_settle: date | None = None
+    # Paper or live, and how many order intents are still open (live only: a
+    # paper engine never writes one).
+    mode: EngineMode = EngineMode.PAPER
+    open_intents: int = 0
+    # The buys among them. Each holds a slot until its fill opens the position.
+    open_buy_intents: int = 0
 
     open_positions: int
     closed_trades: int = 0
@@ -379,7 +478,7 @@ class EngineStatus(BaseModel):
     @computed_field  # type: ignore[prop-decorator]
     @property
     def capacity(self) -> int:
-        return max(0, self.max_positions - self.open_positions)
+        return max(0, self.max_positions - self.open_positions - self.open_buy_intents)
 
     @computed_field  # type: ignore[prop-decorator]
     @property

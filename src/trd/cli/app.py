@@ -32,6 +32,7 @@ from trd.cli.render import (
     engine_backtest_renderables,
     engine_cash_renderables,
     engine_exits_table,
+    engine_intents_table,
     engine_monitor_view,
     engine_positions_table,
     engine_report_table,
@@ -70,7 +71,7 @@ from trd.config import DEFAULT_ACCOUNT, get_settings
 from trd.db.connection import connect, connect_read_only
 from trd.engine.bars import DAILY
 from trd.errors import TrdError
-from trd.models import AccountType, BrokerSnapshot, IncomeKind, Side, SizingMode
+from trd.models import AccountType, BrokerSnapshot, EngineMode, IncomeKind, Side, SizingMode
 from trd.notify import label_from_env, scan_messages
 from trd.notify.bot import (
     POLL_TIMEOUT,
@@ -1845,7 +1846,12 @@ def import_csv(
 @engine_app.command("init")
 def engine_init(
     account: Annotated[
-        str, typer.Option("--account", "-a", help="Simulation account the engine trades.")
+        str,
+        typer.Option(
+            "--account",
+            "-a",
+            help="Account the engine trades: simulation for paper, real with --live.",
+        ),
     ] = DEFAULT_ENGINE_ACCOUNT,
     size: Annotated[str, typer.Option("--size", help="Dollars committed per trade.")] = "1000",
     max_positions: Annotated[int, typer.Option("--max", help="Most positions open at once.")] = 5,
@@ -1930,8 +1936,22 @@ def engine_init(
             ),
         ),
     ] = None,
+    live: Annotated[
+        bool,
+        typer.Option(
+            "--live",
+            help=(
+                "Trade a REAL account: scans record order intents instead of filling. "
+                "Needs --capital, daily bars and no --flat-at."
+            ),
+        ),
+    ] = False,
 ) -> None:
-    """Set up the engine: a simulation account, a 10-name universe, and the rule set."""
+    """Set up the engine: an account, a 10-name universe, and the rule set.
+
+    Paper (the default) fills its own trades in a simulation account. --live
+    trades a real account and writes order intents ('trd engine intents').
+    """
     service = _engine_service()
     try:
         mode = SizingMode(sizing)
@@ -1965,6 +1985,7 @@ def engine_init(
             timeframe=timeframe,
             max_entries_per_day=max_entries_per_day,
             capital=_parse_decimal(capital, "capital") if capital else None,
+            mode=EngineMode.LIVE if live else EngineMode.PAPER,
         )
         # SPY and ^VIX become tracked instruments so `trd sync` pulls their bars.
         # Registered unconditionally: the backtest needs them to answer "what
@@ -1976,8 +1997,14 @@ def engine_init(
         return
     flat = int(config.exit_params.get("flat_at_minute", 0))
     console.print(
-        f"Engine ready on [bold]{acct.name}[/bold] (simulation).\n"
-        f"Universe ({len(universe)}): {', '.join(universe)}\n"
+        f"Engine ready on [bold]{acct.name}[/bold] "
+        + (
+            "([bold red]LIVE[/bold red] — real account; scans write order intents, "
+            "'trd engine intents').\n"
+            if config.is_live
+            else "(simulation).\n"
+        )
+        + f"Universe ({len(universe)}): {', '.join(universe)}\n"
         f"Strategies: {', '.join(config.strategies)}\n"
         + (
             f"Sizing: {fmt_money(config.position_size)} "
@@ -2341,6 +2368,45 @@ def engine_signals(
         console.print("No signals yet. Run [bold]trd engine scan[/bold].")
         return
     console.print(engine_signals_table(rows))
+
+
+@engine_app.command("intents")
+def engine_intents(
+    status: Annotated[
+        str | None,
+        typer.Option(
+            "--status",
+            "-s",
+            help="Only this status: pending, submitted, awaiting_approval, filled, "
+            "rejected, cancelled, expired.",
+        ),
+    ] = None,
+    as_json: JsonOpt = False,
+) -> None:
+    """Order intents a live engine has written, newest first.
+
+    A live engine fills nothing itself: each entry or exit it decides on is
+    recorded here with the price the scan saw, and stays open until the broker's
+    answer resolves it. An open buy holds a slot and reserves its cash.
+    """
+    _use_json(as_json)
+    service = _engine_service()
+    try:
+        rows = service.intent_rows(status=status)
+    except TrdError as exc:
+        _fail(exc)
+        return
+    if as_json:
+        _emit_json(rows)
+        return
+    if not rows:
+        console.print(
+            "No order intents"
+            + (f" with status {status}" if status else "")
+            + ". A live engine writes one per entry or exit; a paper engine never does."
+        )
+        return
+    console.print(engine_intents_table(rows))
 
 
 @engine_app.command("positions")

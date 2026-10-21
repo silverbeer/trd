@@ -1,16 +1,22 @@
 import json
+import uuid
 from datetime import date, datetime
 from decimal import Decimal
 
 import duckdb
 
 from trd.models import (
+    OPEN_INTENT_STATUSES,
     EngineConfig,
+    EngineMode,
     EnginePosition,
     EngineRun,
     EngineSignal,
     Instrument,
+    IntentStatus,
+    OrderIntent,
     PositionStatus,
+    Side,
     SizingMode,
 )
 from trd.repos.instruments import _row_to_instrument
@@ -20,7 +26,7 @@ DEFAULT_EARNINGS_BLACKOUT_DAYS = 3
 
 _CONFIG_COLS = (
     "id, account_id, watchlist, position_size, max_positions, strategies, exit_params, "
-    "earnings_blackout_days, sizing_mode, timeframe, max_entries_per_day, capital"
+    "earnings_blackout_days, sizing_mode, timeframe, max_entries_per_day, capital, mode"
 )
 _SIGNAL_COLS = "id, run_id, instrument_id, strategy, bar_ts, fired_at, price, score, reason, acted"
 _POSITION_COLS = (
@@ -29,6 +35,12 @@ _POSITION_COLS = (
     "closed_at, exit_price, exit_reason, exit_rule, closed_quantity, booked_pnl"
 )
 _RUN_COLS = "id, started_at, scanned, signals, opened, closed, paper, note"
+_INTENT_COLS = (
+    "id, account_id, instrument_id, side, quantity, ref_price, notional, reason, rule, "
+    "strategy, signal_id, position_id, stop_price, target_price, atr_at_entry, ref_id, "
+    "status, approval_id, broker_order_id, created_at, submitted_at, resolved_at, error, "
+    "filled_quantity, fill_price, fees"
+)
 
 
 def _row_to_config(row: tuple) -> EngineConfig:
@@ -58,6 +70,9 @@ def _row_to_config(row: tuple) -> EngineConfig:
         # 026, and any engine since that was never given a capital. Read as None,
         # not a guess: a made-up balance would start refusing entries unasked.
         capital=row[11],
+        # NULL is every engine created before migration 027, and all of them are
+        # paper: live mode did not exist to be configured.
+        mode=EngineMode(row[12]) if row[12] is not None else EngineMode.PAPER,
     )
 
 
@@ -104,6 +119,11 @@ def _row_to_position(row: tuple) -> EnginePosition:
     )
 
 
+def _row_to_intent(row: tuple) -> OrderIntent:
+    names = _INTENT_COLS.split(", ")
+    return OrderIntent.model_validate(dict(zip(names, row, strict=True)))
+
+
 def _row_to_run(row: tuple) -> EngineRun:
     return EngineRun(
         id=row[0],
@@ -141,14 +161,16 @@ class EngineConfigRepo:
         timeframe: str = "1d",
         max_entries_per_day: int = 0,
         capital: Decimal | None = None,
+        mode: EngineMode = EngineMode.PAPER,
     ) -> EngineConfig:
         self.conn.execute("DELETE FROM engine_config WHERE account_id = ?", [account_id])
         row = self.conn.execute(
             f"""
             INSERT INTO engine_config
                 (account_id, watchlist, position_size, max_positions, strategies, exit_params,
-                 earnings_blackout_days, sizing_mode, timeframe, max_entries_per_day, capital)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 earnings_blackout_days, sizing_mode, timeframe, max_entries_per_day, capital,
+                 mode)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             RETURNING {_CONFIG_COLS}
             """,
             [
@@ -163,6 +185,7 @@ class EngineConfigRepo:
                 timeframe,
                 max_entries_per_day,
                 capital,
+                mode.value,
             ],
         ).fetchone()
         assert row is not None
@@ -492,3 +515,109 @@ class EnginePositionRepo:
             """,
             [quantity, price, quantity, price, quantity, quantity, price, position_id],
         )
+
+
+class OrderIntentRepo:
+    """Orders a live engine decided to place. Written by the scan; resolved later
+    by whatever ingests the broker's answer."""
+
+    def __init__(self, conn: duckdb.DuckDBPyConnection) -> None:
+        self.conn = conn
+
+    def insert(
+        self,
+        account_id: int,
+        instrument_id: int,
+        side: Side,
+        quantity: Decimal,
+        ref_price: Decimal,
+        reason: str,
+        strategy: str,
+        created_at: datetime,
+        rule: str | None = None,
+        signal_id: int | None = None,
+        position_id: int | None = None,
+        stop_price: Decimal | None = None,
+        target_price: Decimal | None = None,
+        atr_at_entry: Decimal | None = None,
+    ) -> OrderIntent:
+        row = self.conn.execute(
+            f"""
+            INSERT INTO order_intent
+                (account_id, instrument_id, side, quantity, ref_price, notional, reason, rule,
+                 strategy, signal_id, position_id, stop_price, target_price, atr_at_entry,
+                 ref_id, status, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            RETURNING {_INTENT_COLS}
+            """,
+            [
+                account_id,
+                instrument_id,
+                side.value,
+                quantity,
+                ref_price,
+                quantity * ref_price,
+                reason,
+                rule,
+                strategy,
+                signal_id,
+                position_id,
+                stop_price,
+                target_price,
+                atr_at_entry,
+                # The broker's idempotency key. Minted here, once, so a retry of
+                # the same intent carries the same key.
+                str(uuid.uuid4()),
+                IntentStatus.PENDING.value,
+                created_at,
+            ],
+        ).fetchone()
+        assert row is not None
+        return _row_to_intent(row)
+
+    def _list(self, where: str, params: list[object]) -> list[tuple[OrderIntent, Instrument]]:
+        rows = self.conn.execute(
+            f"""
+            SELECT {", ".join(f"o.{c}" for c in _INTENT_COLS.split(", "))},
+                   i.id, i.symbol, i.name, i.type, i.exchange, i.sector, i.currency, i.tradable
+            FROM order_intent o
+            JOIN instrument i ON i.id = o.instrument_id
+            {where}
+            ORDER BY o.created_at DESC, o.id DESC
+            """,
+            params,
+        ).fetchall()
+        n = len(_INTENT_COLS.split(", "))
+        return [(_row_to_intent(r[:n]), _row_to_instrument(r[n:])) for r in rows]
+
+    def list_for(
+        self, account_id: int, status: IntentStatus | None = None
+    ) -> list[tuple[OrderIntent, Instrument]]:
+        """Every intent on the account, newest first, optionally one status."""
+        if status is None:
+            return self._list("WHERE o.account_id = ?", [account_id])
+        return self._list("WHERE o.account_id = ? AND o.status = ?", [account_id, status.value])
+
+    def list_open(self, account_id: int) -> list[tuple[OrderIntent, Instrument]]:
+        """Intents still in flight: each one still claims a slot, cash or an exit."""
+        marks = ", ".join("?" for _ in OPEN_INTENT_STATUSES)
+        return self._list(
+            f"WHERE o.account_id = ? AND o.status IN ({marks})",
+            [account_id, *(s.value for s in OPEN_INTENT_STATUSES)],
+        )
+
+    def count_buys_on(self, account_id: int, session: date) -> int:
+        """Buy intents written during one session that did, or still may, become a
+        position. Rejected, cancelled and expired ones bought nothing and do not
+        spend the entry budget."""
+        live = (*OPEN_INTENT_STATUSES, IntentStatus.FILLED)
+        marks = ", ".join("?" for _ in live)
+        row = self.conn.execute(
+            f"""
+            SELECT count(*) FROM order_intent
+            WHERE account_id = ? AND side = ? AND CAST(created_at AS DATE) = ?
+              AND status IN ({marks})
+            """,
+            [account_id, Side.BUY.value, session, *(s.value for s in live)],
+        ).fetchone()
+        return int(row[0]) if row else 0

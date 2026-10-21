@@ -13,6 +13,7 @@ from trd.engine.settlement import CashLedger
 from trd.models import (
     BoardRow,
     EarningsEvent,
+    EngineMode,
     EnginePosition,
     EngineRun,
     EngineStatus,
@@ -20,6 +21,7 @@ from trd.models import (
     ExitStatus,
     Instrument,
     LotPosition,
+    OrderIntentRow,
     Position,
     PositionRow,
     PositionStatus,
@@ -1181,7 +1183,10 @@ def engine_scan_renderables(result: ScanResult) -> list[RenderableType]:
     """One scan pass, narrated: what closed, what opened, what merely fired."""
     out: list[RenderableType] = []
     stamp = result.at.strftime("%Y-%m-%d %H:%M:%S")
-    mode = "paper fills" if result.paper else "signals only (no fills)"
+    if result.mode == EngineMode.LIVE:
+        mode = "live: order intents" if result.paper else "live: signals only (no intents)"
+    else:
+        mode = "paper fills" if result.paper else "signals only (no fills)"
     header = (
         f"[bold]engine scan[/bold]  {stamp}  ·  {result.scanned} symbols  ·  {mode}\n"
         f"open {result.open_positions}  ·  room for {result.capacity} more"
@@ -1228,6 +1233,9 @@ def engine_scan_renderables(result: ScanResult) -> list[RenderableType]:
             )
         out.append(table)
 
+    if result.intents:
+        out.append(engine_intents_table(result.intents, title="Order intents"))
+
     unacted = [s for s in result.signals if not s.acted]
     if unacted:
         table = Table(title="Signals not taken", title_justify="left")
@@ -1266,6 +1274,44 @@ def engine_scan_renderables(result: ScanResult) -> list[RenderableType]:
             )
         )
     return out
+
+
+def engine_intents_table(rows: list[OrderIntentRow], title: str = "Order intents") -> Table:
+    """Orders a live engine decided to place. Ref price is what the scan saw — a
+    fill, when one arrives, is the broker's and is shown beside it."""
+    table = Table(title=title, title_justify="left")
+    table.add_column("Created", style="dim")
+    table.add_column("Side")
+    table.add_column("Symbol", style="bold")
+    table.add_column("Strategy")
+    table.add_column("Qty", justify="right")
+    table.add_column("Ref price", justify="right")
+    table.add_column("Notional", justify="right")
+    table.add_column("Status")
+    table.add_column("Fill", justify="right")
+    table.add_column("Why", style="dim")
+    for row in rows:
+        intent = row.intent
+        side = "[green]buy[/green]" if intent.side == Side.BUY else "[red]sell[/red]"
+        status = intent.status.value
+        if intent.is_open:
+            status = f"[yellow]{status}[/yellow]"
+        why = intent.reason if intent.rule is None else f"{intent.rule}: {intent.reason}"
+        if intent.error:
+            why = f"{why} [red]({intent.error})[/red]"
+        table.add_row(
+            intent.created_at.strftime("%m-%d %H:%M"),
+            side,
+            row.instrument.symbol,
+            intent.strategy,
+            fmt_qty(intent.quantity),
+            fmt_money(intent.ref_price),
+            fmt_money(intent.notional),
+            status,
+            fmt_money(intent.fill_price) if intent.fill_price is not None else "—",
+            why,
+        )
+    return table
 
 
 def engine_signals_table(rows: list[SignalRow]) -> Table:
@@ -1858,7 +1904,15 @@ def engine_status_renderables(status: EngineStatus) -> list[RenderableType]:
         else "swing — carries overnight"
     )
     mode += f"  ·  {status.timeframe} bars"
-    header = f"[bold]{status.account}[/bold]  ·  {mode}\nbuild {status.build}\n{status.db_path}"
+    trading = (
+        "[bold red]LIVE[/bold red] — real account, order intents"
+        if status.mode == EngineMode.LIVE
+        else "paper — simulated fills"
+    )
+    header = (
+        f"[bold]{status.account}[/bold]  ·  {mode}\n{trading}\n"
+        f"build {status.build}\n{status.db_path}"
+    )
     out: list[RenderableType] = [Panel(header, expand=False, border_style="cyan")]
 
     # Directly under the header, before any number it invalidates. An engine in a
@@ -1911,6 +1965,10 @@ def engine_status_renderables(status: EngineStatus) -> list[RenderableType]:
         else f"room for {status.capacity}"
     )
     book.add_row("positions", f"{status.open_positions} of {status.max_positions}  ·  {room}")
+    # An open intent is a position in all but the fill: it holds a slot and its
+    # cash. Shown on a live engine always — zero is an answer there.
+    if status.mode == EngineMode.LIVE:
+        book.add_row("open intents", f"{status.open_intents}  ·  'trd engine intents'")
     # Two different limits, so both are shown when both are on: max_positions caps
     # how many trades are open, the budget caps how many may be opened. A day
     # engine recycles its slots as exits fire, so the book can read "room for 2"
