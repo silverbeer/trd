@@ -217,6 +217,27 @@ variable set falls back to `swing` or `day`, read from whether the rule set has 
 Want the two feeds separated entirely? Create a second channel and give the day
 engine its own secret — the CronJob's `envFrom` name is the only thing to change.
 
+### Live engine alerts — a private chat, not the channel
+
+A live engine's messages that need you to act — an order it wants placed, an
+approval waiting in the Robinhood app, an order rejected, expired or in conflict —
+go to an **alert chat**, not the channel. Booked live fills still go to the
+channel. Same bot token; the chat is resolved in this order:
+
+1. `TRD_LIVE_ALERT_CHAT_ID`, if set;
+2. else the first id in `TRD_BOT_ALLOWED_USER_IDS` — a private chat with the bot
+   has your own user id, so the bot's allowlist already names it;
+3. else `TELEGRAM_CHAT_ID` (the channel), with a warning on every send.
+
+```bash
+kubectl patch secret trd-engine-telegram -n trd \
+  -p '{"stringData":{"TRD_LIVE_ALERT_CHAT_ID":"123456789"}}'
+```
+
+Live messages are labelled `💵 live` unless `TRD_ENGINE_LABEL` is
+set. The runbook that drains the outbox is in
+[docs/robinhood-mcp.md](../../docs/robinhood-mcp.md#draining-the-outbox-live-engine).
+
 ## The queue drain — chat outside market hours
 
 The queue is normally drained inside the scan, which is the process that safely

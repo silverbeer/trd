@@ -57,6 +57,7 @@ from trd.cli.render import (
     indicator_panel,
     lots_table,
     movers_table,
+    outbox_table,
     outcome_summary_renderables,
     outcome_trades_table,
     plans_pnl_table,
@@ -81,14 +82,20 @@ from trd.models import (
     Side,
     SizingMode,
 )
-from trd.notify import label_from_env, scan_messages
+from trd.notify import alert_notifier_from_env, label_from_env, scan_alert_messages, scan_messages
 from trd.notify.bot import (
     POLL_TIMEOUT,
     BotConfigError,
     bot_from_env,
     engines_from_env,
 )
-from trd.notify.messages import daily_report_message, review_message
+from trd.notify.messages import (
+    approval_message,
+    daily_report_message,
+    fill_alert_message,
+    fill_messages,
+    review_message,
+)
 from trd.notify.telegram import TelegramNotifier
 from trd.notify.telegram import from_env as notify_from_env
 from trd.providers import YFinanceProvider
@@ -107,6 +114,7 @@ from trd.services import (
     IncomeService,
     IndicatorService,
     MoversService,
+    OutboxService,
     PlanService,
     PortfolioService,
     PrepHistoryService,
@@ -2062,22 +2070,33 @@ def _emit_scan(result: ScanResult, as_json: bool, ndjson: bool) -> None:
 def _notify_scan(result: ScanResult, label: str | None = None) -> None:
     """Push fills to a chat, if one is configured. A delivery failure is reported
     and swallowed: the trades are already recorded, and failing the scan over an
-    undelivered message would make the next pass re-evaluate a stale world."""
-    messages = scan_messages(result, label)
+    undelivered message would make the next pass re-evaluate a stale world.
+
+    A live scan's order intents go to the alert chat instead: each asks a person
+    to do something, and the channel is a feed of things already done."""
+    _send(scan_messages(result, label))
+    _send(scan_alert_messages(result, label), alert=True)
+
+
+def _send(messages: list[str], alert: bool = False) -> None:
+    """Deliver to the channel, or with `alert` to the live alert chat. Missing
+    configuration and delivery failures are warnings, never errors: whatever the
+    message reports has already been recorded."""
     if not messages:
         return
-    notifier = notify_from_env()
+    warn = lambda text: err_console.print(f"[yellow]warning:[/yellow] {text}")  # noqa: E731
+    notifier = alert_notifier_from_env(warn=warn) if alert else notify_from_env()
     if notifier is None:
-        err_console.print(
-            "[yellow]warning:[/yellow] --notify set but TELEGRAM_BOT_TOKEN / "
-            "TELEGRAM_CHAT_ID are not configured — nothing sent."
+        warn(
+            "--notify set but TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID are not configured "
+            "— nothing sent."
         )
         return
     for message in messages:
         try:
             notifier.send(message)
         except TrdError as exc:
-            err_console.print(f"[yellow]warning:[/yellow] notification failed: {exc}")
+            warn(f"notification failed: {exc}")
 
 
 @engine_app.command("add")
@@ -2230,7 +2249,8 @@ def engine_scan(
         return
     _emit_scan(result, as_json, ndjson)
     if notify:
-        _notify_scan(result, label_from_env(service.config().exit_params))
+        config = service.config()
+        _notify_scan(result, label_from_env(config.exit_params, live=config.is_live))
 
 
 @engine_app.command("monitor")
@@ -2310,7 +2330,8 @@ def engine_monitor(
                 if not live_view:
                     _emit_scan(result, as_json=False, ndjson=ndjson)
                 if notify:
-                    _notify_scan(result, label_from_env(params))
+                    live = result.mode == EngineMode.LIVE
+                    _notify_scan(result, label_from_env(params, live=live))
                 if passes is not None and count >= passes:
                     if live_view and display is not None:
                         display.update(
@@ -3286,6 +3307,14 @@ def engine_fills(
             "{orders:[...], approvals:[...], taken_at}."
         ),
     ],
+    notify: Annotated[
+        bool,
+        typer.Option(
+            "--notify",
+            help="Post each fill to the channel, and anything rejected, expired or "
+            "conflicting to the live alert chat (Telegram).",
+        ),
+    ] = False,
     as_json: JsonOpt = False,
 ) -> None:
     """Ingest a live engine's broker fills: resolve its order intents, write the
@@ -3319,13 +3348,126 @@ def engine_fills(
     except TrdError as exc:
         _fail(exc)
         return
+    finally:
+        service.conn.close()
     if as_json:
         _emit_json(result)
     else:
         for renderable in fill_ingest_renderables(result):
             console.print(renderable)
+    if notify:
+        label = label_from_env(live=True)
+        _send(fill_messages(result, label))
+        alert = fill_alert_message(result, label)
+        _send([alert] if alert else [], alert=True)
     if not result.ok:
         raise typer.Exit(code=1)
+
+
+outbox_app = typer.Typer(
+    help="A live engine's pending orders, for an agent session to place.",
+)
+engine_app.add_typer(outbox_app, name="outbox")
+
+
+@outbox_app.callback(invoke_without_command=True)
+def engine_outbox(ctx: typer.Context, as_json: JsonOpt = False) -> None:
+    """The live engine's PENDING intents as order specs an agent passes straight
+    to the broker's order tool: ref_id, symbol, side, quantity, type, time in
+    force, market hours — plus what a person approving it wants to see.
+
+    Oldest first. An intent past its 16:00 ET expiry is left out. One written at
+    or after 15:45 ET is flagged late: an approval raised then has minutes to be
+    given. Read-only. Placing is the agent's job (docs/robinhood-mcp.md); record
+    what came back with 'trd engine outbox ack'.
+    """
+    if ctx.invoked_subcommand is not None:
+        return
+    _use_json(as_json)
+    db_path = get_settings().db_path
+    try:
+        if not db_path.exists():
+            raise TrdError(f"No database at {db_path}. Run 'trd init' first.")
+        conn = connect_read_only(db_path)
+        try:
+            outbox = OutboxService(conn).pending(datetime.now())
+        finally:
+            conn.close()
+    except TrdError as exc:
+        _fail(exc)
+        return
+    if as_json:
+        _emit_json(outbox)
+        return
+    if not outbox.orders:
+        console.print(f"Outbox empty on [bold]{outbox.account}[/bold]: nothing pending to place.")
+        return
+    console.print(outbox_table(outbox))
+
+
+@outbox_app.command("ack")
+def engine_outbox_ack(
+    intent: Annotated[str, typer.Argument(help="Intent id or ref_id, from 'trd engine outbox'.")],
+    approval_id: Annotated[
+        str | None,
+        typer.Option("--approval-id", help="The place call returned a trade approval."),
+    ] = None,
+    broker_order_id: Annotated[
+        str | None,
+        typer.Option("--broker-order-id", help="The place call returned a broker order."),
+    ] = None,
+    error: Annotated[
+        str | None,
+        typer.Option("--error", help="The place call failed; nothing reached the broker."),
+    ] = None,
+    notify: Annotated[
+        bool,
+        typer.Option(
+            "--notify",
+            help="With --approval-id, ask for the approval in the live alert chat (Telegram).",
+        ),
+    ] = False,
+    as_json: JsonOpt = False,
+) -> None:
+    """Record what the broker answered when an outbox order was placed.
+
+    --approval-id: pending -> awaiting_approval. --broker-order-id: pending or
+    awaiting_approval -> submitted. --error: pending -> rejected. The same ack
+    twice changes nothing; an ack against a resolved intent, or with a different
+    approval / order id than the one recorded, is refused and exits 1.
+
+    A retry of a failed place reuses the intent's ref_id — never a new one.
+    """
+    _use_json(as_json)
+    settings = get_settings()
+    try:
+        service = OutboxService(connect(settings.db_path))
+        try:
+            ack = service.ack(
+                intent,
+                datetime.now(),
+                approval_id=approval_id,
+                broker_order_id=broker_order_id,
+                error=error,
+            )
+        finally:
+            service.conn.close()
+    except TrdError as exc:
+        _fail(exc)
+        return
+    if as_json:
+        _emit_json(ack)
+    else:
+        verb = (
+            f"{ack.from_status.value} -> {ack.to_status.value}"
+            if ack.changed
+            else f"already {ack.to_status.value} — nothing changed"
+        )
+        console.print(
+            f"Intent #{ack.intent.id} {ack.intent.side.value} [bold]{ack.symbol}[/bold]: {verb}"
+        )
+    if notify and approval_id and ack.changed:
+        _send([approval_message(ack, label_from_env(live=True))], alert=True)
 
 
 @engine_app.command("backtest")

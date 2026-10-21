@@ -12,6 +12,7 @@ from trd.services.history import HistoryResult, HistoryRow, HistoryService
 from trd.services.income import IncomeService
 from trd.services.indicators import IndicatorService
 from trd.services.movers import MoverRow, MoversService
+from trd.services.outbox import OutboxService
 from trd.services.plan import PlanService
 from trd.services.portfolio import PortfolioService
 from trd.services.prep_history import PrepHistoryService
@@ -39,6 +40,7 @@ __all__ = [
     "IndicatorService",
     "MoverRow",
     "MoversService",
+    "OutboxService",
     "PlanService",
     "PortfolioService",
     "PrepHistoryService",

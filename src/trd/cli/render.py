@@ -23,6 +23,7 @@ from trd.models import (
     Instrument,
     LotPosition,
     OrderIntentRow,
+    Outbox,
     Position,
     PositionRow,
     PositionStatus,
@@ -1310,6 +1311,39 @@ def engine_intents_table(rows: list[OrderIntentRow], title: str = "Order intents
             fmt_money(intent.notional),
             status,
             fmt_money(intent.fill_price) if intent.fill_price is not None else "—",
+            why,
+        )
+    return table
+
+
+def outbox_table(outbox: Outbox) -> Table:
+    """Pending orders for an agent to place. The JSON form is the one to act on;
+    this is for a person checking what is about to be asked of them."""
+    table = Table(title=f"Outbox — {outbox.account}", title_justify="left")
+    table.add_column("ID", justify="right", style="dim")
+    table.add_column("Created", style="dim")
+    table.add_column("Side")
+    table.add_column("Symbol", style="bold")
+    table.add_column("Qty", justify="right")
+    table.add_column("Ref price", justify="right")
+    table.add_column("Notional", justify="right")
+    table.add_column("Expires")
+    table.add_column("Why", style="dim")
+    for order in outbox.orders:
+        side = "[green]buy[/green]" if order.side == Side.BUY else "[red]sell[/red]"
+        expires = order.expires_at.strftime("%H:%M")
+        if order.late:
+            expires = f"[yellow]{expires} late[/yellow]"
+        why = order.reason if order.rule is None else f"{order.rule}: {order.reason}"
+        table.add_row(
+            str(order.intent_id),
+            order.created_at.strftime("%m-%d %H:%M"),
+            side,
+            order.symbol,
+            order.quantity,
+            fmt_money(order.ref_price),
+            fmt_money(order.notional),
+            expires,
             why,
         )
     return table
