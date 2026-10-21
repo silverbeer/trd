@@ -760,6 +760,47 @@ _ENTRIES: list[GlossaryEntry] = [
         used_in=["trd engine cash", "trd engine status", "trd engine scan", "trd engine backtest"],
     ),
     GlossaryEntry(
+        key="order-intent",
+        term="Order intent (live engine)",
+        category=Category.ENGINE,
+        definition=(
+            "An order the engine has decided to place but has not placed. A paper engine "
+            "fills its own decisions at the price its scan saw. A live engine trades a real "
+            "account, where the fill is the broker's: it comes later, at a price the scan "
+            "did not see, and sometimes not at all. So a live scan writes an intent — side, "
+            "quantity, the reference price it saw, and why — and changes nothing else.\n\n"
+            "A buy intent carries its entry plan (stop, target, and the ATR the stop came "
+            "from). When the fill arrives the position opens at the price actually paid and "
+            "the stop is re-derived from that ATR, so the trade's R is measured from the real "
+            "entry rather than from the price the scan hoped for. A sell intent names the "
+            "exit rule that wanted it; the position stays open until the sale fills.\n\n"
+            "Until it is resolved an intent still claims what it asked for: an open buy "
+            "holds a position slot, the symbol, its place in the day's entry budget and its "
+            "cash in the settled-cash ledger; an open sell stops the engine asking to sell "
+            "the same position twice. Each carries a ref id the broker uses to recognise a "
+            "retry, so re-sending one cannot become two orders. With trade approvals on, the "
+            "broker answers with an approval that lapses at 16:00 ET that day — an intent "
+            "nobody approved in time ends as expired.\n\n"
+            "Fill ingest is not built yet: today a live engine writes intents and nothing in "
+            "trd resolves them."
+        ),
+        formula=(
+            "notional            = quantity x ref price\n"
+            "open                = pending | submitted | awaiting_approval\n"
+            "slots in use        = open positions + open buy intents\n"
+            "settled (live)      = ledger settled - sum(open buy intents' notional)\n"
+            "stop at fill (1R)   = fill price - stop_atr_mult x atr_at_entry"
+        ),
+        example=(
+            "A live scan sees AAPL at $200.00 and writes BUY 4.9 @ ~$200.00 ($980), stop "
+            "$190.00 from a $5.00 ATR. Nothing is held yet, but the slot and the $980 are "
+            "spoken for. It fills at $200.40: the position opens there, with its stop at "
+            "$190.40 — one R is still $10.00/share."
+        ),
+        related=["settlement", "initial-stop", "r-multiple", "position-sizing"],
+        used_in=["trd engine intents", "trd engine scan", "trd engine status"],
+    ),
+    GlossaryEntry(
         key="session-close",
         term="Flat by the bell (day mode)",
         category=Category.ENGINE,

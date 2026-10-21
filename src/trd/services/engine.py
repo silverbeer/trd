@@ -4,11 +4,15 @@ One `scan()` is the whole loop: refresh quotes, walk every open position through
 the exit rules, then run the entry strategies over the universe and take the
 best-ranked candidates that still fit inside the position limit.
 
-Fills are recorded as ordinary txn rows in a *simulation* account, so everything
-trd already knows how to do — FIFO, portfolio, equity curve, XIRR, drawdown —
-works on the engine account without a line of new code. `engine_position` holds
-only what a transaction cannot express: which rule fired, why, and where the
-stops sit.
+A paper engine records its fills as ordinary txn rows in a *simulation* account,
+so everything trd already knows how to do — FIFO, portfolio, equity curve, XIRR,
+drawdown — works on the engine account without a line of new code.
+`engine_position` holds only what a transaction cannot express: which rule fired,
+why, and where the stops sit.
+
+A live engine trades a *real* account and fills nothing itself: where paper
+would write a txn, it writes an order intent (`order_intent`) and leaves the
+book as it is. The broker's fill is ingested separately.
 
 Signals are computed on stored daily bars with the live quote folded in as the
 forming bar, so the math is the same daily math the indicator panel shows, but
@@ -45,11 +49,14 @@ from trd.models import (
     Bar,
     DailyBar,
     EngineConfig,
+    EngineMode,
     EnginePosition,
     EngineRun,
     EngineStatus,
     ExitOutlook,
     Instrument,
+    IntentStatus,
+    OrderIntentRow,
     PositionRow,
     Quote,
     Side,
@@ -72,6 +79,7 @@ from trd.repos.engine import (
     EnginePositionRepo,
     EngineRunRepo,
     EngineSignalRepo,
+    OrderIntentRepo,
 )
 from trd.timeframes import SESSION_OPEN_MINUTE
 
@@ -209,10 +217,14 @@ class ScanResult(BaseModel):
     skipped: list[str] = []
     open_positions: int = 0
     capacity: int = 0
+    # A live engine fills nothing: what paper would have put in `opened` and
+    # `closed` arrives here instead, as the orders it decided to place.
+    mode: EngineMode = EngineMode.PAPER
+    intents: list[OrderIntentRow] = []
 
     @property
     def quiet(self) -> bool:
-        return not self.signals and not self.opened and not self.closed
+        return not self.signals and not self.opened and not self.closed and not self.intents
 
 
 class EntryPlan(BaseModel):
@@ -359,6 +371,7 @@ class EngineService:
         self.runs = EngineRunRepo(conn)
         self.signals = EngineSignalRepo(conn)
         self.positions = EnginePositionRepo(conn)
+        self.intents = OrderIntentRepo(conn)
 
     # ---------------------------------------------------------------- setup
 
@@ -376,9 +389,16 @@ class EngineService:
         timeframe: str = DAILY,
         max_entries_per_day: int = 0,
         capital: Decimal | None = None,
+        mode: EngineMode = EngineMode.PAPER,
     ) -> tuple[EngineConfig, Account, list[str]]:
-        """Create (or re-point) the engine: a simulation account, a watchlist
-        universe, and the rule set. Returns the symbols now in the universe."""
+        """Create (or re-point) the engine: an account, a watchlist universe, and
+        the rule set. Returns the symbols now in the universe.
+
+        Paper trades a simulation account and fills its own decisions. Live trades
+        a real account and writes order intents instead — and is refused unless it
+        is a cash-account swing engine: a capital (the T+1 ledger is how it avoids
+        orders the broker would reject), daily bars, and no flat-at.
+        """
         if position_size <= 0:
             raise TrdError("Position size must be positive.")
         if earnings_blackout_days < 0:
@@ -407,6 +427,19 @@ class EngineService:
                 f"Unknown exit params: {', '.join(bad)}. "
                 f"Available: {', '.join(sorted(DEFAULT_EXIT_PARAMS))}"
             )
+        existing = self.accounts.get_by_name(account_name)
+        # Before the day-mode check below: its advice ("pass an intraday
+        # timeframe") is the one thing a live engine is refused too.
+        if mode == EngineMode.LIVE:
+            # The default name says "sim". A real-money account must be named on
+            # purpose, never fall out of a default meant for paper.
+            if account_name == DEFAULT_ENGINE_ACCOUNT:
+                raise TrdError(
+                    f"A live engine trades real money: name its account with --account "
+                    f"(the default '{DEFAULT_ENGINE_ACCOUNT}' is for paper)."
+                )
+            self._refuse_live(capital, timeframe, params, existing)
+
         # A day engine on daily bars is the bug this timeframe exists to fix: a
         # stop at 2 x the daily ATR cannot be reached inside one session, so every
         # trade exits on the clock and its R-multiples describe risk it never took.
@@ -414,13 +447,15 @@ class EngineService:
         if refused:
             raise TrdError(f"{refused} Pass --timeframe {'/'.join(INTRADAY_MINUTES)}.")
 
-        existing = self.accounts.get_by_name(account_name)
-        if existing is not None and existing.type != AccountType.SIMULATION:
-            raise TrdError(
-                f"Account '{account_name}' is a real account. The engine only trades "
-                "simulation accounts — pick another name."
-            )
-        account = existing or self.accounts.create(account_name, AccountType.SIMULATION)
+        if mode == EngineMode.LIVE:
+            account = existing or self.accounts.create(account_name, AccountType.REAL)
+        else:
+            if existing is not None and existing.type != AccountType.SIMULATION:
+                raise TrdError(
+                    f"Account '{account_name}' is a real account. A paper engine only trades "
+                    "simulation accounts — pick another name, or pass --live."
+                )
+            account = existing or self.accounts.create(account_name, AccountType.SIMULATION)
 
         board = self.watchlists.get_or_create(watchlist)
         for symbol in symbols if symbols is not None else DEFAULT_UNIVERSE:
@@ -441,9 +476,46 @@ class EngineService:
             timeframe,
             max_entries_per_day,
             capital,
+            mode,
         )
         universe = [i.symbol for _, i in self.watchlists.items(board.id)]
         return config, account, universe
+
+    @staticmethod
+    def _refuse_live(
+        capital: Decimal | None,
+        timeframe: str,
+        params: dict[str, float],
+        existing: Account | None,
+    ) -> None:
+        """Why this configuration cannot be a live engine, raised; silent if it can.
+
+        Every refusal is a property of the account a live engine trades — a cash
+        account at a broker — not a preference. Checked before anything is
+        created, so a refused init leaves no half-made real account behind.
+        """
+        if existing is not None and existing.type != AccountType.REAL:
+            raise TrdError(
+                f"Account '{existing.name}' is a simulation account. A live engine trades "
+                "a real account — name the brokerage account with --account."
+            )
+        if capital is None:
+            raise TrdError(
+                "A live engine needs --capital. It trades a cash account, where sale "
+                "proceeds settle T+1; without the settled-cash ledger it would place "
+                "orders the broker rejects."
+            )
+        if timeframe != DAILY:
+            raise TrdError(
+                f"A live engine runs on daily bars (--timeframe {DAILY}), not {timeframe}. "
+                "Its orders wait on a broker and, with approvals on, on a person — an "
+                "intraday stop cannot be honoured at that pace."
+            )
+        if int(params.get("flat_at_minute", 0)) > 0:
+            raise TrdError(
+                "A live engine cannot use --flat-at. Day mode recycles cash inside one "
+                "session, and a cash account cannot spend a sale's proceeds until T+1."
+            )
 
     def config(self) -> EngineConfig:
         config = self.configs.get()
@@ -471,7 +543,14 @@ class EngineService:
             (t.executed_at.date(), t.side, t.quantity, t.price, t.fees)
             for t in self.txns.list_chronological(account.id)
         ]
-        return ledger(config.capital, flows, today)
+        cash = ledger(config.capital, flows, today)
+        # An open buy intent has no txn yet, but the broker will take its cash the
+        # moment it fills. Reserved here, so the next scan cannot hand the same
+        # settled dollars to a second order. A paper engine never writes one.
+        for intent, _ in self.intents.list_open(account.id):
+            if intent.side == Side.BUY:
+                cash = cash.spend(intent.notional)
+        return cash
 
     def set_capital(self, capital: Decimal | None) -> EngineConfig:
         """Switch the cash ledger on at `capital`, or off with None.
@@ -484,6 +563,11 @@ class EngineService:
         if capital is not None and capital <= 0:
             raise TrdError("Capital must be positive. Use --off to switch the ledger off.")
         config = self.config()
+        if capital is None and config.is_live:
+            raise TrdError(
+                "A live engine cannot switch the cash ledger off: it trades a cash "
+                "account, and without settled cash it would place orders the broker rejects."
+            )
         if capital is not None:
             # The ledger replays the account's whole history from `capital`, so it
             # is the cash the account STARTED with. Set below what that history
@@ -513,6 +597,7 @@ class EngineService:
             config.timeframe,
             config.max_entries_per_day,
             capital,
+            config.mode,
         )
 
     @staticmethod
@@ -723,17 +808,29 @@ class EngineService:
         run = self.runs.start(now, paper)
 
         result = ScanResult(
-            run_id=run.id, at=now, paper=paper, scanned=len(universe), capacity=config.max_positions
+            run_id=run.id,
+            at=now,
+            paper=paper,
+            scanned=len(universe),
+            capacity=config.max_positions,
+            mode=config.mode,
         )
 
+        # Orders a live engine already has in flight. An open sell means that
+        # position's exit is decided and must not be asked for twice; an open buy
+        # is a position in all but the fill — it holds a slot and the name.
+        in_flight = [intent for intent, _ in self.intents.list_open(account.id)]
+        exiting = {i.position_id for i in in_flight if i.side == Side.SELL and i.position_id}
+        buying = {i.instrument_id for i in in_flight if i.side == Side.BUY}
+
         closed_ids = self._run_exits(
-            config, account, open_positions, quotes, today, now, paper, result
+            config, account, open_positions, quotes, today, now, paper, result, exiting
         )
         held = {
             instrument.id
             for position, instrument in open_positions
             if position.id not in closed_ids
-        }
+        } | buying
         # Exits free capacity for entries — that is the point of running them
         # first — but the freed *symbol* must not be a candidate on the same bar.
         # Without this the engine sold and re-bought the same name at the same
@@ -783,7 +880,9 @@ class EngineService:
         now: datetime,
         paper: bool,
         result: ScanResult,
+        exiting: set[int] | None = None,
     ) -> set[int]:
+        exiting = exiting or set()
         closed_ids: set[int] = set()
         source = self.bars(config)
         for position, instrument in open_positions:
@@ -811,7 +910,10 @@ class EngineService:
                 now,
                 config.timeframe,
             )
-            if decision is None:
+            if decision is None or position.id in exiting:
+                # Also the path for a live position whose sell is already in
+                # flight: the state machine keeps advancing, so a rejected order
+                # leaves a trail that is current, but nothing asks to sell twice.
                 self.positions.touch(
                     position.id, live.trail_high, live.bars_held, source.session(bars[-1])
                 )
@@ -847,6 +949,27 @@ class EngineService:
                 setup=signal.reason if signal else None,
                 trigger_price=decision.level,
             )
+            if paper and config.is_live:
+                # The exit is decided, not done: the position stays open and keeps
+                # its slot until the broker's fill says it sold. Sized exactly as
+                # paper would sell, so a partial (scale_out) asks for the same piece.
+                intent = self.intents.insert(
+                    account_id=account.id,
+                    instrument_id=instrument.id,
+                    side=Side.SELL,
+                    quantity=sold,
+                    ref_price=price,
+                    reason=decision.reason,
+                    strategy=position.strategy,
+                    created_at=now,
+                    rule=decision.rule,
+                    position_id=position.id,
+                )
+                self.positions.touch(
+                    position.id, live.trail_high, live.bars_held, source.session(bars[-1])
+                )
+                result.intents.append(OrderIntentRow(intent=intent, instrument=instrument))
+                continue
             if paper:
                 self.txns.insert(
                     account_id=account.id,
@@ -1043,7 +1166,7 @@ class EngineService:
         # the passed-over signals are half the learning. An early return here would
         # make a spent budget look like a quiet tape.
         if config.max_entries_per_day > 0:
-            spent = self.positions.count_opened_on(account.id, now.date())
+            spent = self._entries_on(config, account, now.date())
             remaining = max(0, config.max_entries_per_day - spent)
             # Reported only when the budget actually *binds* — when it turns away a
             # name the slots would otherwise have taken. Counted over distinct
@@ -1090,14 +1213,24 @@ class EngineService:
                     "not buying back the same name at the same price"
                 )
                 continue
-            fill = self._open_position(
-                config, account, instrument, bars, signal_id, scan_signal, now, result, cash
-            )
-            if fill is None:
-                continue
+            if config.is_live:
+                row = self._write_buy_intent(
+                    config, account, instrument, bars, signal_id, scan_signal, now, result, cash
+                )
+                if row is None:
+                    continue
+                cost = row.intent.notional
+                result.intents.append(row)
+            else:
+                fill = self._open_position(
+                    config, account, instrument, bars, signal_id, scan_signal, now, result, cash
+                )
+                if fill is None:
+                    continue
+                cost = fill.quantity * fill.price
+                result.opened.append(fill)
             if cash is not None:
-                cash = cash.spend(fill.quantity * fill.price)
-            result.opened.append(fill)
+                cash = cash.spend(cost)
             taken.add(instrument.id)
             capacity -= 1
         result.capacity = max(0, capacity)
@@ -1115,17 +1248,8 @@ class EngineService:
         cash: CashLedger | None = None,
     ) -> ScanFill | None:
         price = bars[-1].close
-        plan, skip = plan_entry(bars, config.position_size, config.exit_params, config.sizing_mode)
+        plan = self._affordable_plan(config, instrument, bars, result, cash)
         if plan is None:
-            if skip is not None:
-                result.skipped.append(f"{instrument.symbol}: {skip}")
-            return None
-        # Checked against the sized plan, not position_size: under risk sizing the
-        # committed capital floats, so only the plan knows what this entry costs.
-        # Fees are zero on every fill the engine records today.
-        cost = plan.quantity * price
-        if cash is not None and cost > cash.settled:
-            result.skipped.append(cash.shortfall(instrument.symbol, cost))
             return None
 
         self.txns.insert(
@@ -1151,11 +1275,7 @@ class EngineService:
             atr_at_entry=plan.atr,
             last_bar_date=self.bars(config).session(bars[-1]),
         )
-        if signal_id is not None:
-            self.signals.mark_acted(signal_id)
-        for stored in result.signals:
-            if stored.symbol == instrument.symbol and stored.strategy == scan_signal.strategy:
-                stored.acted = True
+        self._mark_acted(signal_id, instrument, scan_signal, result)
         return ScanFill(
             symbol=instrument.symbol,
             strategy=scan_signal.strategy,
@@ -1172,6 +1292,94 @@ class EngineService:
             planned_1r=(price - plan.stop_price) * plan.quantity,
             setup=scan_signal.reason,
         )
+
+    @staticmethod
+    def _affordable_plan(
+        config: EngineConfig,
+        instrument: Instrument,
+        bars: list[Bar],
+        result: ScanResult,
+        cash: CashLedger | None,
+    ) -> EntryPlan | None:
+        """The sized entry, or None (with the reason in `skipped`) when it cannot
+        be sized or settled cash cannot pay for it. Shared by the paper fill and
+        the live intent, so both refuse exactly the same entries."""
+        plan, skip = plan_entry(bars, config.position_size, config.exit_params, config.sizing_mode)
+        if plan is None:
+            if skip is not None:
+                result.skipped.append(f"{instrument.symbol}: {skip}")
+            return None
+        # Checked against the sized plan, not position_size: under risk sizing the
+        # committed capital floats, so only the plan knows what this entry costs.
+        # Fees are zero on every fill the engine records today.
+        cost = plan.quantity * bars[-1].close
+        if cash is not None and cost > cash.settled:
+            result.skipped.append(cash.shortfall(instrument.symbol, cost))
+            return None
+        return plan
+
+    def _mark_acted(
+        self,
+        signal_id: int | None,
+        instrument: Instrument,
+        scan_signal: ScanSignal,
+        result: ScanResult,
+    ) -> None:
+        if signal_id is not None:
+            self.signals.mark_acted(signal_id)
+        for stored in result.signals:
+            if stored.symbol == instrument.symbol and stored.strategy == scan_signal.strategy:
+                stored.acted = True
+
+    def _write_buy_intent(
+        self,
+        config: EngineConfig,
+        account: Account,
+        instrument: Instrument,
+        bars: list[Bar],
+        signal_id: int | None,
+        scan_signal: ScanSignal,
+        now: datetime,
+        result: ScanResult,
+        cash: CashLedger | None,
+    ) -> OrderIntentRow | None:
+        """A live entry: the order the engine wants, and no position.
+
+        The plan travels with it. The position is opened when the fill arrives, at
+        the price actually paid, with the stop re-derived from `atr_at_entry` by
+        `stop_distance` — so live R is measured from the real entry, not from the
+        price this scan saw.
+        """
+        plan = self._affordable_plan(config, instrument, bars, result, cash)
+        if plan is None:
+            return None
+        intent = self.intents.insert(
+            account_id=account.id,
+            instrument_id=instrument.id,
+            side=Side.BUY,
+            quantity=plan.quantity,
+            ref_price=bars[-1].close,
+            reason=scan_signal.reason,
+            strategy=scan_signal.strategy,
+            created_at=now,
+            signal_id=signal_id,
+            stop_price=plan.stop_price,
+            target_price=plan.target_price,
+            atr_at_entry=plan.atr,
+        )
+        self._mark_acted(signal_id, instrument, scan_signal, result)
+        return OrderIntentRow(intent=intent, instrument=instrument)
+
+    def _entries_on(self, config: EngineConfig, account: Account, session: date) -> int:
+        """Entries taken in one session, for the per-session budget.
+
+        Paper counts positions opened. Live counts buy intents — open or filled —
+        because every live position comes from one, and a position whose fill has
+        not arrived yet has still spent its place in the budget.
+        """
+        if config.is_live:
+            return self.intents.count_buys_on(account.id, session)
+        return self.positions.count_opened_on(account.id, session)
 
     def trim(
         self,
@@ -1191,6 +1399,11 @@ class EngineService:
         The stop, target and trail are deliberately untouched. Taking money off
         the table is not a reason to change the plan for what is left.
         """
+        if self.config().is_live:
+            raise TrdError(
+                "trim is paper-only. A live engine's position is sold by the broker, and a "
+                "manual sell recorded here would not match what the account actually did."
+            )
         account = self.account()
         instrument = self.instruments.get_by_symbol(symbol.upper())
         if instrument is None:
@@ -1262,6 +1475,21 @@ class EngineService:
         return [
             SignalRow(signal=signal, instrument=instrument)
             for signal, instrument in self.signals.list_recent(limit, strategy)
+        ]
+
+    def intent_rows(self, status: str | None = None) -> list[OrderIntentRow]:
+        """The engine account's order intents, newest first. Empty on a paper
+        engine, which fills its own decisions and never writes one."""
+        wanted: IntentStatus | None = None
+        if status is not None:
+            try:
+                wanted = IntentStatus(status)
+            except ValueError:
+                known = ", ".join(s.value for s in IntentStatus)
+                raise TrdError(f"Unknown intent status {status!r}. One of: {known}.") from None
+        return [
+            OrderIntentRow(intent=intent, instrument=instrument)
+            for intent, instrument in self.intents.list_for(self.account().id, wanted)
         ]
 
     def position_rows(
@@ -1357,6 +1585,7 @@ class EngineService:
         midnight = datetime.combine(date.today(), datetime.min.time())
         cash = self._ledger(config, account, date.today()) if config.capital is not None else None
         nxt = cash.next_settle if cash is not None else None
+        in_flight = [intent for intent, _ in self.intents.list_open(account.id)]
         return EngineStatus(
             build=build_version(),
             db_path=db_path,
@@ -1370,13 +1599,16 @@ class EngineService:
             flat_at_minute=int(config.exit_params.get("flat_at_minute", 0)),
             timeframe=config.timeframe,
             max_entries_per_day=config.max_entries_per_day,
-            entries_today=self.positions.count_opened_on(account.id, date.today()),
+            entries_today=self._entries_on(config, account, date.today()),
             regime_sma=int(config.exit_params.get("regime_sma", 0)),
             regime_vix_max=float(config.exit_params.get("regime_vix_max", 0)),
             capital=config.capital,
             cash_settled=cash.settled if cash is not None else None,
             cash_unsettled=cash.unsettled if cash is not None else None,
             cash_next_settle=nxt[0] if nxt is not None else None,
+            mode=config.mode,
+            open_intents=len(in_flight),
+            open_buy_intents=sum(1 for i in in_flight if i.side == Side.BUY),
             open_positions=len(open_pairs),
             closed_trades=len(closed_pairs),
             committed=committed,
@@ -1547,9 +1779,9 @@ class EngineService:
 
 
 def scan_events(result: ScanResult) -> list[dict]:
-    """One flat dict per thing that happened, ordered closes -> opens -> signals ->
-    summary. Emitted as NDJSON for log shipping, so each event is independently
-    queryable instead of buried in a rendered table.
+    """One flat dict per thing that happened, ordered closes -> opens -> intents ->
+    signals -> summary. Emitted as NDJSON for log shipping, so each event is
+    independently queryable instead of buried in a rendered table.
 
     Money is floats here on purpose: this is telemetry headed for a dashboard, not
     the ledger. Every stored value stays Decimal.
@@ -1587,6 +1819,22 @@ def scan_events(result: ScanResult) -> list[dict]:
                 "reason": fill.reason,
             }
         )
+    for row in result.intents:
+        events.append(
+            {
+                "ev": "intent",
+                "ts": stamp,
+                "symbol": row.instrument.symbol,
+                "side": row.intent.side.value,
+                "strategy": row.intent.strategy,
+                "rule": row.intent.rule,
+                "quantity": num(row.intent.quantity),
+                "ref_price": num(row.intent.ref_price),
+                "notional": num(row.intent.notional),
+                "ref_id": row.intent.ref_id,
+                "reason": row.intent.reason,
+            }
+        )
     for signal in result.signals:
         events.append(
             {
@@ -1609,10 +1857,12 @@ def scan_events(result: ScanResult) -> list[dict]:
             "version": build_version(),
             "run_id": result.run_id,
             "paper": result.paper,
+            "mode": result.mode.value,
             "scanned": result.scanned,
             "signals": len(result.signals),
             "opened": len(result.opened),
             "closed": len(result.closed),
+            "intents": len(result.intents),
             "open_positions": result.open_positions,
             "capacity": result.capacity,
             "skipped": len(result.skipped),

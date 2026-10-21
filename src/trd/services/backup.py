@@ -25,7 +25,7 @@ import duckdb
 from pydantic import BaseModel
 
 from trd.errors import TrdError
-from trd.models import SizingMode
+from trd.models import EngineMode, SizingMode
 from trd.repos.engine import DEFAULT_EARNINGS_BLACKOUT_DAYS
 
 BACKUP_VERSION = 5
@@ -219,7 +219,7 @@ def export_data(conn: duckdb.DuckDBPyConnection) -> dict:
         """
         SELECT a.name, c.watchlist, c.position_size, c.max_positions, c.strategies, c.exit_params,
                c.earnings_blackout_days, c.sizing_mode, c.timeframe, c.max_entries_per_day,
-               c.capital
+               c.capital, c.mode
         FROM engine_config c JOIN account a ON a.id=c.account_id
         ORDER BY c.id DESC LIMIT 1
         """
@@ -241,6 +241,8 @@ def export_data(conn: duckdb.DuckDBPyConnection) -> dict:
             # A string, like position_size: money stays Decimal across the JSON.
             # None is the cash ledger switched off, and must restore as off.
             "capital": str(r[10]) if r[10] is not None else None,
+            # NULL is a pre-027 engine, which is paper by definition.
+            "mode": r[11] or EngineMode.PAPER.value,
         }
 
     # Signals are keyed by (symbol, strategy, bar_ts) — the same natural key the
@@ -556,8 +558,9 @@ def restore_data(conn: duckdb.DuckDBPyConnection, data: dict) -> BackupStats:
         conn.execute(
             """INSERT INTO engine_config
                  (account_id, watchlist, position_size, max_positions, strategies, exit_params,
-                  earnings_blackout_days, sizing_mode, timeframe, max_entries_per_day, capital)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                  earnings_blackout_days, sizing_mode, timeframe, max_entries_per_day, capital,
+                  mode)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             [
                 account_id[config["account"]],
                 config["watchlist"],
@@ -576,6 +579,8 @@ def restore_data(conn: duckdb.DuckDBPyConnection, data: dict) -> BackupStats:
                 # where every same-day refill is then an order the broker rejects.
                 config.get("max_entries_per_day") or 0,
                 Decimal(config["capital"]) if config.get("capital") is not None else None,
+                # Every backup before SB-1374 is a paper engine: live did not exist.
+                EngineMode(config.get("mode") or EngineMode.PAPER.value).value,
             ],
         )
 

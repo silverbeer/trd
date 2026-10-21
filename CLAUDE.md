@@ -94,7 +94,7 @@ trd sim init --monthly 100 [--strategy ticker|momentum] [--ticker SPY] [--alloc 
                                       # sim = plan on a paper (simulation) account; sim invest/status same
 trd engine init [--account NAME] [--size 1000] [--max 5] [--symbols A,B,...] [--strategies K,K]
                       [--sizing exposure|risk] [--timeframe 1d|5m|15m|30m|1h] [--flat-at 1555]
-                      [--regime-sma 100] [--regime-vix-max 30]
+                      [--regime-sma 100] [--regime-vix-max 30] [--capital C] [--live]
                                                  # 'exposure' commits --size/trade (risk floats);
                                                  # 'risk' risks --size/trade (position size floats)
                                                  # --timeframe is the bar width the rules run on;
@@ -106,6 +106,17 @@ trd engine init [--account NAME] [--size 1000] [--max 5] [--symbols A,B,...] [--
                                                  # ('trd engine status' shows the gate either way)
                                       # monitor-mode trading engine: paper-trades a 10-name universe
                                       # on a simulation account. Needs 'trd sync --full' (200 bars)
+                                      # --live: trade a REAL account instead. Scans fill nothing;
+                                      # each entry/exit is written as an ORDER INTENT ('trd engine
+                                      # intents') for the agent-side broker session to place.
+                                      # Refused without --capital (cash account, T+1 ledger is
+                                      # mandatory), on intraday bars, or with --flat-at; refused on
+                                      # a simulation account, as paper is refused on a real one.
+                                      # An open buy intent holds a slot, the name, its entry-budget
+                                      # place and its notional in settled cash; an open sell intent
+                                      # leaves the position open and blocks a second exit for it.
+                                      # 'engine trim' is refused live. Fill ingest (1b) and the
+                                      # outbox (1c) are not built: nothing resolves an intent yet
 trd engine scan [--paper/--no-paper] [--json] [--exits-only]
                                       # one pass: exits first, then best-ranked entries.
                                       # --exits-only manages the book and ranks but buys nothing:
@@ -117,6 +128,13 @@ trd engine scan [--paper/--no-paper] [--json] [--exits-only]
                                       # takes a position
 trd engine monitor [--interval 60] [--passes N] # live view on a terminal: book stays still, clock/
                                       # capacity/activity move. Piped or --ndjson falls back to scrolling
+trd engine intents [--status S] [--json]
+                                      # a live engine's order intents, newest first: side, qty,
+                                      # ref price (what the scan saw — never a fill), notional,
+                                      # status (pending | submitted | awaiting_approval | filled |
+                                      # rejected | cancelled | expired; the first three are open)
+                                      # and the fill when one lands. Empty on a paper engine.
+                                      # 'trd learn order-intent'
 trd engine positions [--all]          # open trades: entry, stop (↑ = trailing in force), risk, target, R
                                       # risk = (mark − stop in force) × remaining qty, floored at 0 —
                                       # what this trade loses from here, not what it committed
@@ -608,7 +626,7 @@ CSV import format (header required): `date,account,symbol,side,quantity,price[,f
   Kubernetes create an empty directory in its place and every pod then ran happily against
   no database. `Directory` fails the mount instead. The scan entrypoint refuses to start on
   a missing or empty `trd.duckdb` for the same reason, naming the share as the likely cause.
-- The engine only ever trades a `simulation` account, and its fills are ordinary `txn` rows — so portfolio/equity/XIRR/drawdown work on it unchanged. `engine_position` stores only what a txn can't: strategy, stop/target, trail high-water mark, exit reason. The initial stop is immutable so closed-trade R-multiples stay meaningful.
+- An engine is **paper** or **live** (`engine_config.mode`, migration 027 — a mode on the config, never a third account type, because `account.type`'s `CHECK` cannot be widened). A **paper** engine trades a `simulation` account and fills its own decisions as ordinary `txn` rows — so portfolio/equity/XIRR/drawdown work on it unchanged. A **live** engine trades a `real` account and fills nothing: where paper would write a txn, the scan writes an `order_intent` (side, quantity, the price it saw, the entry plan or the exit rule, a uuid `ref_id` the broker uses as its idempotency key) and leaves `engine_position` alone. The fill is the broker's and is ingested separately, at the real price, with the stop re-derived from the intent's `atr_at_entry` by `stop_distance` so live R is measured from what was paid. An open intent claims what it asked for: a buy holds a slot, the name, its entry-budget place and its notional in the cash ledger; a sell blocks a second exit on the same position. Nothing under `src/trd` places an order — the intent is the hand-off to the agent-side broker session. Either way, `engine_position` stores only what a txn can't: strategy, stop/target, trail high-water mark, exit reason. The initial stop is immutable so closed-trade R-multiples stay meaningful.
 - Tests never hit the network. Extend `FakeProvider` in [tests/conftest.py](tests/conftest.py).
 
 ## Environment

@@ -26,7 +26,7 @@ from typing import Any
 from trd.engine import EXIT_REGISTRY
 from trd.engine import REGISTRY as STRATEGIES
 from trd.engine.bars import DAILY
-from trd.models import StrategyStat
+from trd.models import OrderIntentRow, StrategyStat
 from trd.services.daily_report import DailyReport, EngineDay, ExitEvent
 from trd.services.engine import ScanFill, ScanResult
 from trd.services.review import EnginePack, ReviewResult
@@ -235,11 +235,28 @@ def close_message(fill: ScanFill, label: str | None = None) -> str:
     return "\n".join(lines)
 
 
+def intent_message(row: OrderIntentRow, label: str | None = None) -> str:
+    """A live engine's order, stated as an order and not as a fill: nothing has
+    traded yet. Deliberately minimal until SB-1376 gives intents their own
+    messages."""
+    intent = row.intent
+    lines = [
+        f"{_tag(label)}ORDER INTENT · {intent.side.value.upper()} {row.instrument.symbol} — "
+        f"{_strategy_name(intent.strategy)}",
+        f"{intent.quantity:g} sh @ ~{_money(intent.ref_price)} ({_money(intent.notional)}) · "
+        f"{intent.status.value}",
+        intent.reason,
+    ]
+    return "\n".join(lines)
+
+
 def scan_messages(result: ScanResult, label: str | None = None) -> list[str]:
     """Closes first — an exit that freed capital explains the entry that follows."""
-    return [close_message(f, label) for f in result.closed] + [
-        open_message(f, label) for f in result.opened
-    ]
+    return (
+        [close_message(f, label) for f in result.closed]
+        + [open_message(f, label) for f in result.opened]
+        + [intent_message(row, label) for row in result.intents]
+    )
 
 
 # ------------------------------------------------------------- daily report
