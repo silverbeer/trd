@@ -51,9 +51,15 @@ spec:
                 # Names this engine in pushed fills. Two engines share one chat
                 # and the same symbol can be in both universes, so an unlabelled
                 # fill can't say whether it will be held overnight. The deploy
-                # script rewrites this to ${ENGINE_NAME}, same as the name above.
+                # script rewrites this to the engine's label (swing, day,
+                # swing20) — the name the bot and the daily report use for it.
                 - name: TRD_ENGINE_LABEL
                   value: trd-engine
+                # "0" scans without --notify: no per-fill pushes. The deploy
+                # script sets it per engine; only swing20 runs quiet. Chat
+                # replies (apply-queue --notify) are unaffected.
+                - name: TRD_SCAN_NOTIFY
+                  value: "1"
               envFrom:
                 # Telegram credentials. Optional by design: without this secret the
                 # scan still runs and just logs that it sent nothing.

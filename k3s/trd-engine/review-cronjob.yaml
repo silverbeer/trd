@@ -47,17 +47,17 @@ spec:
               # The entrypoint runs whatever trd subcommand it is given, so the
               # report, the bot and the scan are one image with three arguments.
               #
-              # Both engines in one invocation: one database is one engine, so
-              # "combined" is two reads summed, and one message covering both is
-              # the entire point — two messages would be the fill alerts again.
-              # The deterministic review over both engines, then the model's
+              # Every engine in one invocation: one database is one engine, so
+              # "combined" is separate reads summed, and one message covering all is
+              # the entire point — one message per engine would be the fill alerts again.
+              # The deterministic review over every engine, then the model's
               # read on top of it, snapshotted per engine (dated, so a claim
               # made Tuesday can be scored Friday) and sent as one message.
               args:
                 - engine
                 - review
                 - --engines
-                - swing=/engines/swing,day=/engines/day
+                - swing=/engines/swing,day=/engines/day,swing20=/engines/swing20
                 - --ai
                 - --snapshot
                 - --notify
@@ -104,12 +104,14 @@ spec:
                   drop:
                     - ALL
               volumeMounts:
-                # The same two homes the bot mounts, under the same names, so the
+                # The same homes the bot mounts, under the same names, so the
                 # engine called "day" in chat is the engine called "day" here.
                 - name: swing-home
                   mountPath: /engines/swing
                 - name: day-home
                   mountPath: /engines/day
+                - name: swing20-home
+                  mountPath: /engines/swing20
           volumes:
             # EDIT these paths for the machine you deploy to — deploy-k3s.sh rewrites
             # them by the suffix each one already carries.
@@ -127,4 +129,8 @@ spec:
             - name: day-home
               hostPath:
                 path: /Users/***REMOVED***/.trd-day
+                type: Directory
+            - name: swing20-home
+              hostPath:
+                path: /Users/***REMOVED***/.trd-swing20
                 type: Directory
