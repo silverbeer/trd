@@ -51,6 +51,48 @@ kubectl logs -n trd -l component=trd-day --tail=100 -f   # one engine
 kubectl logs -n trd -l app=trd --tail=100 -f             # all of them
 ```
 
+### swing20 — the paper copy of the live engine
+
+`--swing20` deploys a third engine against `~/.trd-swing20`: the swing engine's
+rules at the size the live engine will trade — 5 slots x $20 on $100 of capital,
+with the T+1 settled-cash ledger on (`trd learn settlement`).
+
+```bash
+./scripts/deploy-k3s.sh --skip-build --swing20
+```
+
+Its CronJobs are `trd-swing20-scan` and `trd-swing20-queue`. It **does not push
+fills**: the script sets `TRD_SCAN_NOTIFY=0` on its scan, so the entrypoint runs
+`trd engine scan` without `--notify`. It still shows up in the post-market report
+and the nightly review (as `swing20`), and chat still works — the queue drain
+keeps `--notify`, so a command typed for it is answered.
+
+**Seed it by hand before the first deploy.** The script never reads another
+engine's database, so it cannot copy swing's universe and rule set; left to
+itself, its seed step would take the default ten names and every strategy.
+Copy them from swing's published status (a no-network read):
+
+```bash
+SWING=$(TRD_HOME=~/.trd-engine trd engine status --json)
+SYMS=$(jq -r '.universe | join(",")' <<<"$SWING")
+STRATS=$(jq -r '.strategies | join(",")' <<<"$SWING")
+
+TRD_HOME=~/.trd-swing20 trd init
+TRD_HOME=~/.trd-swing20 trd engine init --account swing20 --size 20 --max 5 \
+    --capital 100 --symbols "$SYMS" --strategies "$STRATS"
+TRD_HOME=~/.trd-swing20 trd sync --full
+TRD_HOME=~/.trd-swing20 trd engine cash      # capital 100.00, all of it settled
+```
+
+If swing runs with `--earnings-blackout`, `--regime-sma` or `--regime-vix-max`
+off their defaults (`trd engine status` shows each), pass the same values to
+`engine init` — a copy that differs in a gate is not a copy. Then deploy with
+`--swing20`; the seed step sees a configured engine and leaves it alone.
+
+Remember the shared jobs: after the first `--swing20` deploy, re-run `--report`,
+`--review` and `--bot` so they mount `~/.trd-swing20` — each refuses to apply
+while the directory is missing.
+
 `concurrencyPolicy: Forbid` is per CronJob, so it does not stop two *different*
 engines running at once — that is fine, because they hold separate DuckDB files
 and never contend for the same writer lock.
@@ -159,11 +201,16 @@ same chat — and the same symbol can sit in both universes. Fills are therefore
 prefixed with the sender:
 
 ```
-[trd-day] 🟢 BUY MSFT x2 @ 512.40
+[day] 🟢 BUY MSFT x2 @ 512.40
 ```
 
-The deploy script sets `TRD_ENGINE_LABEL` to the engine's name, so this needs no
-configuration. Running the CLI by hand (`trd engine scan --notify`) with no such
+The deploy script sets `TRD_ENGINE_LABEL` per engine — `swing` (the default
+engine), `day` (`--day`), `swing20` (`--swing20`) — on both its scan and its
+queue CronJob, so this needs no configuration. The label is the same word the
+bot, the report and the review use for that engine's home, so a fill, a chat
+reply and the evening report never call one engine by two names. It is
+deliberately not the Kubernetes name: the first engine's objects are still
+`trd-engine-*`. Running the CLI by hand (`trd engine scan --notify`) with no such
 variable set falls back to `swing` or `day`, read from whether the rule set has a
 `flat_at_minute`. Set `TRD_ENGINE_LABEL` yourself to name an engine anything else.
 
@@ -231,16 +278,16 @@ nothing, because silence is then correct.
 
 **It must not be deployed into the cluster it watches.** That is the whole point.
 
-## The nightly decision review — one message, both engines
+## The nightly decision review — one message, every engine
 
 ```bash
-./scripts/deploy-k3s.sh --review      # 16:31 ET, weekdays, swing + day in one message
+./scripts/deploy-k3s.sh --review      # 16:31 ET, weekdays, swing + day + swing20 in one message
 kubectl create job -n trd --from=cronjob/trd-engine-review review-now
 kubectl logs -n trd -l component=review --tail=80
 ```
 
-`trd engine review --engines swing=…,day=… --ai --snapshot --notify`: the deterministic
-findings over both engines' packs, the model's read on top of them, one dated
+`trd engine review --engines swing=…,day=…,swing20=… --ai --snapshot --notify`: the deterministic
+findings over every engine's pack, the model's read on top of them, one dated
 `review_snapshot` row per engine (so a claim made Tuesday can be scored Friday), and
 one Telegram message — the arithmetic first, the model's read below it, visually
 separate, because a detector's number and a model's conclusion are different kinds of
@@ -285,17 +332,17 @@ computed.
 
 The fill feed says a trade happened. It never says whether the day was good, which
 is how a system that runs every day stops being read. One CronJob fixes that with
-one message after the close, covering both engines:
+one message after the close, covering every engine:
 
 ```bash
-./scripts/deploy-k3s.sh --report      # 16:16 ET, weekdays, swing + day in one message
+./scripts/deploy-k3s.sh --report      # 16:16 ET, weekdays, swing + day + swing20 in one message
 ```
 
 Run it by hand against the live homes, no schedule and no Telegram:
 
 ```bash
 TRD_HOME=~/.trd-engine trd engine daily-report \
-  --engines swing=$HOME/.trd-engine,day=$HOME/.trd-day
+  --engines swing=$HOME/.trd-engine,day=$HOME/.trd-day,swing20=$HOME/.trd-swing20
 ```
 
 Send one now from the cluster:
@@ -378,15 +425,18 @@ Three different periods appear in one message, so the words are load-bearing:
   being trusted. The job still exits 0: a named problem in the message beats a pod
   that simply failed.
 
-### Why 16:16, and why one job for both engines
+The combined row is called `both` with exactly two engines and `all` with three
+or more — the deployed set (swing, day, swing20) reads `all`.
+
+### Why 16:16, and why one job for every engine
 
 The day engine flattens at 15:55 and the scan entrypoint refuses to run past
 16:00, so nothing holds the writer lock by then. The `:16` is deliberate too —
 the queue drain fires on the ten-minute grid, and DuckDB has one writer.
 
-One database is one engine, so "combined" is two reads summed rather than one
-query, and the job mounts both homes exactly as the bot does. Deploying it per
-engine would produce two messages a night, which is the fill feed again.
+One database is one engine, so "combined" is separate reads summed rather than one
+query, and the job mounts every home exactly as the bot does. Deploying it per
+engine would produce a message per engine a night, which is the fill feed again.
 
 ## Command bot — driving the engines from chat
 
@@ -460,11 +510,11 @@ warming up.
 ### Deploying it
 
 One database is one engine (`EngineConfigRepo.get` takes the most recent
-config), so day and swing are separate homes and the bot is told about both:
+config), so swing, day and swing20 are separate homes and the bot is told about each:
 
 ```yaml
 - name: TRD_BOT_ENGINES
-  value: swing=/engines/swing,day=/engines/day
+  value: swing=/engines/swing,day=/engines/day,swing20=/engines/swing20
 ```
 
 ```bash
@@ -472,7 +522,8 @@ config), so day and swing are separate homes and the bot is told about both:
 kubectl logs -n trd -l component=bot -f
 ```
 
-The script rewrites both `hostPath`s for this machine — the committed
+The script rewrites each `hostPath` for this machine, matched by its suffix
+(`.trd-engine`, `.trd-day`, `.trd-swing20`) — the committed
 `/Users/tomdrake/...` is a default, exactly as it is for the CronJobs — and
 refuses to apply anything if the secret has no `TRD_BOT_ALLOWED_USER_IDS`, or if
 an engine home does not exist. Both refusals print the fix: a pod that

@@ -7,11 +7,12 @@
 #   ./scripts/deploy-k3s.sh --skip-build    # apply manifests against the existing image
 #   ./scripts/deploy-k3s.sh --test          # apply, then run one scan now (ignores market hours)
 #   ./scripts/deploy-k3s.sh --day           # the day-mode engine (~/.trd-day) instead
+#   ./scripts/deploy-k3s.sh --swing20       # the paper copy of the live engine (~/.trd-swing20)
 #   ./scripts/deploy-k3s.sh --bot           # the Telegram command bot (one Deployment)
-#   ./scripts/deploy-k3s.sh --report        # the post-market report (one CronJob, both engines)
-#   ./scripts/deploy-k3s.sh --review        # the nightly decision review (one CronJob, both engines)
+#   ./scripts/deploy-k3s.sh --report        # the post-market report (one CronJob, every engine)
+#   ./scripts/deploy-k3s.sh --review        # the nightly decision review (one CronJob, every engine)
 #
-# Two engines can run side by side: they share the image, the namespace and the
+# Engines run side by side: they share the image, the namespace and the
 # optional Telegram secret, and differ only in which database they mount. The
 # manifest is rewritten per deployment rather than duplicated, so there is one
 # file to keep correct.
@@ -31,6 +32,7 @@ NAMESPACE="trd"
 SKIP_BUILD=false
 RUN_TEST=false
 DAY_MODE=false
+SWING20_MODE=false
 BOT_MODE=false
 REPORT_MODE=false
 REVIEW_MODE=false
@@ -39,34 +41,68 @@ while [[ $# -gt 0 ]]; do
         --skip-build) SKIP_BUILD=true; shift ;;
         --test) RUN_TEST=true; shift ;;
         --day) DAY_MODE=true; shift ;;
+        --swing20) SWING20_MODE=true; shift ;;
         --bot) BOT_MODE=true; shift ;;
         --report) REPORT_MODE=true; shift ;;
         --review) REVIEW_MODE=true; shift ;;
         *)
             echo "Unknown option: $1"
-            echo "Usage: $0 [--skip-build] [--test] [--day] [--bot] [--report] [--review]"
+            echo "Usage: $0 [--skip-build] [--test] [--day | --swing20] [--bot] [--report] [--review]"
             exit 1
             ;;
     esac
 done
 
+if [[ "$DAY_MODE" == true && "$SWING20_MODE" == true ]]; then
+    echo "--day and --swing20 name different engines; pick one."
+    exit 1
+fi
+
 # Which engine this invocation deploys. The name is load-bearing: it becomes the
 # CronJob name, so without it a second deployment would REPLACE the first and
 # silently repoint the running engine at the other database.
+#
+# ENGINE_LABEL is a different thing: what the engine calls itself in Telegram
+# (TRD_ENGINE_LABEL), and the same word the bot, the report and the review use
+# for its home. It is not derived from ENGINE_NAME because the first engine's
+# objects are called trd-engine, and renaming them would orphan the running
+# CronJobs — while "trd-engine" in chat named nothing anyone types.
+#
+# SCAN_NOTIFY=0 makes the scan run without --notify (deploy/engine-entrypoint.sh).
 if [[ "$DAY_MODE" == true ]]; then
     ENGINE_NAME="${ENGINE_NAME:-trd-day}"
     ENGINE_HOME="${ENGINE_HOME:-$HOME/.trd-day}"
-    DAY_FLAG=" --day"
+    ENGINE_LABEL="day"
+    SCAN_NOTIFY=1
+    MODE_FLAG=" --day"
     # Load-bearing: an engine seeded without this is a swing engine wearing a day
     # engine's name — it would carry positions overnight, the one thing day mode
     # exists to prevent.
     INIT_FLAGS=(--flat-at "${FLAT_AT:-1555}")
+elif [[ "$SWING20_MODE" == true ]]; then
+    # The paper copy of the future live engine: 5 slots x $20 on $100 of capital,
+    # T+1 settled-cash ledger on. Fills are NOT pushed — a third engine posting
+    # every fill to the shared chat is the noise the daily report replaced; it
+    # still appears in the report and the review, and still answers chat.
+    ENGINE_NAME="${ENGINE_NAME:-trd-swing20}"
+    ENGINE_HOME="${ENGINE_HOME:-$HOME/.trd-swing20}"
+    ENGINE_LABEL="swing20"
+    SCAN_NOTIFY=0
+    MODE_FLAG=" --swing20"
+    # The swing engine's strategies and universe are deliberately NOT read here:
+    # this script never opens another engine's database. Seed ~/.trd-swing20 by
+    # hand first, passing swing's --strategies and --symbols (k3s/trd-engine/
+    # README.md, "swing20"). The seed step below only runs on an unconfigured
+    # home, and on its own it would take the default ten names and every rule.
+    INIT_FLAGS=(--account swing20 --size 20 --max 5 --capital 100)
 else
     ENGINE_NAME="${ENGINE_NAME:-trd-engine}"
     # The engine's own database. Deliberately NOT your real trd database: this
     # one holds a paper account and its universe's price history, nothing else.
     ENGINE_HOME="${ENGINE_HOME:-$HOME/.trd-engine}"
-    DAY_FLAG=""
+    ENGINE_LABEL="swing"
+    SCAN_NOTIFY=1
+    MODE_FLAG=""
     INIT_FLAGS=()
 fi
 
@@ -76,6 +112,7 @@ echo -e "${BLUE}K3s Deployment: ${ENGINE_NAME}${NC}"
 echo -e "${BLUE}========================================${NC}"
 echo -e "Context:     ${YELLOW}${CURRENT_CONTEXT}${NC}"
 echo -e "Engine DB:   ${YELLOW}${ENGINE_HOME}${NC}  (paper only)"
+echo -e "Label:       ${YELLOW}${ENGINE_LABEL}${NC}  (fill pushes $([[ "$SCAN_NOTIFY" == 1 ]] && echo on || echo off))"
 echo -e "Your real DB is not touched by any of this."
 echo ""
 
@@ -172,19 +209,22 @@ echo ""
 #   - component  -> ${ENGINE_NAME}, so `kubectl logs -l component=trd-day` picks
 #                   out one engine. `app: trd` stays on both, keeping the
 #                   existing `-l app=trd` recipe working across all of them.
-#   - TRD_ENGINE_LABEL -> ${ENGINE_NAME}, so pushed fills name their sender.
+#   - TRD_ENGINE_LABEL -> ${ENGINE_LABEL}, so pushed fills and chat replies name
+#                   their sender with the word the bot and the report use.
+#   - TRD_SCAN_NOTIFY  -> ${SCAN_NOTIFY}; the line after the name is the value.
 render_manifest() {
     sed -E \
         -e "s#path: /Users/[^[:space:]]+#path: ${ENGINE_HOME}#" \
         -e "s#name: trd-engine-scan#name: ${ENGINE_NAME}-scan#" \
         -e "s#component: engine#component: ${ENGINE_NAME}#" \
-        -e "s#value: trd-engine\$#value: ${ENGINE_NAME}#" \
+        -e "s#value: trd-engine\$#value: ${ENGINE_LABEL}#" \
+        -e "/name: TRD_SCAN_NOTIFY\$/{n;s#value: .*#value: \"${SCAN_NOTIFY}\"#;}" \
         k3s/trd-engine/cronjob.yaml
 }
 
 # --- the post-market report --------------------------------------------------
-# One CronJob covering BOTH engines, because the whole point is one message a day
-# rather than one per engine per fill. It mounts the same two homes the bot does
+# One CronJob covering EVERY engine, because the whole point is one message a day
+# rather than one per engine per fill. It mounts the same homes the bot does
 # and under the same names, so the engine called "day" in chat is the engine
 # called "day" in the report.
 #
@@ -192,8 +232,9 @@ render_manifest() {
 if [[ "$REPORT_MODE" == true ]]; then
     SWING_HOME="${SWING_HOME:-$HOME/.trd-engine}"
     DAY_HOME="${DAY_HOME:-$HOME/.trd-day}"
+    SWING20_HOME="${SWING20_HOME:-$HOME/.trd-swing20}"
 
-    for home in "$SWING_HOME" "$DAY_HOME"; do
+    for home in "$SWING_HOME" "$DAY_HOME" "$SWING20_HOME"; do
         if [[ ! -d "$home" ]]; then
             echo -e "${RED}✗ ${home} does not exist.${NC} Seed the engine before mounting it."
             exit 1
@@ -211,10 +252,11 @@ if [[ "$REPORT_MODE" == true ]]; then
     # appears twice, so a sed range anchored on the volume name puts both
     # hostPaths on one engine. Matching the path itself has no such ambiguity.
     sed -E \
-        -e "s#path: /Users/[^[:space:]]*\.trd-engine#path: ${SWING_HOME}#" \
-        -e "s#path: /Users/[^[:space:]]*\.trd-day#path: ${DAY_HOME}#" \
+        -e "s#path: /Users/[^[:space:]]*\.trd-engine\$#path: ${SWING_HOME}#" \
+        -e "s#path: /Users/[^[:space:]]*\.trd-day\$#path: ${DAY_HOME}#" \
+        -e "s#path: /Users/[^[:space:]]*\.trd-swing20\$#path: ${SWING20_HOME}#" \
         k3s/trd-engine/daily-report-cronjob.yaml | kubectl apply -f -
-    echo -e "${GREEN}✅ Applied${NC} (trd-engine-report, 16:16 ET weekdays → swing=${SWING_HOME}, day=${DAY_HOME})"
+    echo -e "${GREEN}✅ Applied${NC} (trd-engine-report, 16:16 ET weekdays → swing=${SWING_HOME}, day=${DAY_HOME}, swing20=${SWING20_HOME})"
     echo ""
     echo -e "${BLUE}Send one now (ignores the schedule, not the market calendar):${NC}"
     echo "    kubectl create job -n trd --from=cronjob/trd-engine-report report-now"
@@ -223,7 +265,7 @@ if [[ "$REPORT_MODE" == true ]]; then
 fi
 
 # --- the nightly decision review ---------------------------------------------
-# One CronJob covering BOTH engines, like the report and for the same reason:
+# One CronJob covering EVERY engine, like the report and for the same reason:
 # one message a night. It runs `trd engine review --ai --snapshot --notify` at
 # 16:31 ET — the arithmetic, then the model's read, stored per engine and sent.
 # The model needs ANTHROPIC_API_KEY in a secret named trd-engine-ai; without it
@@ -231,8 +273,9 @@ fi
 if [[ "$REVIEW_MODE" == true ]]; then
     SWING_HOME="${SWING_HOME:-$HOME/.trd-engine}"
     DAY_HOME="${DAY_HOME:-$HOME/.trd-day}"
+    SWING20_HOME="${SWING20_HOME:-$HOME/.trd-swing20}"
 
-    for home in "$SWING_HOME" "$DAY_HOME"; do
+    for home in "$SWING_HOME" "$DAY_HOME" "$SWING20_HOME"; do
         if [[ ! -d "$home" ]]; then
             echo -e "${RED}✗ ${home} does not exist.${NC} Seed the engine before mounting it."
             exit 1
@@ -251,10 +294,11 @@ if [[ "$REVIEW_MODE" == true ]]; then
     echo -e "${YELLOW}⚙️  Applying the review CronJob...${NC}"
     kubectl apply -f k3s/trd-engine/namespace.yaml
     sed -E \
-        -e "s#path: /Users/[^[:space:]]*\.trd-engine#path: ${SWING_HOME}#" \
-        -e "s#path: /Users/[^[:space:]]*\.trd-day#path: ${DAY_HOME}#" \
+        -e "s#path: /Users/[^[:space:]]*\.trd-engine\$#path: ${SWING_HOME}#" \
+        -e "s#path: /Users/[^[:space:]]*\.trd-day\$#path: ${DAY_HOME}#" \
+        -e "s#path: /Users/[^[:space:]]*\.trd-swing20\$#path: ${SWING20_HOME}#" \
         k3s/trd-engine/review-cronjob.yaml | kubectl apply -f -
-    echo -e "${GREEN}✅ Applied${NC} (trd-engine-review, 16:31 ET weekdays → swing=${SWING_HOME}, day=${DAY_HOME})"
+    echo -e "${GREEN}✅ Applied${NC} (trd-engine-review, 16:31 ET weekdays → swing=${SWING_HOME}, day=${DAY_HOME}, swing20=${SWING20_HOME})"
     echo ""
     echo -e "${BLUE}Run one now (ignores the schedule, not the market calendar):${NC}"
     echo "    kubectl create job -n trd --from=cronjob/trd-engine-review review-now"
@@ -271,6 +315,7 @@ fi
 if [[ "$BOT_MODE" == true ]]; then
     SWING_HOME="${SWING_HOME:-$HOME/.trd-engine}"
     DAY_HOME="${DAY_HOME:-$HOME/.trd-day}"
+    SWING20_HOME="${SWING20_HOME:-$HOME/.trd-swing20}"
 
     # Both refusals below are the same idea: fail with the fix rather than start
     # a pod that crash-loops with the answer buried in its logs.
@@ -290,7 +335,7 @@ if [[ "$BOT_MODE" == true ]]; then
         echo "  Usernames are not accepted: they are changeable and re-registerable."
         exit 1
     fi
-    for home in "$SWING_HOME" "$DAY_HOME"; do
+    for home in "$SWING_HOME" "$DAY_HOME" "$SWING20_HOME"; do
         if [[ ! -d "$home" ]]; then
             echo -e "${RED}✗ ${home} does not exist.${NC} Seed the engine before mounting it."
             exit 1
@@ -312,12 +357,15 @@ if [[ "$BOT_MODE" == true ]]; then
     # silently overwrote the other.
     #
     # Matching the path itself has no such ambiguity: whatever the committed
-    # default is, `.trd-engine` is the swing home and `.trd-day` is the day home.
+    # default is, `.trd-engine` is the swing home, `.trd-day` the day home and
+    # `.trd-swing20` the swing20 home. Each is anchored at end of line so no
+    # suffix can match inside another engine's path.
     sed -E \
-        -e "s#path: /Users/[^[:space:]]*\.trd-engine#path: ${SWING_HOME}#" \
-        -e "s#path: /Users/[^[:space:]]*\.trd-day#path: ${DAY_HOME}#" \
+        -e "s#path: /Users/[^[:space:]]*\.trd-engine\$#path: ${SWING_HOME}#" \
+        -e "s#path: /Users/[^[:space:]]*\.trd-day\$#path: ${DAY_HOME}#" \
+        -e "s#path: /Users/[^[:space:]]*\.trd-swing20\$#path: ${SWING20_HOME}#" \
         k3s/trd-engine/bot-deployment.yaml | kubectl apply -f -
-    echo -e "${GREEN}✅ Applied${NC} (trd-engine-bot → swing=${SWING_HOME}, day=${DAY_HOME})"
+    echo -e "${GREEN}✅ Applied${NC} (trd-engine-bot → swing=${SWING_HOME}, day=${DAY_HOME}, swing20=${SWING20_HOME})"
     echo ""
 
     # One poller, or Telegram permanently 409s the second one. Worth asserting
@@ -349,7 +397,7 @@ echo -e "${GREEN}✅ Applied${NC} (${ENGINE_NAME}-scan, hostPath → ${ENGINE_HO
 sed -E \
     -e "s#path: /Users/[^[:space:]]+#path: ${ENGINE_HOME}#" \
     -e "s#name: trd-engine-queue#name: ${ENGINE_NAME}-queue#" \
-    -e "s#value: trd-engine\$#value: ${ENGINE_NAME}#" \
+    -e "s#value: trd-engine\$#value: ${ENGINE_LABEL}#" \
     k3s/trd-engine/apply-queue-cronjob.yaml | kubectl apply -f -
 echo -e "${GREEN}✅ Applied${NC} (${ENGINE_NAME}-queue, every 10 min outside the session)"
 echo ""
@@ -396,14 +444,16 @@ run_once() {
         {"name": "TRD_HOME", "value": "/data"},
         {"name": "TZ", "value": "America/New_York"},
         {"name": "NO_COLOR", "value": "1"},
-        {"name": "TRD_ENGINE_FORCE", "value": "1"}
+        {"name": "TRD_ENGINE_FORCE", "value": "1"},
+        {"name": "TRD_ENGINE_LABEL", "value": "${ENGINE_LABEL}"},
+        {"name": "TRD_SCAN_NOTIFY", "value": "${SCAN_NOTIFY}"}
       ],
       "envFrom": [{"secretRef": {"name": "trd-engine-telegram", "optional": true}}],
       "volumeMounts": [{"name": "trd-home", "mountPath": "/data"}]
     }],
     "volumes": [{
       "name": "trd-home",
-      "hostPath": {"path": "${ENGINE_HOME}", "type": "DirectoryOrCreate"}
+      "hostPath": {"path": "${ENGINE_HOME}", "type": "Directory"}
     }]
   }
 }
@@ -427,7 +477,7 @@ echo "  Watch this engine's scans live (drop the selector for all engines):"
 echo "    kubectl logs -n $NAMESPACE -l component=${ENGINE_NAME} --tail=100 -f"
 echo ""
 echo "  Run one scan right now:"
-echo "    ./scripts/deploy-k3s.sh --skip-build --test${DAY_FLAG}"
+echo "    ./scripts/deploy-k3s.sh --skip-build --test${MODE_FLAG}"
 echo ""
 echo "  Read the scorecard — easiest from the host, same database:"
 echo "    TRD_HOME=${ENGINE_HOME} trd engine report"

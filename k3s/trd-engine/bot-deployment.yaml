@@ -43,7 +43,7 @@ spec:
             # recent config), so the day and swing engines are separate homes.
             # Name each one here — the name is what you type in chat.
             - name: TRD_BOT_ENGINES
-              value: swing=/engines/swing,day=/engines/day
+              value: swing=/engines/swing,day=/engines/day,swing20=/engines/swing20
             # Where the acked update_id is remembered. On a mounted volume on
             # purpose: lose it and a restart replays up to 24h of Telegram's
             # retained updates.
@@ -79,6 +79,8 @@ spec:
               mountPath: /engines/swing
             - name: day-home
               mountPath: /engines/day
+            - name: swing20-home
+              mountPath: /engines/swing20
       volumes:
         # EDIT these paths for the machine you deploy to, same as the CronJob's.
         - name: swing-home
@@ -88,4 +90,8 @@ spec:
         - name: day-home
           hostPath:
             path: /Users/tomdrake/.trd-day
+            type: Directory
+        - name: swing20-home
+          hostPath:
+            path: /Users/tomdrake/.trd-swing20
             type: Directory

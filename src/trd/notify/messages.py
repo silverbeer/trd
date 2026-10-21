@@ -291,6 +291,14 @@ def _pad(engines: list[EngineDay]) -> int:
     return max((len(e.engine) for e in engines), default=5)
 
 
+def _total_label(count: int) -> str | None:
+    """What the combined row is called: none for one engine, "both" for two,
+    "all" past that."""
+    if count < 2:
+        return None
+    return "both" if count == 2 else "all"
+
+
 def _pct(value: Decimal | None) -> str:
     """A return as a person quotes one: "+9.0%". Two decimals on a percentage
     implies a precision that a mark taken at the last stored close does not have."""
@@ -299,7 +307,9 @@ def _pct(value: Decimal | None) -> str:
     return f"{'+' if value >= 0 else '-'}{abs(float(value)):.1f}%"
 
 
-def _money_section(report: DailyReport, live: list[EngineDay], both: bool) -> list[str]:
+def _money_section(
+    report: DailyReport, live: list[EngineDay], total_label: str | None
+) -> list[str]:
     """The headline a person actually asked for: I put in X, it is worth Y.
 
     Deliberately the first block and deliberately arithmetic anyone can check —
@@ -315,11 +325,11 @@ def _money_section(report: DailyReport, live: list[EngineDay], both: bool) -> li
     rows: list[tuple[str, str, str]] = []
     total = report.bankroll
     if total is None:
-        scope = "these engines size" if both else "this engine sizes"
+        scope = "these engines size" if total_label else "this engine sizes"
         rows.append(("invested", "—", f"{scope} by risk, so there is no fixed amount in"))
         rows.append(("made so far", _signed(report.net), ""))
     else:
-        scope = "both engines" if both else "the engine"
+        scope = f"{total_label} engines" if total_label else "the engine"
         rows.append(("invested", _money(total), f"what {scope} may put to work at once"))
         rows.append(("worth now", _money(report.worth_now), ""))
         rows.append(("return", _signed(report.net), _pct(report.return_pct)))
@@ -377,7 +387,9 @@ def daily_report_message(report: DailyReport) -> str:
     """
     engines = report.engines
     width = _pad(engines)
-    both = len(engines) > 1
+    # The combined row's name. "both" is only true of two; a third engine
+    # (swing20) made it a word that miscounted the book it summed.
+    total_label = _total_label(len(engines))
 
     def row(name: str, body: str) -> str:
         return f"{name.ljust(width)}  {body}"
@@ -399,7 +411,7 @@ def daily_report_message(report: DailyReport) -> str:
     if not live:
         return "\n".join(lines)
 
-    lines += ["", *_money_section(report, live, both)]
+    lines += ["", *_money_section(report, live, total_label)]
     # Where the per-engine breakdown goes if the screen can afford it. Recorded
     # now and spliced last, because it is the lowest-priority section on the
     # message and its cost cannot be known until everything else is built.
@@ -410,10 +422,10 @@ def daily_report_message(report: DailyReport) -> str:
         count = len(engine.exits_today)
         detail = f"{count} exit{'' if count == 1 else 's'}" if count else "no exits"
         lines.append(row(engine.engine, f"{_signed(engine.realized_today)} · {detail}"))
-    if both:
+    if total_label:
         lines.append(
             row(
-                "both",
+                total_label,
                 f"{_signed(report.realized_today)} · "
                 f"{report.exits_today} exit{'' if report.exits_today == 1 else 's'}",
             )
@@ -442,8 +454,8 @@ def daily_report_message(report: DailyReport) -> str:
                 f"at risk {_money(engine.risk_at_stop)}",
             )
         )
-    if both:
-        lines.append(row("both", f"at risk {_money(report.risk_at_stop)}"))
+    if total_label:
+        lines.append(row(total_label, f"at risk {_money(report.risk_at_stop)}"))
     # The two terms every line above leans on, defined once at the bottom where
     # they cost a reader who already knows them a single glance.
     lines.append(

@@ -466,14 +466,15 @@ Unattended runs live in two places — use one, never both (DuckDB is single-wri
   only copies files and never opens the database.
 
 The post-market report is its own CronJob (`k3s/trd-engine/daily-report-cronjob.yaml`,
-`./scripts/deploy-k3s.sh --report`): 16:16 ET on weekdays, mounting *both* engine homes
-and sending one message. Deployed once, not per engine — one message covering both is
-the whole point, and two would be the fill alerts again. It runs after the scan
+`./scripts/deploy-k3s.sh --report`): 16:16 ET on weekdays, mounting *every* engine home
+and sending one message. Deployed once, not per engine — one message covering all is
+the whole point, and one per engine would be the fill alerts again. Its combined row
+reads `both` for exactly two engines and `all` for more. It runs after the scan
 CronJob's entrypoint has stopped for the day (it refuses past 16:00), and off the
 ten-minute grid the queue drain uses, so it is not waiting on the writer lock.
 
 The nightly decision review is the third CronJob (`k3s/trd-engine/review-cronjob.yaml`,
-`./scripts/deploy-k3s.sh --review`): 16:31 ET weekdays, both homes, `trd engine review
+`./scripts/deploy-k3s.sh --review`): 16:31 ET weekdays, every home, `trd engine review
 --ai --snapshot --notify`. Same shape as the report and deployed once for the same reason.
 The image carries the `ai` extra for it; the scan never imports it.
 
@@ -489,9 +490,18 @@ iCloud: a k3s pod can't see a macOS FileProvider path, and iCloud resolves binar
 conflicts by duplicating rather than merging.
 
 One database is one engine: `EngineConfigRepo.get()` takes the most recently created
-config, so the day and swing engines are separate `TRD_HOME` directories with separate
-CronJobs (`~/.trd-engine`, `~/.trd-day`). Anything addressing "both engines" addresses
-two homes.
+config, so the engines are separate `TRD_HOME` directories with separate CronJobs:
+swing (`~/.trd-engine`, `trd-engine-*`), day (`~/.trd-day`, `--day`) and swing20
+(`~/.trd-swing20`, `--swing20`) — the paper copy of the future live engine, 5 x $20 on
+$100 capital with the cash ledger on, seeded BY HAND with swing's universe and
+strategies (the script never reads another engine's DB). Anything addressing "every
+engine" addresses three homes, and the report, review and bot mount all three.
+
+Telegram names an engine by its label — `swing`, `day`, `swing20` — set as
+`TRD_ENGINE_LABEL` by the deploy script (`ENGINE_LABEL`), never by the Kubernetes name;
+it is the same word the bot, report and review use. swing20 pushes no fills
+(`TRD_SCAN_NOTIFY=0` drops the scan's `--notify`); its chat replies and its place in
+the report and review are unchanged.
 
 ## Output contract
 
