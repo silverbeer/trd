@@ -6,6 +6,7 @@ from decimal import Decimal
 import duckdb
 
 from trd.models import (
+    EXPIRABLE_INTENT_STATUSES,
     OPEN_INTENT_STATUSES,
     EngineConfig,
     EngineMode,
@@ -422,6 +423,12 @@ class EnginePositionRepo:
         ).fetchone()
         return int(row[0]) if row else 0
 
+    def get(self, position_id: int) -> EnginePosition | None:
+        row = self.conn.execute(
+            f"SELECT {_POSITION_COLS} FROM engine_position WHERE id = ?", [position_id]
+        ).fetchone()
+        return _row_to_position(row) if row else None
+
     def has_open(self, account_id: int, instrument_id: int) -> bool:
         row = self.conn.execute(
             """
@@ -605,6 +612,59 @@ class OrderIntentRepo:
             f"WHERE o.account_id = ? AND o.status IN ({marks})",
             [account_id, *(s.value for s in OPEN_INTENT_STATUSES)],
         )
+
+    def get(self, intent_id: int) -> OrderIntent | None:
+        row = self.conn.execute(
+            f"SELECT {_INTENT_COLS} FROM order_intent WHERE id = ?", [intent_id]
+        ).fetchone()
+        return _row_to_intent(row) if row else None
+
+    def has_open(self, account_id: int, instrument_id: int) -> bool:
+        """Whether an order on this name is still in flight on the account."""
+        marks = ", ".join("?" for _ in OPEN_INTENT_STATUSES)
+        row = self.conn.execute(
+            f"""
+            SELECT 1 FROM order_intent
+            WHERE account_id = ? AND instrument_id = ? AND status IN ({marks})
+            LIMIT 1
+            """,
+            [account_id, instrument_id, *(s.value for s in OPEN_INTENT_STATUSES)],
+        ).fetchone()
+        return row is not None
+
+    def update(self, intent_id: int, **fields: object) -> OrderIntent:
+        """Write the named columns and return the row as it now stands. The one
+        path every status change takes, so the columns it may touch are checked
+        against the table's own list rather than trusted."""
+        unknown = set(fields) - (set(_INTENT_COLS.split(", ")) - {"id"})
+        if unknown:
+            raise ValueError(f"not order_intent columns: {', '.join(sorted(unknown))}")
+        values = [v.value if isinstance(v, IntentStatus) else v for v in fields.values()]
+        assignments = ", ".join(f"{name} = ?" for name in fields)
+        row = self.conn.execute(
+            f"UPDATE order_intent SET {assignments} WHERE id = ? RETURNING {_INTENT_COLS}",
+            [*values, intent_id],
+        ).fetchone()
+        assert row is not None
+        return _row_to_intent(row)
+
+    def expire_before(
+        self, account_id: int, cutoff: datetime, resolved_at: datetime
+    ) -> list[tuple[OrderIntent, Instrument]]:
+        """Expire every unplaced or unapproved intent created before `cutoff`.
+
+        Returns what it expired, as it was before the change, so the caller can
+        say what lapsed. SUBMITTED is never touched: the broker holds an order for
+        it, and only the broker's answer may resolve that one.
+        """
+        marks = ", ".join("?" for _ in EXPIRABLE_INTENT_STATUSES)
+        stale = self._list(
+            f"WHERE o.account_id = ? AND o.status IN ({marks}) AND o.created_at < ?",
+            [account_id, *(s.value for s in EXPIRABLE_INTENT_STATUSES), cutoff],
+        )
+        for intent, _ in stale:
+            self.update(intent.id, status=IntentStatus.EXPIRED, resolved_at=resolved_at)
+        return stale
 
     def count_buys_on(self, account_id: int, session: date) -> int:
         """Buy intents written during one session that did, or still may, become a

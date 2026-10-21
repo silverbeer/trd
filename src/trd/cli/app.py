@@ -47,6 +47,7 @@ from trd.cli.render import (
     exit_table,
     exit_whatif_renderables,
     fidelity_renderables,
+    fill_ingest_renderables,
     fmt_money,
     fmt_signed,
     fmt_signed_pct,
@@ -71,7 +72,15 @@ from trd.config import DEFAULT_ACCOUNT, get_settings
 from trd.db.connection import connect, connect_read_only
 from trd.engine.bars import DAILY
 from trd.errors import TrdError
-from trd.models import AccountType, BrokerSnapshot, EngineMode, IncomeKind, Side, SizingMode
+from trd.models import (
+    AccountType,
+    BrokerSnapshot,
+    EngineMode,
+    FillSnapshot,
+    IncomeKind,
+    Side,
+    SizingMode,
+)
 from trd.notify import label_from_env, scan_messages
 from trd.notify.bot import (
     POLL_TIMEOUT,
@@ -93,6 +102,7 @@ from trd.services import (
     EngineService,
     EquityCurveService,
     ExitTriggerService,
+    FillIngestService,
     HistoryService,
     IncomeService,
     IndicatorService,
@@ -3264,6 +3274,57 @@ def engine_reconcile(
         for renderable in reconcile_renderables(result):
             console.print(renderable)
     if not result.in_sync:
+        raise typer.Exit(code=1)
+
+
+@engine_app.command("fills")
+def engine_fills(
+    snapshot: Annotated[
+        Path,
+        typer.Argument(
+            help="Broker snapshot JSON, as the broker's reads return it: "
+            "{orders:[...], approvals:[...], taken_at}."
+        ),
+    ],
+    as_json: JsonOpt = False,
+) -> None:
+    """Ingest a live engine's broker fills: resolve its order intents, write the
+    txns, and open or close positions at the price the broker actually gave.
+
+    The snapshot is the brokerage's own order and trade-approval reads written
+    to a file unchanged (see docs/robinhood-mcp.md). Orders match an intent by
+    its ref id, its approval id, or a broker order id already recorded. Orders
+    and approvals that match no intent are reported and left alone. Re-ingesting
+    the same snapshot changes nothing.
+
+    Exits non-zero when anything conflicts (symbol or side disagree, a sell for
+    a position already closed): those are shown and never applied.
+    """
+    _use_json(as_json)
+    try:
+        text = snapshot.read_text()
+    except OSError as exc:
+        _fail(TrdError(f"{snapshot}: {exc.strerror or exc}"))
+        return
+    try:
+        parsed = FillSnapshot.model_validate_json(text)
+    except ValidationError as exc:
+        _fail(TrdError(f"{snapshot}: not a fill snapshot ({exc.error_count()} problems) — {exc}"))
+        return
+
+    settings = get_settings()
+    service = FillIngestService(connect(settings.db_path))
+    try:
+        result = service.ingest(parsed, datetime.now())
+    except TrdError as exc:
+        _fail(exc)
+        return
+    if as_json:
+        _emit_json(result)
+    else:
+        for renderable in fill_ingest_renderables(result):
+            console.print(renderable)
+    if not result.ok:
         raise typer.Exit(code=1)
 
 

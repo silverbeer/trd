@@ -1,4 +1,4 @@
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 from enum import StrEnum
 
@@ -241,6 +241,30 @@ OPEN_INTENT_STATUSES = (
     IntentStatus.SUBMITTED,
     IntentStatus.AWAITING_APPROVAL,
 )
+
+# Open intents that may lapse unanswered: nothing at the broker has accepted them
+# yet. SUBMITTED is not here — that one has a broker order, and only the broker's
+# answer (filled, cancelled, rejected) may resolve it.
+EXPIRABLE_INTENT_STATUSES = (IntentStatus.PENDING, IntentStatus.AWAITING_APPROVAL)
+
+# Minute-of-day (ET) an unplaced or unapproved intent stops being actionable. A
+# trade approval lapses at the 16:00 close of the day it was raised (measured
+# 2026-10-21: expires_at 20:00Z on an approval created that morning), and a
+# pending intent nobody placed by the close was sized on a session that is over.
+INTENT_EXPIRY_MINUTE = 16 * 60
+
+
+def intent_expiry_cutoff(now: datetime) -> datetime:
+    """Open intents created before this instant are stale at `now`.
+
+    Before the close it is today's midnight: anything from an earlier session has
+    lapsed, today's are still live. From 16:00 it is tomorrow's midnight, so the
+    day's own intents lapse too. Naive exchange-local, like every trd timestamp.
+    """
+    midnight = datetime.combine(now.date(), datetime.min.time())
+    if now.hour * 60 + now.minute >= INTENT_EXPIRY_MINUTE:
+        return midnight + timedelta(days=1)
+    return midnight
 
 
 class OrderIntent(BaseModel):

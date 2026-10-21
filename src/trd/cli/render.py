@@ -19,6 +19,7 @@ from trd.models import (
     EngineStatus,
     ExitCheckRow,
     ExitStatus,
+    FillIngestResult,
     Instrument,
     LotPosition,
     OrderIntentRow,
@@ -2144,6 +2145,111 @@ def reconcile_renderables(result: Reconciliation) -> list[RenderableType]:
                 "trd tracks positions, not cash, so there is nothing to compare it to[/dim]"
             )
         )
+    return out
+
+
+def fill_ingest_renderables(result: FillIngestResult) -> list[RenderableType]:
+    """What a broker snapshot changed: intents resolved, positions booked, and
+    anything trd refused to apply. Conflicts lead, because they are why the
+    command exits non-zero and the only part that needs a person."""
+    read = f"{result.orders_read} order(s), {result.approvals_read} approval(s)"
+    when = f" taken {result.taken_at:%Y-%m-%d %H:%M}" if result.taken_at else ""
+    verdict = (
+        "[green]applied cleanly[/green]"
+        if result.ok
+        else f"[red]{len(result.conflicts)} conflict(s) — not applied[/red]"
+    )
+    out: list[RenderableType] = [
+        Panel(
+            f"[bold]{result.account}[/bold] — broker snapshot{when}\n{read}\n{verdict}",
+            expand=False,
+            border_style="cyan",
+        )
+    ]
+
+    if result.conflicts:
+        table = Table(title="Conflicts", title_justify="left", border_style="red")
+        table.add_column("Intent", justify="right")
+        table.add_column("Symbol", style="bold")
+        table.add_column("Broker id", style="dim")
+        table.add_column("Problem")
+        for c in result.conflicts:
+            table.add_row(
+                f"#{c.intent_id}" if c.intent_id is not None else "—",
+                c.symbol or "—",
+                c.order_id or c.approval_id or "—",
+                c.message,
+            )
+        out.append(table)
+
+    changes = [*result.applied, *result.expired]
+    if changes:
+        table = Table(title="Intents", title_justify="left")
+        table.add_column("Intent", justify="right")
+        table.add_column("Side")
+        table.add_column("Symbol", style="bold")
+        table.add_column("Qty", justify="right")
+        table.add_column("Fill", justify="right")
+        table.add_column("Status")
+        table.add_column("Note", style="dim")
+        for a in changes:
+            table.add_row(
+                f"#{a.intent_id}",
+                "[green]buy[/green]" if a.side == Side.BUY else "[red]sell[/red]",
+                a.symbol,
+                fmt_qty(a.quantity),
+                fmt_money(a.price),
+                f"{a.from_status.value} → {a.to_status.value}",
+                a.note or "",
+            )
+        out.append(table)
+
+    booked = (
+        [("opened", p) for p in result.opened]
+        + [("closed", p) for p in result.closed]
+        + [("trimmed", p) for p in result.trimmed]
+    )
+    if booked:
+        table = Table(title="Positions", title_justify="left")
+        table.add_column("Action")
+        table.add_column("Symbol", style="bold")
+        table.add_column("Strategy")
+        table.add_column("Qty", justify="right")
+        table.add_column("Price", justify="right")
+        table.add_column("Stop", justify="right")
+        table.add_column("Target", justify="right")
+        table.add_column("P&L", justify="right")
+        table.add_column("R", justify="right")
+        for action, p in booked:
+            table.add_row(
+                action,
+                p.symbol,
+                p.strategy,
+                fmt_qty(p.quantity),
+                fmt_money(p.price),
+                fmt_money(p.stop_price),
+                fmt_money(p.target_price),
+                fmt_signed(p.pnl),
+                f"{p.r_multiple:+.2f}R" if p.r_multiple is not None else "—",
+            )
+        out.append(table)
+
+    if result.unmatched:
+        # Counted, not listed: an order history read returns every order the
+        # account has ever placed, and nearly all of them predate the engine.
+        kinds = ", ".join(
+            f"{sum(1 for u in result.unmatched if u.kind == k)} {k}(s)"
+            for k in ("order", "approval")
+            if any(u.kind == k for u in result.unmatched)
+        )
+        out.append(
+            Text.from_markup(
+                f"[dim]{kinds} matched no intent — manual trades or history; left alone "
+                "(--json lists them)[/dim]"
+            )
+        )
+    if not changes and not booked and result.ok:
+        out.append(Text("Nothing to change: every intent already reads as the broker says."))
     return out
 
 

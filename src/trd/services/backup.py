@@ -28,18 +28,21 @@ from trd.errors import TrdError
 from trd.models import EngineMode, SizingMode
 from trd.repos.engine import DEFAULT_EARNINGS_BLACKOUT_DAYS
 
-BACKUP_VERSION = 5
+BACKUP_VERSION = 6
 # v1 predates exit triggers and the engine; v2 keyed engine signals by bar date and
 # dropped the engine config fields added after it; v3 predates the point-in-time
-# earnings archive; v4 predates recorded income. Every older version still reads —
+# earnings archive; v4 predates recorded income; v5 predates live-engine order
+# intents. Every older version still reads —
 # the missing sections are treated as empty, which is correct: they did not exist
 # to be exported.
 #
 # The bump matters in the other direction. A v4 reader handed a v5 file would
 # ignore the income section and restore silently, losing every dividend rather
 # than refusing — the same failure as old code writing a new schema. Raising the
-# number makes that a stated error instead.
-SUPPORTED_VERSIONS = (1, 2, 3, 4, 5)
+# number makes that a stated error instead. v6 is the same rule for order intents:
+# an open one holds a slot and cash, and a restore that dropped it would let the
+# next scan place the same order twice.
+SUPPORTED_VERSIONS = (1, 2, 3, 4, 5, 6)
 
 
 class BackupStats(BaseModel):
@@ -54,6 +57,7 @@ class BackupStats(BaseModel):
     earnings_results: int = 0
     engine_positions: int = 0
     engine_signals: int = 0
+    order_intents: int = 0
 
 
 def _iso(value: date | datetime | None) -> str | None:
@@ -62,6 +66,10 @@ def _iso(value: date | datetime | None) -> str | None:
 
 def _dec(value: str | None) -> Decimal | None:
     return Decimal(value) if value is not None else None
+
+
+def _stamp_or_none(value: str | None) -> datetime | None:
+    return datetime.fromisoformat(value) if value is not None else None
 
 
 def _as_stamp(value: str) -> datetime:
@@ -308,6 +316,55 @@ def export_data(conn: duckdb.DuckDBPyConnection) -> dict:
     # followed by a sync would refill the dates and silently lose every estimate
     # that was ever point-in-time. Losing it is permanent, which makes it
     # irreplaceable in exactly the sense this file is named for.
+    # Keyed to their signal and position by the same natural keys the positions
+    # use, since ids are remapped on restore. ref_id travels unchanged: it is the
+    # broker's idempotency key, and a new one would let a retry become two orders.
+    order_intents = [
+        {
+            "account": r[0],
+            "symbol": r[1],
+            "side": r[2],
+            "quantity": str(r[3]),
+            "ref_price": str(r[4]),
+            "notional": str(r[5]),
+            "reason": r[6],
+            "rule": r[7],
+            "strategy": r[8],
+            "stop_price": str(r[9]) if r[9] is not None else None,
+            "target_price": str(r[10]) if r[10] is not None else None,
+            "atr_at_entry": str(r[11]) if r[11] is not None else None,
+            "ref_id": r[12],
+            "status": r[13],
+            "approval_id": r[14],
+            "broker_order_id": r[15],
+            "created_at": _iso(r[16]),
+            "submitted_at": _iso(r[17]),
+            "resolved_at": _iso(r[18]),
+            "error": r[19],
+            "filled_quantity": str(r[20]) if r[20] is not None else None,
+            "fill_price": str(r[21]) if r[21] is not None else None,
+            "fees": str(r[22]) if r[22] is not None else None,
+            "signal_strategy": r[23],
+            "signal_bar_ts": _iso(r[24]),
+            "position_opened_at": _iso(r[25]),
+        }
+        for r in rows(
+            """
+            SELECT a.name, i.symbol, o.side, o.quantity, o.ref_price, o.notional, o.reason,
+                   o.rule, o.strategy, o.stop_price, o.target_price, o.atr_at_entry, o.ref_id,
+                   o.status, o.approval_id, o.broker_order_id, o.created_at, o.submitted_at,
+                   o.resolved_at, o.error, o.filled_quantity, o.fill_price, o.fees,
+                   s.strategy, s.bar_ts, p.opened_at
+            FROM order_intent o
+            JOIN account a ON a.id = o.account_id
+            JOIN instrument i ON i.id = o.instrument_id
+            LEFT JOIN engine_signal s ON s.id = o.signal_id
+            LEFT JOIN engine_position p ON p.id = o.position_id
+            ORDER BY o.created_at, o.id
+            """
+        )
+    ]
+
     earnings_results = [
         {
             "symbol": r[0],
@@ -356,6 +413,7 @@ def export_data(conn: duckdb.DuckDBPyConnection) -> dict:
             "config": engine_config,
             "signals": engine_signals,
             "positions": engine_positions,
+            "intents": order_intents,
         },
     }
 
@@ -607,6 +665,7 @@ def restore_data(conn: duckdb.DuckDBPyConnection, data: dict) -> BackupStats:
         signal_id[(signal["symbol"], signal["strategy"], stamp.isoformat())] = row[0]
 
     positions = engine.get("positions", [])
+    position_id: dict[tuple[str, str, str], int] = {}
     for position in positions:
         stamp = position.get("signal_bar_ts") or position.get("signal_bar_date")
         key = (
@@ -614,12 +673,12 @@ def restore_data(conn: duckdb.DuckDBPyConnection, data: dict) -> BackupStats:
             position["strategy"],
             _as_stamp(stamp).isoformat() if stamp else "",
         )
-        conn.execute(
+        row = conn.execute(
             """INSERT INTO engine_position
                  (account_id, instrument_id, signal_id, strategy, opened_at, entry_price,
                   quantity, stop_price, target_price, atr_at_entry, trail_high, bars_held,
                   last_bar_date, status, closed_at, exit_price, exit_reason, exit_rule)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id""",
             [
                 account_id[position["account"]],
                 instrument_id[position["symbol"]],
@@ -644,6 +703,54 @@ def restore_data(conn: duckdb.DuckDBPyConnection, data: dict) -> BackupStats:
                 # every backup the running engines have published so far.
                 position.get("exit_rule"),
             ],
+        ).fetchone()
+        assert row is not None
+        position_id[(position["account"], position["symbol"], position["opened_at"])] = row[0]
+
+    # v5 and older carry no intents: restored as none, which is what they had.
+    intents = engine.get("intents", [])
+    for intent in intents:
+        signal_key = (
+            intent["symbol"],
+            intent.get("signal_strategy") or "",
+            _as_stamp(intent["signal_bar_ts"]).isoformat() if intent.get("signal_bar_ts") else "",
+        )
+        opened = intent.get("position_opened_at")
+        conn.execute(
+            """INSERT INTO order_intent
+                 (account_id, instrument_id, side, quantity, ref_price, notional, reason, rule,
+                  strategy, signal_id, position_id, stop_price, target_price, atr_at_entry,
+                  ref_id, status, approval_id, broker_order_id, created_at, submitted_at,
+                  resolved_at, error, filled_quantity, fill_price, fees)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                       ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            [
+                account_id[intent["account"]],
+                instrument_id[intent["symbol"]],
+                intent["side"],
+                Decimal(intent["quantity"]),
+                Decimal(intent["ref_price"]),
+                Decimal(intent["notional"]),
+                intent["reason"],
+                intent.get("rule"),
+                intent["strategy"],
+                signal_id.get(signal_key),
+                position_id.get((intent["account"], intent["symbol"], opened)) if opened else None,
+                _dec(intent.get("stop_price")),
+                _dec(intent.get("target_price")),
+                _dec(intent.get("atr_at_entry")),
+                intent["ref_id"],
+                intent["status"],
+                intent.get("approval_id"),
+                intent.get("broker_order_id"),
+                datetime.fromisoformat(intent["created_at"]),
+                _stamp_or_none(intent.get("submitted_at")),
+                _stamp_or_none(intent.get("resolved_at")),
+                intent.get("error"),
+                _dec(intent.get("filled_quantity")),
+                _dec(intent.get("fill_price")),
+                _dec(intent.get("fees")),
+            ],
         )
 
     return BackupStats(
@@ -658,4 +765,5 @@ def restore_data(conn: duckdb.DuckDBPyConnection, data: dict) -> BackupStats:
         earnings_results=len(data.get("earnings_results", [])),
         engine_positions=len(positions),
         engine_signals=len(signals),
+        order_intents=len(intents),
     )

@@ -781,8 +781,13 @@ _ENTRIES: list[GlossaryEntry] = [
             "retry, so re-sending one cannot become two orders. With trade approvals on, the "
             "broker answers with an approval that lapses at 16:00 ET that day — an intent "
             "nobody approved in time ends as expired.\n\n"
-            "Fill ingest is not built yet: today a live engine writes intents and nothing in "
-            "trd resolves them."
+            "'trd engine fills' resolves them from a snapshot of the broker's orders and "
+            "approvals: a fill writes the txn at the broker's price and opens or closes the "
+            "position; a rejection, cancellation, declined or lapsed approval ends the intent "
+            "and releases what it held. An unplaced or unapproved intent from an earlier "
+            "session — or from today, once it is 16:00 ET — expires on its own; one the "
+            "broker holds an order for waits for the broker's answer. Placing intents at the "
+            "broker (the outbox) is not built yet."
         ),
         formula=(
             "notional            = quantity x ref price\n"
@@ -798,7 +803,12 @@ _ENTRIES: list[GlossaryEntry] = [
             "$190.40 — one R is still $10.00/share."
         ),
         related=["settlement", "initial-stop", "r-multiple", "position-sizing"],
-        used_in=["trd engine intents", "trd engine scan", "trd engine status"],
+        used_in=[
+            "trd engine intents",
+            "trd engine fills",
+            "trd engine scan",
+            "trd engine status",
+        ],
     ),
     GlossaryEntry(
         key="session-close",

@@ -185,5 +185,39 @@ bookkeeping one — which is why the date is printed next to the number.
 Broker cash is reported but never diffed: trd tracks positions, not cash, so a
 "delta" there would be invented.
 
+## Ingesting fills
+
+A live engine (`trd engine init --live`) writes order intents and fills nothing
+itself. What the broker did with them comes back the same way reconciliation
+does: read in a session, written to a file, applied by trd with no network.
+
+Two **read** tools produce the snapshot, both already on the allow list:
+
+- `get_equity_orders` → `"orders"`
+- `get_trade_approvals` → `"approvals"`
+
+Write their results into one JSON file **as-is** — no reshaping, no renaming,
+unknown fields are ignored — plus an optional `taken_at`:
+
+```json
+{
+  "taken_at": "2026-10-21T14:05:00Z",
+  "orders": [ ...get_equity_orders rows... ],
+  "approvals": [ ...get_trade_approvals rows... ]
+}
+```
+
+```bash
+trd engine fills ~/.trd-live/fills-2026-10-21.json
+```
+
+An order belongs to an intent when its `ref_id` is the intent's `ref_id` **or
+its `approval_id`**: with trade approvals on, the broker stamps the eventual
+order with the approval's id, not the one trd sent (observed 2026-10-21). Orders
+and approvals that match no intent — manual trades, history — are listed and
+left alone. Re-running on the same file changes nothing; anything contradictory
+(symbol or side disagree, a sell for a position already closed) is shown, never
+applied, and the command exits non-zero.
+
 [SB-500]: https://linear.app/silverbeer/issue/SB-500
 [SB-515]: https://linear.app/silverbeer/issue/SB-515
