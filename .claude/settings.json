@@ -56,12 +56,16 @@
       "mcp__robinhood-trading__search",
       "mcp__codegraph__*"
     ],
+    "ask": [
+      "mcp__robinhood-trading__review_equity_order",
+      "mcp__robinhood-trading__place_equity_order",
+      "mcp__robinhood-trading__cancel_equity_order"
+    ],
     "deny": [
       "mcp__robinhood-trading__add_option_to_watchlist",
       "mcp__robinhood-trading__add_to_watchlist",
       "mcp__robinhood-trading__cancel_advanced_order",
       "mcp__robinhood-trading__cancel_crypto_order",
-      "mcp__robinhood-trading__cancel_equity_order",
       "mcp__robinhood-trading__cancel_option_exercise",
       "mcp__robinhood-trading__cancel_option_order",
       "mcp__robinhood-trading__create_alert",
@@ -74,13 +78,11 @@
       "mcp__robinhood-trading__mark_alerts_read",
       "mcp__robinhood-trading__place_advanced_order",
       "mcp__robinhood-trading__place_crypto_order",
-      "mcp__robinhood-trading__place_equity_order",
       "mcp__robinhood-trading__place_option_order",
       "mcp__robinhood-trading__preview_crypto_order",
       "mcp__robinhood-trading__remove_from_watchlist",
       "mcp__robinhood-trading__remove_option_from_watchlist",
       "mcp__robinhood-trading__review_advanced_order",
-      "mcp__robinhood-trading__review_equity_order",
       "mcp__robinhood-trading__review_option_order",
       "mcp__robinhood-trading__unfollow_watchlist",
       "mcp__robinhood-trading__update_alert",
