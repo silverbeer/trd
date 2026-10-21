@@ -94,16 +94,31 @@ def from_env(env: dict[str, str] | None = None) -> TelegramNotifier | None:
     return TelegramNotifier(token, chat_id)
 
 
+# Why a live call to action was not sent. A message asking someone to approve a
+# real-money order must reach that person, never the public feed by default.
+ALERT_REFUSED = (
+    "live alert NOT sent: neither TRD_LIVE_ALERT_CHAT_ID nor TRD_BOT_ALLOWED_USER_IDS "
+    "is set, and a call to action on a real-money order is never posted to the "
+    "public channel (TELEGRAM_CHAT_ID). Set one of them."
+)
+
+
 def alert_notifier_from_env(
-    env: dict[str, str] | None = None, warn: Callable[[str], None] | None = None
+    env: dict[str, str] | None = None,
+    warn: Callable[[str], None] | None = None,
+    channel_fallback: bool = False,
+    error: Callable[[str], None] | None = None,
 ) -> TelegramNotifier | None:
     """A notifier for the live engine's ALERT chat: the messages that need a
-    person to act — approve an order, look at a rejection.
+    person to act — approve an order, look at a rejection, a halt.
 
     TRD_LIVE_ALERT_CHAT_ID, else the first id in TRD_BOT_ALLOWED_USER_IDS (a
-    private chat with the bot has the user's own id), else TELEGRAM_CHAT_ID —
-    the channel, which works but mixes a call to action into the feed, so `warn`
-    is told. Same bot token as `from_env`; None when there is none.
+    private chat with the bot has the user's own id). With neither, None — and
+    `error` is told why: a live call to action does not fall back to the channel,
+    where it would sit in a public feed among fills nobody has to act on.
+    `channel_fallback` restores the old fallback to TELEGRAM_CHAT_ID (with `warn`
+    told) for a caller whose messages are not calls to action on real money.
+    Same bot token as `from_env`; None when there is none.
     """
     source = env if env is not None else dict(os.environ)
     token = source.get("TELEGRAM_BOT_TOKEN", "").strip()
@@ -114,6 +129,10 @@ def alert_notifier_from_env(
         allowed = source.get("TRD_BOT_ALLOWED_USER_IDS", "").replace(",", " ").split()
         chat_id = allowed[0] if allowed else ""
     if not chat_id:
+        if not channel_fallback:
+            if error is not None:
+                error(ALERT_REFUSED)
+            return None
         chat_id = source.get("TELEGRAM_CHAT_ID", "").strip()
         if not chat_id:
             return None

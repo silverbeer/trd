@@ -244,7 +244,7 @@ def test_an_open_buy_intent_holds_its_slot(engine, provider, conn):
     assert len(first.intents) == 1
     assert first.capacity == 0
 
-    again = engine.scan(at=datetime(2024, 9, 16, 11, 0))
+    again = engine.scan(at=datetime(2024, 9, 16, 10, 20))
     assert again.intents == []
     assert again.capacity == 0
     status = engine.status()
@@ -288,7 +288,7 @@ def test_an_open_buy_intent_reserves_its_cash(engine, provider, conn):
     assert cash.settled == D("6000") - notional
 
     # A later pass: the reservation still stands, nothing new is affordable.
-    later = engine.scan(at=datetime(2024, 9, 16, 11, 0))
+    later = engine.scan(at=datetime(2024, 9, 16, 10, 20))
     assert later.intents == []
     assert any(s.startswith(f"{other}: $") for s in later.skipped), later.skipped
 
@@ -297,7 +297,7 @@ def test_an_open_buy_intent_spends_the_entry_budget(engine, provider, conn):
     _names(conn, provider, "AAA", "BBB")
     _live(engine, ["AAA", "BBB"], max_positions=3, max_entries_per_day=1)
     assert len(engine.scan(at=MONDAY).intents) == 1
-    later = engine.scan(at=datetime(2024, 9, 16, 11, 0))
+    later = engine.scan(at=datetime(2024, 9, 16, 10, 20))
     assert later.intents == []
     assert any("entry budget spent" in s for s in later.skipped), later.skipped
     assert engine.status().entries_today == 0  # status reads the wall clock, not 2024

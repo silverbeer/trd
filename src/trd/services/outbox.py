@@ -13,7 +13,7 @@ move an intent through the same two helpers, so either path leaves the row in th
 same shape, and the snapshot can always finish what an ack started.
 """
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from decimal import ROUND_DOWN, Decimal
 
 import duckdb
@@ -29,13 +29,17 @@ from trd.models import (
     Outbox,
     OutboxAck,
     OutboxOrder,
+    Side,
+    WithheldOrder,
     intent_expires_at,
     intent_expiry_cutoff,
     intent_is_late,
 )
+from trd.models.engine import STALE_INTENT_MINUTES
 from trd.repos import AccountRepo
-from trd.repos.engine import EngineConfigRepo, OrderIntentRepo
+from trd.repos.engine import EngineConfigRepo, EnginePositionRepo, OrderIntentRepo
 from trd.services.fills import live_engine, mark_awaiting_approval, mark_submitted
+from trd.services.guard import CapTally, GuardService
 
 # The broker takes fractional shares to six places. Rounded down, so a spec never
 # asks for more than the engine sized — on a sell, more than the position holds.
@@ -48,6 +52,8 @@ class OutboxService:
         self.accounts = AccountRepo(conn)
         self.configs = EngineConfigRepo(conn)
         self.intents = OrderIntentRepo(conn)
+        self.positions = EnginePositionRepo(conn)
+        self.guards = GuardService(conn)
 
     def _live(self) -> tuple[EngineConfig, Account]:
         return live_engine(
@@ -57,19 +63,77 @@ class OutboxService:
             "'trd engine outbox' is for an engine created with --live.",
         )
 
-    def pending(self, now: datetime) -> Outbox:
+    def pending(self, now: datetime, include_stale: bool = False) -> Outbox:
         """Every PENDING intent still actionable at `now`, oldest first, as the
         order the broker should be asked for. Reads only — an intent that has
-        lapsed is left out, not expired: the next scan or fill ingest sweeps it."""
-        _, account = self._live()
+        lapsed is left out, not expired: the next scan or fill ingest sweeps it.
+
+        The guardrails are applied here a second time, against the caps as they
+        stand NOW (a cap lowered after an intent was written still binds it):
+
+        - halted: nothing at all, sells included. `orders` is empty and `halted`
+          says why — an agent that reads only `orders` places nothing.
+        - a buy that breaks a hard cap is `withheld`, with the cap it breaks.
+        - a buy older than STALE_INTENT_MINUTES is `withheld` as stale, unless
+          `include_stale` — then it is listed, flagged in its note, and still
+          checked against the caps.
+        """
+        config, account = self._live()
+        guard = self.guards.live_guard(config)
+        if guard.halted:
+            return Outbox(account=account.name, at=now, halted=True, halt_reason=guard.halt_reason)
         cutoff = intent_expiry_cutoff(now)
-        rows = self.intents.list_for(account.id, IntentStatus.PENDING)
-        orders = [
-            _spec(intent, instrument, now)
-            for intent, instrument in reversed(rows)
-            if intent.created_at >= cutoff
+        actionable = [
+            (intent, instrument)
+            for intent, instrument in reversed(self.intents.list_for(account.id))
+            if intent.is_open
         ]
-        return Outbox(account=account.name, at=now, orders=orders)
+        pending = [
+            (intent, instrument)
+            for intent, instrument in actionable
+            if intent.status == IntentStatus.PENDING and intent.created_at >= cutoff
+        ]
+        # What is already committed without this outbox: today's buying minus the
+        # pending buys about to be counted one by one, and the slots held by
+        # positions and by buys the broker already has.
+        pending_buys = sum(
+            (
+                i.notional
+                for i, _ in pending
+                if i.side == Side.BUY and i.created_at.date() == now.date()
+            ),
+            Decimal(0),
+        )
+        placed_buys = sum(
+            1 for i, _ in actionable if i.side == Side.BUY and i.status != IntentStatus.PENDING
+        )
+        tally = CapTally(
+            guard,
+            self.intents.buy_notional_on(account.id, now.date()) - pending_buys,
+            len(self.positions.list_open(account.id)) + placed_buys,
+        )
+
+        orders: list[OutboxOrder] = []
+        withheld: list[WithheldOrder] = []
+        stale_before = now - timedelta(minutes=STALE_INTENT_MINUTES)
+        for intent, instrument in pending:
+            spec = _spec(intent, instrument, now)
+            if intent.side != Side.BUY:
+                orders.append(spec)
+                continue
+            if intent.created_at < stale_before:
+                stale = f"stale — sized off a quote from {intent.created_at:%H:%M}"
+                if not include_stale:
+                    withheld.append(WithheldOrder(order=spec, reason=stale, stale=True))
+                    continue
+                spec.note = f"{stale}; {spec.note}" if spec.note else stale
+            refused = tally.refuse(instrument.symbol, intent.notional)
+            if refused is not None:
+                withheld.append(WithheldOrder(order=spec, reason=refused))
+                continue
+            tally.take(intent.notional)
+            orders.append(spec)
+        return Outbox(account=account.name, at=now, orders=orders, withheld=withheld)
 
     def ack(
         self,

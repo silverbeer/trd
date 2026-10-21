@@ -271,6 +271,12 @@ def intent_expiry_cutoff(now: datetime) -> datetime:
 # has minutes, not hours, before the 16:00 expiry above takes it.
 INTENT_LATE_MINUTE = 15 * 60 + 45
 
+# A pending buy older than this was sized off a quote from a different market.
+# The outbox withholds it and the next live scan expires it, so the slot and the
+# cash it reserved go back to a fresh plan instead of sitting idle until 16:00.
+# Sells are exempt: their size is the position, not a quote.
+STALE_INTENT_MINUTES = 30
+
 
 def intent_expires_at(created_at: datetime) -> datetime:
     """The instant an intent stops being actionable: the 16:00 close of the session
@@ -335,6 +341,44 @@ class OrderIntentRow(BaseModel):
 
     intent: OrderIntent
     instrument: Instrument
+
+
+class HaltCause(StrEnum):
+    """Who stopped a live engine. MAX_LOSS is the engine stopping itself, which is
+    the one a watchdog has to shout about: nobody chose it."""
+
+    MANUAL = "manual"  # trd engine halt
+    MAX_LOSS = "max_loss"  # realized + unrealized reached -max_loss
+
+
+class EngineGuard(BaseModel):
+    """A live engine's kill switch and hard caps, enforced by trd itself.
+
+    Independent of the strategy config on purpose: a cap is a statement about
+    the account, not about the rules, and it must hold whatever the rules (or a
+    later reconfigure) say. Every cap applies to BUYS only — a cap that could
+    withhold an exit would leave a position unmanaged, which is the risk the caps
+    exist to bound. None is that cap off.
+    """
+
+    account_id: int
+    halted: bool = False
+    halt_reason: str | None = None
+    halted_at: datetime | None = None
+    halted_by: HaltCause | None = None
+    max_order: Decimal | None = None  # dollars: one buy order's notional
+    max_daily: Decimal | None = None  # dollars: buy notional per session
+    max_positions: int | None = None  # open positions + open buy intents
+    max_loss: Decimal | None = None  # dollars: realized + unrealized floor
+    # False when nothing is stored and these are the defaults derived from the
+    # config — what `init --live` would have written.
+    stored: bool = False
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def auto_halted(self) -> bool:
+        """Halted by the engine's own loss stop rather than by a person."""
+        return self.halted and self.halted_by == HaltCause.MAX_LOSS
 
 
 class EngineRun(BaseModel):
@@ -445,6 +489,21 @@ class EngineStatus(BaseModel):
     open_intents: int = 0
     # The buys among them. Each holds a slot until its fill opens the position.
     open_buy_intents: int = 0
+    # Placed and held at the broker for a person to approve.
+    awaiting_approval: int = 0
+    # Live only. An intent the broker has held past the session it was placed in,
+    # or an approval past its 16:00 expiry that no sweep has resolved: either way
+    # something between trd and the broker stopped moving (STUCK_SUBMITTED_SESSIONS
+    # in trd.services.guard). Published in status.json for the watchdog.
+    stuck_intents: int = 0
+    # The kill switch and hard caps (live only; None on paper). The four halt
+    # fields are flattened out of `guard` because they are what a reader, the
+    # watchdog and the bot look for first.
+    halted: bool = False
+    halt_reason: str | None = None
+    halted_at: datetime | None = None
+    halted_by: HaltCause | None = None
+    guard: EngineGuard | None = None
 
     open_positions: int
     closed_trades: int = 0

@@ -16,10 +16,12 @@ from decimal import Decimal
 
 import duckdb
 
-from trd.errors import UnknownAccountError
+from trd.engine.settlement import CashLedger
+from trd.errors import TrdError, UnknownAccountError
 from trd.models import (
     QUANTITY_TOLERANCE,
     BrokerSnapshot,
+    CashCheck,
     ReconcileRow,
     ReconcileStatus,
     Reconciliation,
@@ -61,12 +63,38 @@ class ReconcileService:
                 out[instrument.symbol] = quantity
         return out
 
-    def reconcile(self, snapshot: BrokerSnapshot, account_name: str) -> Reconciliation:
+    def reconcile(
+        self,
+        snapshot: BrokerSnapshot,
+        account_name: str,
+        cash: CashLedger | None = None,
+    ) -> Reconciliation:
         """One row per symbol either side holds, sorted with the problems first.
 
         Ordering is deliberate: this command exists to be scanned for trouble,
         and a matched book scrolls a screen of `ok` past whatever is wrong.
+
+        `cash` is the engine's settled-cash ledger, passed only when the caller
+        has been told the broker account's cash is the engine's alone
+        (`--compare-cash`). The broker routinely holds more than an engine's
+        capital — the account funding a $100 engine was given $300 — so the
+        comparison is opt-in rather than a mismatch reported every day. Given a
+        ledger, the snapshot must carry `cash`; a check with nothing to compare
+        would read as a pass.
         """
+        check = None
+        if cash is not None:
+            if snapshot.cash is None:
+                raise TrdError(
+                    "--compare-cash needs the broker's cash in the snapshot: add 'cash' "
+                    "(settled buying power) and, if known, 'unsettled'."
+                )
+            check = CashCheck(
+                trd_settled=cash.settled,
+                trd_unsettled=cash.unsettled,
+                broker_settled=snapshot.cash,
+                broker_unsettled=snapshot.unsettled,
+            )
         trd_held = self.held(account_name)
         broker_held = {p.symbol: p for p in snapshot.positions}
 
@@ -110,5 +138,7 @@ class ReconcileService:
             as_of=snapshot.as_of,
             source=snapshot.source,
             broker_cash=snapshot.cash,
+            broker_unsettled=snapshot.unsettled,
             rows=rows,
+            cash=check,
         )

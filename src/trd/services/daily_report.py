@@ -27,7 +27,7 @@ from decimal import Decimal
 
 from pydantic import BaseModel, computed_field
 
-from trd.models import EngineConfig, EnginePosition, SizingMode, StrategyStat
+from trd.models import EngineConfig, EngineMode, EnginePosition, SizingMode, StrategyStat
 from trd.services.engine import EngineService, strategy_stats
 
 # How far back "what is working" looks. A month of sessions is long enough that
@@ -39,6 +39,21 @@ DEFAULT_WINDOW_DAYS = 30
 # it is not named as best or worst — a scorecard that crowns a coin flip is how
 # a report starts costing more attention than it returns.
 MIN_WINDOW_TRADES = 3
+
+# The paper engine a live engine is a copy of, by its report name. Overridden by
+# TRD_LIVE_TWIN (read in the CLI — services never read the environment). The
+# live engine was cut from swing20's rule set, so that is the comparison that
+# says whether real fills trade the book the paper copy does.
+DEFAULT_LIVE_TWIN = "swing20"
+
+
+class EntryLeg(BaseModel):
+    """One position the engine opened: where, when, at what price. Carried so a
+    live engine's real fills can be laid next to its paper twin's."""
+
+    symbol: str
+    session: date
+    price: Decimal
 
 
 class ExitEvent(BaseModel):
@@ -131,6 +146,22 @@ class EngineDay(BaseModel):
     # not cost the report the other engine's numbers.
     error: str | None = None
 
+    # -- live engines only (paper leaves these at their defaults)
+    #
+    # Real money is never summed with paper: the report's combined rows count
+    # paper engines alone, and a live engine gets its own block. `capital` is its
+    # stake, the denominator of its return, where paper uses `bankroll`.
+    mode: EngineMode = EngineMode.PAPER
+    capital: Decimal | None = None
+    cash_settled: Decimal | None = None
+    cash_unsettled: Decimal | None = None
+    open_intents: int = 0
+    awaiting_approval: int = 0
+    halted: bool = False
+    halt_reason: str | None = None
+    # Every position opened in the trailing window, for the live-vs-twin entry gap.
+    entries: list[EntryLeg] = []
+
     @computed_field  # type: ignore[prop-decorator]
     @property
     def net(self) -> Decimal:
@@ -162,6 +193,26 @@ class EngineDay(BaseModel):
 
     @computed_field  # type: ignore[prop-decorator]
     @property
+    def is_live(self) -> bool:
+        return self.mode == EngineMode.LIVE
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def live_worth(self) -> Decimal | None:
+        """A live engine's capital plus everything made on it."""
+        if self.capital is None:
+            return None
+        return self.capital + self.net
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def live_return_pct(self) -> Decimal | None:
+        if self.capital is None or self.capital == 0:
+            return None
+        return self.net / self.capital * 100
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
     def losses_today(self) -> list[ExitEvent]:
         return [e for e in self.exits_today if e.pnl < 0]
 
@@ -171,12 +222,69 @@ class EngineDay(BaseModel):
         return [e for e in self.exits_today if e.pnl >= 0]
 
 
+class TwinDivergence(BaseModel):
+    """A live engine against the paper engine it copies, in two numbers.
+
+    Trades closed today on each, and — over names both bought on the same
+    session inside the window — how far the live fill sat from the paper fill.
+    Positive means live paid more. `shared_entries` is n: a gap over two trades is
+    an anecdote, and the line says how many it rests on.
+    """
+
+    live: str
+    twin: str
+    live_closed_today: int
+    twin_closed_today: int
+    shared_entries: int
+    avg_entry_gap_pct: Decimal | None = None
+
+
+def twin_divergence(live: EngineDay, twin: EngineDay) -> TwinDivergence:
+    paper = {(leg.symbol, leg.session): leg.price for leg in twin.entries}
+    gaps = [
+        (leg.price - paper[key]) / paper[key] * 100
+        for leg in live.entries
+        if (key := (leg.symbol, leg.session)) in paper and paper[key] != 0
+    ]
+    return TwinDivergence(
+        live=live.engine,
+        twin=twin.engine,
+        live_closed_today=len(live.exits_today),
+        twin_closed_today=len(twin.exits_today),
+        shared_entries=len(gaps),
+        avg_entry_gap_pct=sum(gaps, Decimal(0)) / len(gaps) if gaps else None,
+    )
+
+
 class DailyReport(BaseModel):
-    """Every engine's day, plus the combined totals."""
+    """Every engine's day, plus the combined totals.
+
+    The totals are PAPER engines only. A live engine trades real money, and a sum
+    that mixed it with simulated fills would be a number describing no account.
+    """
 
     on: date
     window_days: int = DEFAULT_WINDOW_DAYS
     engines: list[EngineDay] = []
+    live_twin: str = DEFAULT_LIVE_TWIN
+
+    @property
+    def paper(self) -> list[EngineDay]:
+        """The engines the combined totals cover: every one that is not live."""
+        return [e for e in self.engines if not e.is_live]
+
+    @property
+    def live(self) -> list[EngineDay]:
+        return [e for e in self.engines if e.is_live and e.error is None]
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def divergence(self) -> list[TwinDivergence]:
+        """Each live engine against its paper twin, when the twin is in the report."""
+        twin = next((e for e in self.paper if e.engine == self.live_twin and e.error is None), None)
+        if twin is None:
+            return []
+        return [twin_divergence(engine, twin) for engine in self.live]
 
     @computed_field  # type: ignore[prop-decorator]
     @property
@@ -198,22 +306,22 @@ class DailyReport(BaseModel):
     @computed_field  # type: ignore[prop-decorator]
     @property
     def realized_today(self) -> Decimal:
-        return sum((e.realized_today for e in self.engines), Decimal(0))
+        return sum((e.realized_today for e in self.paper), Decimal(0))
 
     @computed_field  # type: ignore[prop-decorator]
     @property
     def exits_today(self) -> int:
-        return sum(len(e.exits_today) for e in self.engines)
+        return sum(len(e.exits_today) for e in self.paper)
 
     @computed_field  # type: ignore[prop-decorator]
     @property
     def unrealized(self) -> Decimal:
-        return sum((e.unrealized for e in self.engines), Decimal(0))
+        return sum((e.unrealized for e in self.paper), Decimal(0))
 
     @computed_field  # type: ignore[prop-decorator]
     @property
     def realized_all(self) -> Decimal:
-        return sum((e.realized_all for e in self.engines), Decimal(0))
+        return sum((e.realized_all for e in self.paper), Decimal(0))
 
     @computed_field  # type: ignore[prop-decorator]
     @property
@@ -223,14 +331,14 @@ class DailyReport(BaseModel):
     @computed_field  # type: ignore[prop-decorator]
     @property
     def bankroll(self) -> Decimal | None:
-        """The two engines' bankrolls added up — but only when *every* live
-        engine has one. One engine on risk sizing makes the combined total a
-        sum over a different set than the NET above it, and a percentage over
-        a partial denominator is the kind of number that reads as a result."""
-        live = [e for e in self.engines if e.error is None]
-        if not live or any(e.bankroll is None for e in live):
+        """The paper engines' bankrolls added up — but only when *every* readable
+        one has one. One engine on risk sizing makes the combined total a sum
+        over a different set than the NET above it, and a percentage over a
+        partial denominator is the kind of number that reads as a result."""
+        readable = [e for e in self.paper if e.error is None]
+        if not readable or any(e.bankroll is None for e in readable):
             return None
-        return sum((e.bankroll or Decimal(0) for e in live), Decimal(0))
+        return sum((e.bankroll or Decimal(0) for e in readable), Decimal(0))
 
     @computed_field  # type: ignore[prop-decorator]
     @property
@@ -249,12 +357,12 @@ class DailyReport(BaseModel):
     @computed_field  # type: ignore[prop-decorator]
     @property
     def risk_at_stop(self) -> Decimal:
-        return sum((e.risk_at_stop for e in self.engines), Decimal(0))
+        return sum((e.risk_at_stop for e in self.paper), Decimal(0))
 
     @computed_field  # type: ignore[prop-decorator]
     @property
     def open_positions(self) -> int:
-        return sum(e.open_positions for e in self.engines)
+        return sum(e.open_positions for e in self.paper)
 
 
 def engine_day(
@@ -307,6 +415,13 @@ def engine_day(
             window.append(position)
 
     best, worst = _best_and_worst(window)
+    entries = [
+        EntryLeg(
+            symbol=instrument.symbol, session=position.opened_at.date(), price=position.entry_price
+        )
+        for position, instrument in service.positions.list_all(account.id)
+        if cutoff < position.opened_at.date() <= on
+    ]
     return EngineDay(
         engine=name,
         account=account.name,
@@ -332,6 +447,15 @@ def engine_day(
         window_trades=len(window),
         best=best,
         worst=worst,
+        mode=config.mode,
+        capital=config.capital if config.is_live else None,
+        cash_settled=status.cash_settled if config.is_live else None,
+        cash_unsettled=status.cash_unsettled if config.is_live else None,
+        open_intents=status.open_intents,
+        awaiting_approval=status.awaiting_approval,
+        halted=status.halted,
+        halt_reason=status.halt_reason,
+        entries=entries,
     )
 
 

@@ -45,10 +45,26 @@ class OutboxOrder(BaseModel):
     note: str | None = None
 
 
+class WithheldOrder(BaseModel):
+    """A pending intent the outbox will not hand over, and why: a hard cap it
+    breaks now (caps can be lowered after an intent was written), or a quote too
+    old to size an order from. Listed so a person can see what was held back —
+    never in `orders`, which is the list an agent places."""
+
+    order: OutboxOrder
+    reason: str
+    stale: bool = False
+
+
 class Outbox(BaseModel):
     account: str
     at: datetime
     orders: list[OutboxOrder] = []
+    # The kill switch. While it is on, `orders` is empty whatever is pending —
+    # an agent that reads only `orders` places nothing, which is the point.
+    halted: bool = False
+    halt_reason: str | None = None
+    withheld: list[WithheldOrder] = []
 
 
 class OutboxAck(BaseModel):

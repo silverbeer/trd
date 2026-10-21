@@ -28,11 +28,12 @@ from trd.errors import TrdError
 from trd.models import EngineMode, SizingMode
 from trd.repos.engine import DEFAULT_EARNINGS_BLACKOUT_DAYS
 
-BACKUP_VERSION = 6
+BACKUP_VERSION = 7
 # v1 predates exit triggers and the engine; v2 keyed engine signals by bar date and
 # dropped the engine config fields added after it; v3 predates the point-in-time
 # earnings archive; v4 predates recorded income; v5 predates live-engine order
-# intents. Every older version still reads —
+# intents; v6 predates the live engine's kill switch and hard caps. Every older
+# version still reads —
 # the missing sections are treated as empty, which is correct: they did not exist
 # to be exported.
 #
@@ -41,8 +42,9 @@ BACKUP_VERSION = 6
 # than refusing — the same failure as old code writing a new schema. Raising the
 # number makes that a stated error instead. v6 is the same rule for order intents:
 # an open one holds a slot and cash, and a restore that dropped it would let the
-# next scan place the same order twice.
-SUPPORTED_VERSIONS = (1, 2, 3, 4, 5, 6)
+# next scan place the same order twice. v7 for the guard: a restore that dropped a
+# thrown kill switch would hand back a live engine that trades again.
+SUPPORTED_VERSIONS = (1, 2, 3, 4, 5, 6, 7)
 
 
 class BackupStats(BaseModel):
@@ -365,6 +367,30 @@ def export_data(conn: duckdb.DuckDBPyConnection) -> dict:
         )
     ]
 
+    # The kill switch and hard caps, per account (migration 028). Only stored rows:
+    # a live engine with none is read with its config's defaults, and restores so.
+    engine_guards = [
+        {
+            "account": r[0],
+            "halted": bool(r[1]),
+            "halt_reason": r[2],
+            "halted_at": _iso(r[3]),
+            "halted_by": r[4],
+            "max_order": str(r[5]) if r[5] is not None else None,
+            "max_daily": str(r[6]) if r[6] is not None else None,
+            "max_positions": r[7],
+            "max_loss": str(r[8]) if r[8] is not None else None,
+        }
+        for r in rows(
+            """
+            SELECT a.name, g.halted, g.halt_reason, g.halted_at, g.halted_by, g.max_order,
+                   g.max_daily, g.max_positions, g.max_loss
+            FROM engine_guard g JOIN account a ON a.id = g.account_id
+            ORDER BY a.name
+            """
+        )
+    ]
+
     earnings_results = [
         {
             "symbol": r[0],
@@ -414,6 +440,7 @@ def export_data(conn: duckdb.DuckDBPyConnection) -> dict:
             "signals": engine_signals,
             "positions": engine_positions,
             "intents": order_intents,
+            "guards": engine_guards,
         },
     }
 
@@ -750,6 +777,27 @@ def restore_data(conn: duckdb.DuckDBPyConnection, data: dict) -> BackupStats:
                 _dec(intent.get("filled_quantity")),
                 _dec(intent.get("fill_price")),
                 _dec(intent.get("fees")),
+            ],
+        )
+
+    # v6 and older carry no guard: a live engine restores on its defaults.
+    for guard in engine.get("guards", []):
+        conn.execute(
+            """INSERT INTO engine_guard
+                 (account_id, halted, halt_reason, halted_at, halted_by, max_order,
+                  max_daily, max_positions, max_loss, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            [
+                account_id[guard["account"]],
+                bool(guard.get("halted")),
+                guard.get("halt_reason"),
+                _stamp_or_none(guard.get("halted_at")),
+                guard.get("halted_by"),
+                _dec(guard.get("max_order")),
+                _dec(guard.get("max_daily")),
+                guard.get("max_positions"),
+                _dec(guard.get("max_loss")),
+                datetime.now(),
             ],
         )
 
