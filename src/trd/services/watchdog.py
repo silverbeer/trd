@@ -55,6 +55,15 @@ DEFAULT_REPEAT_MINUTES = 60
 STATE_FILENAME = ".watchdog.json"
 STATUS_FILENAME = "status.json"
 
+# The live runner's heartbeat (deploy/live-runner.sh), written into the live
+# engine's home on every pass, busy or idle. It runs every ten minutes; two and a
+# half missed passes is a runner that stopped, and with it every order the engine
+# decides on sits unplaced until 16:00 — an exit included.
+RUNNER_FILENAME = "runner.json"
+RUNNER_MAX_AGE_MINUTES = 25
+# Its first pass lands at 09:30-09:40; no alarm before it could have run.
+RUNNER_GRACE_UNTIL = 950
+
 
 def in_session(moment: datetime) -> bool:
     """Whether a scan is expected right now.
@@ -146,6 +155,8 @@ def read_pulse(engine: str, home: Path, now: datetime, max_age: int) -> EnginePu
         return pulse
 
     pulse.alarms = guard_alarms(payload)
+    if payload.get("mode") == "live":
+        pulse.alarms += runner_alarms(home, now)
     raw = payload.get("last_scan")
     if not raw:
         pulse.problem = "no scan has ever been recorded"
@@ -192,6 +203,35 @@ def guard_alarms(payload: dict) -> list[str]:
     if payload.get("halted") and payload.get("halted_by") == "max_loss":
         alarms.append(f"HALTED by its loss stop — {payload.get('halt_reason') or 'no reason'}")
     return alarms
+
+
+def runner_alarms(home: Path, now: datetime) -> list[str]:
+    """Is the live runner placing what the engine decides? Judged on its heartbeat.
+
+    Staleness only. A runner that runs and fails — a lapsed Robinhood login,
+    approvals switched off — sends its own alert; repeating it here would be the
+    same news twice. What only the watchdog can see is a runner that is not
+    running at all.
+    """
+    local = now.astimezone(MARKET_TZ).replace(tzinfo=None) if now.tzinfo else now
+    if not in_session(local) or local.hour * 100 + local.minute < RUNNER_GRACE_UNTIL:
+        return []
+    path = home / RUNNER_FILENAME
+    fix = (
+        "Orders in the outbox are not being placed. Check the launchd job "
+        "io.silverbeer.trd.live-runner and ~/Library/Logs/trd-live-runner.log"
+    )
+    try:
+        payload = json.loads(path.read_text())
+        last = datetime.fromisoformat(str(payload["at"]))
+    except FileNotFoundError:
+        return [f"no live runner heartbeat ({RUNNER_FILENAME}). {fix}"]
+    except (OSError, ValueError, KeyError) as exc:
+        return [f"live runner heartbeat unreadable: {exc}"]
+    age = max(0, int((local - last.replace(tzinfo=None)).total_seconds() // 60))
+    if age > RUNNER_MAX_AGE_MINUTES:
+        return [f"live runner last ran {age} minutes ago ({last:%H:%M}). {fix}"]
+    return []
 
 
 def check(

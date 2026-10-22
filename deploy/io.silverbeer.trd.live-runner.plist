@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  The live engine's broker hand (SB-1382): every 10 minutes, places what trd engine outbox emits and books the fills. Exits at once outside 09:30-16:15 ET weekdays, and when ~/.trd-live does not exist.
+
+  Runs the PINNED copy in ~/.trd-runner/bin, never the checkout: code that
+  places orders changes only when deploy/live-runner.sh install is re-run.
+  Secrets are not in this file. They are read from ~/.config/trd/live.env
+  (chmod 600): TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, TRD_BOT_ALLOWED_USER_IDS,
+  RH_ACCOUNT_NUMBER. See docs/robinhood-mcp.md, "The live runner".
+
+  Install:
+    1) Replace USERNAME below with your account name (absolute paths only).
+    2) cp deploy/io.silverbeer.trd.live-runner.plist ~/Library/LaunchAgents/
+    3) launchctl load ~/Library/LaunchAgents/io.silverbeer.trd.live-runner.plist
+  Log: ~/Library/Logs/trd-live-runner.log (both jobs, tagged).
+-->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>io.silverbeer.trd.live-runner</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>/Users/USERNAME/.trd-runner/bin/live-runner.sh</string>
+    </array>
+
+    <key>StartInterval</key>
+    <integer>600</integer>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/Users/USERNAME/.local/bin:/opt/homebrew/bin:/usr/bin:/bin</string>
+    </dict>
+
+    <key>StandardOutPath</key>
+    <string>/Users/USERNAME/Library/Logs/trd-live-runner.out</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/USERNAME/Library/Logs/trd-live-runner.err</string>
+</dict>
+</plist>
