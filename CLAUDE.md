@@ -78,6 +78,12 @@ trd alloc propose [--amount X | --milestone N] [--mode underweight|target] [--se
                                       # underweight: fill the gaps below (sleeve + D) x weight,
                                       # overweight funds get nothing; leftover split by weight
 trd alloc edit|history · trd alloc milestone postpone|cancel|resume|note N
+trd alloc report [--notify] [--json]  # the daily performance message (SB-1384): worth, today, since
+                                      # funding (simple; XIRR after 30d), vs SPY, cash, drift past
+                                      # threshold, next milestone. READ-ONLY connection and no quote
+                                      # snapshots — safe unattended on the iCloud DB. --notify = the
+                                      # PRIVATE alert chat, never the channel. launchd weekdays 16:25:
+                                      # deploy/alloc-report.sh + io.silverbeer.trd.alloc-report.plist
 trd backup data.json                 # export user-owned facts (txns/accounts/plans/watch/indicators)
                                       # + the point-in-time earnings archive, which sync CANNOT rebuild
 trd restore data.json [--force]      # rebuild a DB from a backup, then trd sync (cross-machine sync)

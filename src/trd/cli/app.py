@@ -95,6 +95,7 @@ from trd.notify.bot import (
     engines_from_env,
 )
 from trd.notify.messages import (
+    alloc_report_message,
     approval_message,
     daily_report_message,
     fill_alert_message,
@@ -4434,6 +4435,52 @@ def alloc_propose(
         return
     for renderable in proposal_renderables(proposal):
         console.print(renderable)
+
+
+@alloc_app.command("report")
+def alloc_report(
+    account: AllocAccountOpt = None,
+    notify: Annotated[
+        bool, typer.Option("--notify", help="Send it to your private Telegram chat.")
+    ] = False,
+    as_json: JsonOpt = False,
+) -> None:
+    """The daily performance message: worth, today's move, return since funding,
+    vs SPY, cash, drift past the threshold, and the next milestone.
+
+    READ-ONLY: opens the database without write access and stores no quotes, so
+    an unattended run (deploy/alloc-report.sh, launchd) can never become a second
+    writer on a database that syncs through iCloud. --notify goes to the private
+    alert chat (TRD_LIVE_ALERT_CHAT_ID, else the first TRD_BOT_ALLOWED_USER_IDS) —
+    personal money, never the channel.
+    """
+    _use_json(as_json)
+    try:
+        service = AllocService(
+            connect_read_only(get_settings().db_path), YFinanceProvider(), snapshot=False
+        )
+        name_ = account or service.default_account()
+        with _spinner("Fetching quotes..."):
+            view = service.view(name_)
+    except TrdError as exc:
+        _fail(exc)
+        return
+    text = alloc_report_message(view, date.today())
+    if notify:
+        refused: list[str] = []
+        notifier = alert_notifier_from_env(error=refused.append)
+        if notifier is None:
+            _fail(TrdError(refused[0] if refused else "No TELEGRAM_BOT_TOKEN set."))
+            return
+        try:
+            notifier.send(text)
+        except TrdError as exc:  # NotifyError: delivery failed, token never shown
+            _fail(exc)
+            return
+    if as_json:
+        _emit_json({"message": text, "sent": notify, "view": view.model_dump(mode="json")})
+        return
+    console.print(text, markup=False, highlight=False)
 
 
 @alloc_app.command("history")

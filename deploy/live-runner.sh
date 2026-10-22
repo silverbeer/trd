@@ -50,7 +50,8 @@ if [[ "${1:-}" == install ]]; then
     mkdir -p "$RUNNER_HOME/bin"
     uv venv -q --allow-existing --python 3.14 "$RUNNER_HOME/venv"
     TRD_GIT_SHA="$SHA" uv pip install -q --python "$RUNNER_HOME/venv/bin/python" --reinstall-package trd "$TMP"
-    for f in live-runner.sh rh-lib.sh rh_stream.py rh-auth-probe.sh live-runner-settings.json; do
+    for f in live-runner.sh rh-lib.sh rh_stream.py rh-auth-probe.sh live-runner-settings.json \
+        alloc-report.sh; do
         cp "$TMP/deploy/$f" "$RUNNER_HOME/bin/$f"
     done
     chmod +x "$RUNNER_HOME/bin/"*.sh

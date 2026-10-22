@@ -400,3 +400,83 @@ def test_cli_end_to_end(cli_env: FakeProvider) -> None:
     assert D(view["total_value"]) == D("250930")
     bad = runner.invoke(app, ["alloc", "edit", "-t", "IVV=50"])
     assert bad.exit_code == 1 and "sum to 100" in bad.output
+
+
+# ------------------------------------------------------------------ report
+
+
+def test_the_report_leads_with_money_and_names_its_returns(conn, provider, ira) -> None:
+    from trd.notify.messages import alloc_report_message
+
+    CashService(conn).record(IRA, CashFlowKind.DEPOSIT, D("250930"), datetime(2026, 10, 24))
+    ira.schedule(IRA, START, D(150930), D(25000), 3, 4)
+    provider.add_symbol("IVV", price="606", prev_close="600")
+    buy(conn, provider, "IVV", "100", "600")
+    view = ira.view(IRA, today=date(2026, 10, 27))
+    text = alloc_report_message(view, date(2026, 10, 27))
+    lines = text.splitlines()
+    assert lines[0] == "📈 Fidelity Rollover IRA Growth Plan — Tue Oct 27"
+    assert lines[1] == "worth 251,530.00 · today +600.00 (+0.24%)"
+    assert "since funding +600.00 (+0.24% of 250,930.00 deposited, simple)" in lines[2]
+    assert "IVV 100% +1.0%" in text
+    assert "drift past ±5pp: IVV +52.6pp (overweight)" in text
+    assert (
+        "next: initial tranche 150,930.00 OVERDUE by 1 day(s), 60,000.00 of 143,383.50 in" in text
+    )
+    assert "trd alloc propose" in text
+
+
+def test_the_report_will_not_print_a_value_built_on_a_missing_price(conn, provider, ira) -> None:
+    from trd.notify.messages import alloc_report_message
+
+    CashService(conn).record(IRA, CashFlowKind.DEPOSIT, D("10000"), datetime(2026, 10, 24))
+    buy(conn, provider, "IVV", "1", "600")
+    del provider.quotes["IVV"]
+    text = alloc_report_message(ira.view(IRA), date(2026, 10, 27))
+    assert "worth: unknown — no price for IVV" in text
+    assert "since funding" not in text
+
+
+def test_the_report_reads_without_writing(cli_env: FakeProvider, monkeypatch) -> None:
+    """Unattended on a database that syncs through iCloud: a read-only connection,
+    no quote snapshots stored, and the message to the private chat."""
+    for symbol, price in [("IVV", "600"), ("IXUS", "80"), ("QQQM", "250"), ("SMH", "300")]:
+        cli_env.add_symbol(symbol, price=price, prev_close=price)
+    for args in (
+        ["init"],
+        ["account", "add", IRA],
+        ["cash", "deposit", "1000", "-a", IRA, "-d", "2026-10-24"],
+        ["alloc", "set", "-a", IRA, "--capital", "1000", "-t", "IVV=95", "-t", "CASH=5"],
+        ["buy", "IVV", "1", "--price", "600", "--account", IRA, "--date", "2026-10-26"],
+    ):
+        assert runner.invoke(app, args).exit_code == 0, args
+
+    import trd.cli.app as cli
+    from trd.config import get_settings
+    from trd.db.connection import connect
+
+    def snapshots() -> int:
+        c = connect(get_settings().db_path)
+        try:
+            row = c.execute("SELECT count(*) FROM quote_snapshot").fetchone()
+            return int(row[0]) if row else 0
+        finally:
+            c.close()
+
+    before = snapshots()
+    sent: list[str] = []
+
+    class Fake:
+        def send(self, text: str) -> None:
+            sent.append(text)
+
+    monkeypatch.setattr(cli, "alert_notifier_from_env", lambda **_: Fake())
+    result = runner.invoke(app, ["alloc", "report", "--notify", "--json"])
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["sent"] is True and sent == [payload["message"]]
+    assert snapshots() == before
+
+    monkeypatch.setattr(cli, "alert_notifier_from_env", lambda **_: None)
+    refused = runner.invoke(app, ["alloc", "report", "--notify"])
+    assert refused.exit_code == 1
