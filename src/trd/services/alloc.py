@@ -116,9 +116,17 @@ class CashService:
 
 
 class AllocService:
-    def __init__(self, conn: duckdb.DuckDBPyConnection, provider: MarketDataProvider) -> None:
+    def __init__(
+        self,
+        conn: duckdb.DuckDBPyConnection,
+        provider: MarketDataProvider,
+        snapshot: bool = True,
+    ) -> None:
+        """`snapshot=False` for a read-only connection: quotes are fetched but not
+        stored (the unattended report)."""
         self.conn = conn
         self.provider = provider
+        self.snapshot = snapshot
         self.accounts = AccountRepo(conn)
         self.repo = AllocRepo(conn)
         self.cash = CashService(conn)
@@ -311,7 +319,7 @@ class AllocService:
         plan = self.get(account_name)
         today = today or date.today()
         cash = self.cash.balance(account_name)
-        positions = self.portfolio.positions(account_name)
+        positions = self.portfolio.positions(account_name, store_quotes=self.snapshot)
         rows, others = drift_rows(plan, positions)
         priced = [r for r in rows + others if r.quantity != 0]
         unpriced = sorted(r.symbol for r in priced if r.value is None)
@@ -333,6 +341,7 @@ class AllocService:
             deployed=deployed,
             holdings_value=holdings_value,
             benchmark_value=self._benchmark(flows),
+            day_change=_day_change(positions),
         )
         if view.total_value is not None and flows:
             view.xirr = xirr(
@@ -380,6 +389,15 @@ class AllocService:
 
 
 # ------------------------------------------------------------- the arithmetic
+
+
+def _day_change(positions: list[Position]) -> Decimal | None:
+    """Today's move on what is held. None when any held quote lacks a previous
+    close: a partial sum would read as the whole day."""
+    changes = [p.day_change for p in positions if p.quantity != 0]
+    if any(c is None for c in changes):
+        return None
+    return sum((c for c in changes if c is not None), Decimal(0))
 
 
 def validate_plan(capital: Decimal, targets: list[AllocTarget], drift: Decimal) -> None:

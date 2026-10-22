@@ -140,12 +140,18 @@ class PortfolioService:
         return by_pair
 
     def positions(
-        self, account_name: str | None = None, include_simulation: bool = False
+        self,
+        account_name: str | None = None,
+        include_simulation: bool = False,
+        store_quotes: bool = True,
     ) -> list[Position]:
         """Open positions with FIFO cost basis and current prices.
 
         Live quotes are fetched per call (and snapshotted); a symbol whose quote
         fails falls back to its latest stored snapshot, marked stale.
+        `store_quotes=False` stores nothing, for a caller on a read-only connection —
+        an unattended report must not become a second writer on a database that
+        syncs through iCloud.
         """
         by_pair = self._scope_txns(account_name, include_simulation)
 
@@ -170,7 +176,8 @@ class PortfolioService:
         for instrument, quantity, cost_basis in open_positions:
             quote = quotes.get(instrument.symbol)
             if quote is not None:
-                self.prices.insert_snapshot(instrument.id, quote.price, quote.prev_close)
+                if store_quotes:
+                    self.prices.insert_snapshot(instrument.id, quote.price, quote.prev_close)
                 price, prev_close, stale = quote.price, quote.prev_close, False
             else:
                 snapshot = self.prices.latest_snapshot(instrument.id)

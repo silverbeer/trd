@@ -175,6 +175,7 @@ class AllocView(BaseModel):
     holdings_value: Decimal | None  # None when anything held is unpriced
     benchmark_value: Decimal | None = None  # the same deposits in SPY, same days
     xirr: float | None = None
+    day_change: Decimal | None = None  # today's move on what is held; None if unknown
 
     @computed_field  # type: ignore[prop-decorator]
     @property
