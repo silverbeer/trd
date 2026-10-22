@@ -285,7 +285,24 @@ def format_status(payload: dict[str, Any]) -> str:
     phone. Realized / unrealized / net together, never the total alone."""
     universe = payload.get("universe") or []
     short = payload.get("short_history") or []
-    lines = [
+    lines = []
+    # A halt goes first: a halted live engine otherwise reads as a quiet one,
+    # positions and P&L looking perfectly normal while it places nothing.
+    if payload.get("halted"):
+        cause = payload.get("halted_by") or "hand"
+        since = str(payload.get("halted_at") or "?")[:16].replace("T", " ")
+        reason = payload.get("halt_reason") or "no reason given"
+        lines.append(f"⛔ HALTED ({cause}, since {since}): {reason}")
+        lines.append("   no buys written or placed — trd engine resume to lift it")
+    if payload.get("mode") == "live":
+        lines.append(
+            f"💵 LIVE · open intents {payload.get('open_intents', 0)}"
+            f" · awaiting approval {payload.get('awaiting_approval', 0)}"
+            f" · settled cash {_cash(payload.get('cash_settled'))}"
+        )
+        if payload.get("stuck_intents"):
+            lines.append(f"⚠ {payload['stuck_intents']} stuck intent(s) — trd engine intents")
+    lines += [
         f"{payload.get('account', '?')} · {payload.get('timeframe', '?')} "
         f"· build {payload.get('build', '?')}",
         f"positions {payload.get('open_positions', 0)}/{payload.get('max_positions', 0)}"
@@ -315,6 +332,16 @@ def _money(value: Any) -> str:
     except (TypeError, ValueError):
         return str(value)
     return f"{amount:+,.2f}"
+
+
+def _cash(value: Any) -> str:
+    """A balance, not a gain: no sign."""
+    if value is None:
+        return "—"
+    try:
+        return f"{float(value):,.2f}"
+    except (TypeError, ValueError):
+        return str(value)
 
 
 def read_snapshot(home: Path, name: str) -> str | None:

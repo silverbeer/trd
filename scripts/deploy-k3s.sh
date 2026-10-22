@@ -8,6 +8,7 @@
 #   ./scripts/deploy-k3s.sh --test          # apply, then run one scan now (ignores market hours)
 #   ./scripts/deploy-k3s.sh --day           # the day-mode engine (~/.trd-day) instead
 #   ./scripts/deploy-k3s.sh --swing20       # the paper copy of the live engine (~/.trd-swing20)
+#   ./scripts/deploy-k3s.sh --live          # the LIVE engine (~/.trd-live, real money; never seeded here)
 #   ./scripts/deploy-k3s.sh --bot           # the Telegram command bot (one Deployment)
 #   ./scripts/deploy-k3s.sh --report        # the post-market report (one CronJob, every engine)
 #   ./scripts/deploy-k3s.sh --review        # the nightly decision review (one CronJob, every engine)
@@ -33,6 +34,7 @@ SKIP_BUILD=false
 RUN_TEST=false
 DAY_MODE=false
 SWING20_MODE=false
+LIVE_MODE=false
 BOT_MODE=false
 REPORT_MODE=false
 REVIEW_MODE=false
@@ -42,19 +44,32 @@ while [[ $# -gt 0 ]]; do
         --test) RUN_TEST=true; shift ;;
         --day) DAY_MODE=true; shift ;;
         --swing20) SWING20_MODE=true; shift ;;
+        --live) LIVE_MODE=true; shift ;;
         --bot) BOT_MODE=true; shift ;;
         --report) REPORT_MODE=true; shift ;;
         --review) REVIEW_MODE=true; shift ;;
         *)
             echo "Unknown option: $1"
-            echo "Usage: $0 [--skip-build] [--test] [--day | --swing20] [--bot] [--report] [--review]"
+            echo "Usage: $0 [--skip-build] [--test] [--day | --swing20 | --live] [--bot] [--report] [--review]"
             exit 1
             ;;
     esac
 done
 
-if [[ "$DAY_MODE" == true && "$SWING20_MODE" == true ]]; then
-    echo "--day and --swing20 name different engines; pick one."
+PICKED=0
+for flag in "$DAY_MODE" "$SWING20_MODE" "$LIVE_MODE"; do
+    [[ "$flag" == true ]] && PICKED=$((PICKED + 1))
+done
+if [[ "$PICKED" -gt 1 ]]; then
+    echo "--day, --swing20 and --live name different engines; pick one."
+    exit 1
+fi
+
+# A forced scan proves a deploy on paper. On real money it proves nothing the
+# paper twin (--swing20) does not, and an exit it fires is a real sell intent
+# written off an after-hours quote.
+if [[ "$LIVE_MODE" == true && "$RUN_TEST" == true ]]; then
+    echo "--test is refused on --live. Prove the image with: $0 --skip-build --test --swing20"
     exit 1
 fi
 
@@ -95,6 +110,22 @@ elif [[ "$SWING20_MODE" == true ]]; then
     # README.md, "swing20"). The seed step below only runs on an unconfigured
     # home, and on its own it would take the default ten names and every rule.
     INIT_FLAGS=(--account swing20 --size 20 --max 5 --capital 100)
+elif [[ "$LIVE_MODE" == true ]]; then
+    # The live engine: same rules as swing20, trading the real Robinhood cash
+    # account. Its scan writes order intents, never trades; an agent session
+    # places them. Fills are not pushed by the scan (there are none) — but the
+    # scan keeps --notify, because that is what sends each new intent to the
+    # private alert chat (TRD_BOT_ALLOWED_USER_IDS, from the same secret).
+    #
+    # NEVER seeded here. `engine init --live` takes an explicit real account,
+    # capital and the swing universe; guessing any of them would put money on a
+    # config nobody chose. Step 0 refuses an unconfigured or paper home instead.
+    ENGINE_NAME="${ENGINE_NAME:-trd-live}"
+    ENGINE_HOME="${ENGINE_HOME:-$HOME/.trd-live}"
+    ENGINE_LABEL="💵 live"
+    SCAN_NOTIFY=1
+    MODE_FLAG=" --live"
+    INIT_FLAGS=()
 else
     ENGINE_NAME="${ENGINE_NAME:-trd-engine}"
     # The engine's own database. Deliberately NOT your real trd database: this
@@ -111,7 +142,11 @@ echo -e "${BLUE}========================================${NC}"
 echo -e "${BLUE}K3s Deployment: ${ENGINE_NAME}${NC}"
 echo -e "${BLUE}========================================${NC}"
 echo -e "Context:     ${YELLOW}${CURRENT_CONTEXT}${NC}"
-echo -e "Engine DB:   ${YELLOW}${ENGINE_HOME}${NC}  (paper only)"
+if [[ "$LIVE_MODE" == true ]]; then
+    echo -e "Engine DB:   ${RED}${ENGINE_HOME}  (LIVE — REAL MONEY: writes order intents)${NC}"
+else
+    echo -e "Engine DB:   ${YELLOW}${ENGINE_HOME}${NC}  (paper only)"
+fi
 echo -e "Label:       ${YELLOW}${ENGINE_LABEL}${NC}  (fill pushes $([[ "$SCAN_NOTIFY" == 1 ]] && echo on || echo off))"
 echo -e "Your real DB is not touched by any of this."
 echo ""
@@ -144,7 +179,23 @@ needs_seed() {
     [[ "$err" == '"error":"TrdError"' ]]
 }
 
-if needs_seed; then
+if [[ "$LIVE_MODE" == true ]]; then
+    # Refuse rather than seed (see the --live block above), and refuse a paper
+    # home too: the CronJob would be named and labelled live while trading paper.
+    if needs_seed; then
+        echo -e "${RED}✗ ${ENGINE_HOME} has no engine.${NC} Create it by hand first:"
+        echo "    TRD_HOME=${ENGINE_HOME} trd init"
+        echo "    TRD_HOME=${ENGINE_HOME} trd engine init --live --account <real account> \\"
+        echo "        --capital 100 --size 20 --max 5 --symbols ... --strategies ..."
+        echo "    TRD_HOME=${ENGINE_HOME} trd sync --full"
+        exit 1
+    fi
+    if ! TRD_HOME="$ENGINE_HOME" trd engine status --json 2>/dev/null | grep -q '"mode": *"live"'; then
+        echo -e "${RED}✗ ${ENGINE_HOME} is not a live engine${NC} (or its database is busy — retry)."
+        exit 1
+    fi
+    echo -e "${GREEN}✅ Live engine configured${NC}"
+elif needs_seed; then
     echo -e "${YELLOW}🌱 Seeding the engine database at ${ENGINE_HOME}...${NC}"
     echo -e "${BLUE}   (a separate paper database — your real trd data is elsewhere)${NC}"
     TRD_HOME="$ENGINE_HOME" trd init
@@ -222,6 +273,25 @@ render_manifest() {
         k3s/trd-engine/cronjob.yaml
 }
 
+# The report, review and bot mount the live home only once it exists. Their
+# manifests carry it on lines ending `# live-only` plus `,live=/engines/live` in
+# the engine list; without ~/.trd-live those are deleted, because a `type:
+# Directory` mount on a missing path fails the pod — the report and the bot
+# would go down for an engine nobody has created yet.
+LIVE_HOME="${LIVE_HOME:-$HOME/.trd-live}"
+with_live_home() {
+    if [[ -d "$LIVE_HOME" ]]; then
+        sed -E \
+            -e "s|path: /Users/[^[:space:]]*\.trd-live  # live-only\$|path: ${LIVE_HOME}|" \
+            -e 's|  # live-only$||'
+    else
+        sed -E -e '/# live-only$/d' -e 's|,live=/engines/live||'
+    fi
+}
+live_note() {
+    [[ -d "$LIVE_HOME" ]] && echo ", live=${LIVE_HOME}" || echo " (no live home yet)"
+}
+
 # --- the post-market report --------------------------------------------------
 # One CronJob covering EVERY engine, because the whole point is one message a day
 # rather than one per engine per fill. It mounts the same homes the bot does
@@ -255,8 +325,8 @@ if [[ "$REPORT_MODE" == true ]]; then
         -e "s#path: /Users/[^[:space:]]*\.trd-engine\$#path: ${SWING_HOME}#" \
         -e "s#path: /Users/[^[:space:]]*\.trd-day\$#path: ${DAY_HOME}#" \
         -e "s#path: /Users/[^[:space:]]*\.trd-swing20\$#path: ${SWING20_HOME}#" \
-        k3s/trd-engine/daily-report-cronjob.yaml | kubectl apply -f -
-    echo -e "${GREEN}✅ Applied${NC} (trd-engine-report, 16:16 ET weekdays → swing=${SWING_HOME}, day=${DAY_HOME}, swing20=${SWING20_HOME})"
+        k3s/trd-engine/daily-report-cronjob.yaml | with_live_home | kubectl apply -f -
+    echo -e "${GREEN}✅ Applied${NC} (trd-engine-report, 16:16 ET weekdays → swing=${SWING_HOME}, day=${DAY_HOME}, swing20=${SWING20_HOME}$(live_note))"
     echo ""
     echo -e "${BLUE}Send one now (ignores the schedule, not the market calendar):${NC}"
     echo "    kubectl create job -n trd --from=cronjob/trd-engine-report report-now"
@@ -297,8 +367,8 @@ if [[ "$REVIEW_MODE" == true ]]; then
         -e "s#path: /Users/[^[:space:]]*\.trd-engine\$#path: ${SWING_HOME}#" \
         -e "s#path: /Users/[^[:space:]]*\.trd-day\$#path: ${DAY_HOME}#" \
         -e "s#path: /Users/[^[:space:]]*\.trd-swing20\$#path: ${SWING20_HOME}#" \
-        k3s/trd-engine/review-cronjob.yaml | kubectl apply -f -
-    echo -e "${GREEN}✅ Applied${NC} (trd-engine-review, 16:31 ET weekdays → swing=${SWING_HOME}, day=${DAY_HOME}, swing20=${SWING20_HOME})"
+        k3s/trd-engine/review-cronjob.yaml | with_live_home | kubectl apply -f -
+    echo -e "${GREEN}✅ Applied${NC} (trd-engine-review, 16:31 ET weekdays → swing=${SWING_HOME}, day=${DAY_HOME}, swing20=${SWING20_HOME}$(live_note))"
     echo ""
     echo -e "${BLUE}Run one now (ignores the schedule, not the market calendar):${NC}"
     echo "    kubectl create job -n trd --from=cronjob/trd-engine-review review-now"
@@ -364,8 +434,8 @@ if [[ "$BOT_MODE" == true ]]; then
         -e "s#path: /Users/[^[:space:]]*\.trd-engine\$#path: ${SWING_HOME}#" \
         -e "s#path: /Users/[^[:space:]]*\.trd-day\$#path: ${DAY_HOME}#" \
         -e "s#path: /Users/[^[:space:]]*\.trd-swing20\$#path: ${SWING20_HOME}#" \
-        k3s/trd-engine/bot-deployment.yaml | kubectl apply -f -
-    echo -e "${GREEN}✅ Applied${NC} (trd-engine-bot → swing=${SWING_HOME}, day=${DAY_HOME}, swing20=${SWING20_HOME})"
+        k3s/trd-engine/bot-deployment.yaml | with_live_home | kubectl apply -f -
+    echo -e "${GREEN}✅ Applied${NC} (trd-engine-bot → swing=${SWING_HOME}, day=${DAY_HOME}, swing20=${SWING20_HOME}$(live_note))"
     echo ""
 
     # One poller, or Telegram permanently 409s the second one. Worth asserting

@@ -57,7 +57,7 @@ spec:
                 - engine
                 - review
                 - --engines
-                - swing=/engines/swing,day=/engines/day,swing20=/engines/swing20
+                - swing=/engines/swing,day=/engines/day,swing20=/engines/swing20,live=/engines/live
                 - --ai
                 - --snapshot
                 - --notify
@@ -112,6 +112,10 @@ spec:
                   mountPath: /engines/day
                 - name: swing20-home
                   mountPath: /engines/swing20
+                # The live engine, only when ~/.trd-live exists: deploy-k3s.sh deletes
+                # every line marked live-only otherwise (and ,live= from the list above).
+                - name: live-home  # live-only
+                  mountPath: /engines/live  # live-only
           volumes:
             # EDIT these paths for the machine you deploy to — deploy-k3s.sh rewrites
             # them by the suffix each one already carries.
@@ -134,3 +138,7 @@ spec:
               hostPath:
                 path: /Users/tomdrake/.trd-swing20
                 type: Directory
+            - name: live-home  # live-only
+              hostPath:  # live-only
+                path: /Users/tomdrake/.trd-live  # live-only
+                type: Directory  # live-only
