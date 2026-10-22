@@ -18,8 +18,10 @@ from trd.build import build_version
 from trd.cli.render import (
     agenda_renderables,
     ai_review_renderables,
+    alloc_view_renderables,
     backtest_table,
     board_table,
+    cash_flows_table,
     dashboard_allocation_table,
     dashboard_card,
     dashboard_movers,
@@ -64,6 +66,7 @@ from trd.cli.render import (
     plans_pnl_table,
     positions_table,
     prep_history_table,
+    proposal_renderables,
     reconcile_renderables,
     review_renderables,
     sunday_prep_markdown,
@@ -83,6 +86,7 @@ from trd.models import (
     Side,
     SizingMode,
 )
+from trd.models.alloc import AllocTarget, CashFlowKind
 from trd.notify import alert_notifier_from_env, label_from_env, scan_alert_messages, scan_messages
 from trd.notify.bot import (
     POLL_TIMEOUT,
@@ -131,6 +135,7 @@ from trd.services.agenda import (
     DEFAULT_WINDOW_SESSIONS,
     agenda,
 )
+from trd.services.alloc import AllocService, CashService
 from trd.services.backtest import BacktestService, EntryFill, FillMode
 from trd.services.commands import CommandQueueService
 from trd.services.daily_report import (
@@ -4132,6 +4137,382 @@ def bot_check() -> None:
             f"  {engine.name}: {engine.home} — {state}"
             f"{'' if published else ', no snapshot published yet'}"
         )
+
+
+# ------------------------------------------------------------- cash and alloc
+
+cash_app = typer.Typer(
+    help="Money moved into or out of an account: deposits and withdrawals.",
+    no_args_is_help=True,
+)
+app.add_typer(cash_app, name="cash")
+alloc_app = typer.Typer(
+    help="A staged allocation plan on an account: targets, schedule, drift, proposals.",
+    no_args_is_help=True,
+)
+app.add_typer(alloc_app, name="alloc")
+milestone_app = typer.Typer(help="Postpone, cancel or annotate a deployment milestone.")
+alloc_app.add_typer(milestone_app, name="milestone")
+
+AllocAccountOpt = Annotated[
+    str | None,
+    typer.Option("--account", "-a", help="Account with the plan (default: the only plan)."),
+]
+TargetOpt = Annotated[
+    list[str] | None,
+    typer.Option(
+        "--target",
+        "-t",
+        help="SYMBOL=WEIGHT, repeated; weights sum to 100. CASH=5 holds 5% uninvested.",
+    ),
+]
+
+
+def _cash_service() -> CashService:
+    return CashService(connect(get_settings().db_path))
+
+
+def _alloc_service() -> AllocService:
+    return AllocService(connect(get_settings().db_path), YFinanceProvider())
+
+
+def _parse_targets(raw: list[str] | None) -> list[AllocTarget] | None:
+    if not raw:
+        return None
+    out = []
+    for item in raw:
+        if "=" not in item:
+            _fail(TrdError(f"--target looks like SYMBOL=WEIGHT, got {item!r}"))
+        symbol, weight = item.split("=", 1)
+        out.append(
+            AllocTarget(symbol=symbol.strip().upper(), weight=_parse_decimal(weight, "weight"))
+        )
+    return out
+
+
+def _cash_move(
+    kind: CashFlowKind, amount: str, account: str, date_str: str | None, note: str | None
+) -> None:
+    when = _parse_date(date_str) or datetime.now()
+    try:
+        flow = _cash_service().record(account, kind, _parse_decimal(amount, "amount"), when, note)
+    except TrdError as exc:
+        _fail(exc)
+        return
+    console.print(
+        f"Recorded {flow.kind.value} {fmt_money(flow.amount)} in [bold]{account}[/bold] "
+        f"on {flow.occurred_at:%Y-%m-%d}."
+    )
+
+
+@cash_app.command("deposit")
+def cash_deposit(
+    amount: Annotated[str, typer.Argument(help="Amount that arrived, e.g. ***REMOVED***.")],
+    account: Annotated[str, typer.Option("--account", "-a", help="Account it landed in.")],
+    date_str: Annotated[
+        str | None, typer.Option("--date", "-d", help="When it landed (YYYY-MM-DD). Default: now.")
+    ] = None,
+    note: Annotated[str | None, typer.Option("--note", help="Where it came from.")] = None,
+) -> None:
+    """Record money arriving in an account — a rollover, a contribution, a transfer in.
+
+    Not a buy: it creates no shares. It is what makes the account's cash, its
+    value and its return honest — without it, money waiting to be invested is
+    invisible and every return starts at the first buy instead of the deposit.
+    """
+    _cash_move(CashFlowKind.DEPOSIT, amount, account, date_str, note)
+
+
+@cash_app.command("withdraw")
+def cash_withdraw(
+    amount: Annotated[str, typer.Argument(help="Amount that left, e.g. 1000.")],
+    account: Annotated[str, typer.Option("--account", "-a", help="Account it left.")],
+    date_str: Annotated[
+        str | None, typer.Option("--date", "-d", help="When (YYYY-MM-DD). Default: now.")
+    ] = None,
+    note: Annotated[str | None, typer.Option("--note", help="Why.")] = None,
+) -> None:
+    """Record money leaving an account — a distribution, a transfer out."""
+    _cash_move(CashFlowKind.WITHDRAWAL, amount, account, date_str, note)
+
+
+@cash_app.command("ls")
+def cash_ls(
+    account: Annotated[str, typer.Option("--account", "-a", help="Account.")],
+    as_json: JsonOpt = False,
+) -> None:
+    """Every deposit and withdrawal, and the cash balance they imply:
+    deposits - withdrawals - buys + sells + income."""
+    _use_json(as_json)
+    service = _cash_service()
+    try:
+        flows, balance = service.flows_for(account), service.balance(account)
+    except TrdError as exc:
+        _fail(exc)
+        return
+    if as_json:
+        _emit_json(
+            {
+                "flows": [f.model_dump(mode="json") for f in flows],
+                "balance": balance.model_dump(mode="json"),
+            }
+        )
+        return
+    console.print(cash_flows_table(flows, balance))
+
+
+@alloc_app.command("set")
+def alloc_set(
+    account: Annotated[str, typer.Option("--account", "-a", help="Existing account.")],
+    capital: Annotated[str, typer.Option("--capital", help="What the plan invests in total.")],
+    target: TargetOpt = None,
+    name: Annotated[str | None, typer.Option("--name", help="Plan name.")] = None,
+    kind: Annotated[
+        str | None, typer.Option("--kind", help="Account kind, e.g. 'Rollover IRA'.")
+    ] = None,
+    brokerage: Annotated[str | None, typer.Option("--brokerage", help="e.g. Fidelity.")] = None,
+    drift: Annotated[
+        str, typer.Option("--drift", help="Drift alert threshold, percentage points.")
+    ] = "5",
+    note: Annotated[str | None, typer.Option("--note", help="Strategy, in your words.")] = None,
+) -> None:
+    """Create the allocation plan for an account: capital and target weights.
+
+    A plan, never an order: trd records what you buy at the broker and measures
+    the account against these targets.
+    """
+    targets = _parse_targets(target)
+    if not targets:
+        _fail(TrdError("A plan needs --target SYMBOL=WEIGHT entries."))
+        return
+    try:
+        plan = _alloc_service().create(
+            account,
+            name or f"{account} plan",
+            _parse_decimal(capital, "capital"),
+            targets,
+            account_kind=kind,
+            brokerage=brokerage,
+            drift_threshold=_parse_decimal(drift, "drift"),
+            note=note,
+        )
+    except TrdError as exc:
+        _fail(exc)
+        return
+    console.print(f"Plan [bold]{plan.name}[/bold] on {account}: {fmt_money(plan.capital)}.")
+    console.print("Next: trd alloc schedule --start YYYY-MM-DD --initial ... --amount ... ")
+
+
+@alloc_app.command("edit")
+def alloc_edit(
+    account: AllocAccountOpt = None,
+    target: TargetOpt = None,
+    capital: Annotated[str | None, typer.Option("--capital")] = None,
+    drift: Annotated[str | None, typer.Option("--drift")] = None,
+    name: Annotated[str | None, typer.Option("--name")] = None,
+    note: Annotated[str | None, typer.Option("--note")] = None,
+) -> None:
+    """Change the targets (all of them, summing to 100), capital, drift threshold
+    or name. Every change is kept in 'trd alloc history'."""
+    service = _alloc_service()
+    try:
+        name_ = account or service.default_account()
+        plan = service.edit(
+            name_,
+            targets=_parse_targets(target),
+            capital=_parse_decimal(capital, "capital") if capital else None,
+            drift_threshold=_parse_decimal(drift, "drift") if drift else None,
+            name=name,
+            note=note,
+        )
+    except TrdError as exc:
+        _fail(exc)
+        return
+    console.print(f"Updated [bold]{plan.name}[/bold].")
+
+
+@alloc_app.command("schedule")
+def alloc_schedule(
+    start: Annotated[str, typer.Option("--start", help="Date of the initial tranche.")],
+    initial: Annotated[str, typer.Option("--initial", help="Amount invested at the start.")],
+    amount: Annotated[str, typer.Option("--amount", help="Each later tranche.")] = "0",
+    every: Annotated[int, typer.Option("--every", help="Months between tranches.")] = 3,
+    count: Annotated[int, typer.Option("--count", help="Number of later tranches.")] = 0,
+    account: AllocAccountOpt = None,
+    replace: Annotated[
+        bool, typer.Option("--replace", help="Rebuild an existing schedule.")
+    ] = False,
+) -> None:
+    """Build the deployment schedule: an initial tranche, then COUNT tranches of
+    AMOUNT every EVERY months. Must add up to the plan's capital exactly."""
+    service = _alloc_service()
+    when = _parse_date(start)
+    assert when is not None
+    try:
+        name_ = account or service.default_account()
+        plan = service.schedule(
+            name_,
+            when.date(),
+            _parse_decimal(initial, "initial"),
+            _parse_decimal(amount, "amount"),
+            every,
+            count,
+            replace=replace,
+        )
+    except TrdError as exc:
+        _fail(exc)
+        return
+    for m in plan.milestones:
+        label = "initial" if m.seq == 0 else f"#{m.seq}"
+        console.print(f"  {label:>7}  {m.due_date:%Y-%m-%d}  {fmt_money(m.amount)}")
+
+
+@alloc_app.command("show")
+def alloc_show(account: AllocAccountOpt = None, as_json: JsonOpt = False) -> None:
+    """The plan against the account: value, cash, return, allocation and drift,
+    and the schedule — each milestone's state read from what you actually bought."""
+    _use_json(as_json)
+    service = _alloc_service()
+    try:
+        name_ = account or service.default_account()
+        with _spinner("Fetching quotes..."):
+            view = service.view(name_)
+    except TrdError as exc:
+        _fail(exc)
+        return
+    if as_json:
+        _emit_json(view)
+        return
+    for renderable in alloc_view_renderables(view):
+        console.print(renderable)
+
+
+@alloc_app.command("propose")
+def alloc_propose(
+    account: AllocAccountOpt = None,
+    amount: Annotated[
+        str | None, typer.Option("--amount", help="Amount to deploy (default: next milestone).")
+    ] = None,
+    milestone: Annotated[
+        int | None,
+        typer.Option("--milestone", "-m", help="Milestone to propose for (0 = initial)."),
+    ] = None,
+    mode: Annotated[
+        str, typer.Option("--mode", help="underweight (default) or target.")
+    ] = "underweight",
+    set_: Annotated[
+        list[str] | None,
+        typer.Option("--set", help="Fix a fund's amount: --set IVV=60000; the rest re-splits."),
+    ] = None,
+    as_json: JsonOpt = False,
+) -> None:
+    """How a deployment could be split across the plan. A suggestion to review and
+    edit — never an order, and nothing is recorded."""
+    _use_json(as_json)
+    service = _alloc_service()
+    overrides: dict[str, Decimal] = {}
+    for item in set_ or []:
+        if "=" not in item:
+            _fail(TrdError(f"--set looks like SYMBOL=AMOUNT, got {item!r}"))
+        symbol, value = item.split("=", 1)
+        overrides[symbol.strip().upper()] = _parse_decimal(value, "amount")
+    try:
+        name_ = account or service.default_account()
+        with _spinner("Fetching quotes..."):
+            proposal = service.proposal(
+                name_,
+                amount=_parse_decimal(amount, "amount") if amount else None,
+                seq=milestone,
+                mode=mode,
+                overrides=overrides,
+            )
+    except TrdError as exc:
+        _fail(exc)
+        return
+    if as_json:
+        _emit_json(proposal)
+        return
+    for renderable in proposal_renderables(proposal):
+        console.print(renderable)
+
+
+@alloc_app.command("history")
+def alloc_history(account: AllocAccountOpt = None) -> None:
+    """Every material change to the plan, oldest first."""
+    service = _alloc_service()
+    try:
+        events = service.history(account or service.default_account())
+    except TrdError as exc:
+        _fail(exc)
+        return
+    for e in events:
+        console.print(f"{e.at:%Y-%m-%d %H:%M}  {e.what}")
+
+
+MilestoneSeq = Annotated[int, typer.Argument(help="Milestone number (0 = initial).")]
+
+
+@milestone_app.command("postpone")
+def milestone_postpone(
+    seq: MilestoneSeq,
+    to: Annotated[str, typer.Option("--to", help="New due date (YYYY-MM-DD).")],
+    note: Annotated[str | None, typer.Option("--note", help="Why — kept in the history.")] = None,
+    account: AllocAccountOpt = None,
+) -> None:
+    """Move a milestone to a later date."""
+    service = _alloc_service()
+    new = _parse_date(to)
+    assert new is not None
+    try:
+        service.postpone(account or service.default_account(), seq, new.date(), note)
+    except TrdError as exc:
+        _fail(exc)
+        return
+    console.print(f"Milestone {seq} → {new:%Y-%m-%d}.")
+
+
+@milestone_app.command("cancel")
+def milestone_cancel(
+    seq: MilestoneSeq,
+    note: Annotated[str | None, typer.Option("--note")] = None,
+    account: AllocAccountOpt = None,
+) -> None:
+    """Drop a milestone from the schedule (its money stays as cash)."""
+    service = _alloc_service()
+    try:
+        service.cancel(account or service.default_account(), seq, note)
+    except TrdError as exc:
+        _fail(exc)
+        return
+    console.print(f"Milestone {seq} cancelled.")
+
+
+@milestone_app.command("resume")
+def milestone_resume(seq: MilestoneSeq, account: AllocAccountOpt = None) -> None:
+    """Put a postponed or cancelled milestone back to planned."""
+    service = _alloc_service()
+    try:
+        service.resume(account or service.default_account(), seq)
+    except TrdError as exc:
+        _fail(exc)
+        return
+    console.print(f"Milestone {seq} planned.")
+
+
+@milestone_app.command("note")
+def milestone_note(
+    seq: MilestoneSeq,
+    text: Annotated[str, typer.Argument(help="Decision rationale, market conditions...")],
+    account: AllocAccountOpt = None,
+) -> None:
+    """Attach a note to a milestone."""
+    service = _alloc_service()
+    try:
+        service.annotate(account or service.default_account(), seq, text)
+    except TrdError as exc:
+        _fail(exc)
+        return
+    console.print(f"Noted on milestone {seq}.")
 
 
 def main() -> None:
