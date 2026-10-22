@@ -179,3 +179,32 @@ def test_state_survives_a_round_trip_and_a_corrupt_file(tmp_path: Path) -> None:
     assert WatchdogState.load(path).alerting is False  # a fresh start, not a crash
 
     assert WatchdogState.load(tmp_path / "nope.json").alerting is False
+
+
+# ------------------------------------------------------------- the live runner
+
+
+def test_a_live_engine_whose_runner_stopped_needs_a_person(tmp_path: Path) -> None:
+    """Scans landing proves the engine decides; only the runner's heartbeat proves
+    anything is being placed. A stopped runner leaves even exits unplaced."""
+    home = home_with(tmp_path, "live", "2026-09-09T11:25:00", mode="live")
+
+    missing = read_pulse("live", home, MIDSESSION, DEFAULT_MAX_AGE_MINUTES)
+    assert missing.alive and not missing.ok
+    assert "no live runner heartbeat" in missing.alarms[0]
+
+    (home / "runner.json").write_text(json.dumps({"at": "2026-09-09T11:00:00", "status": "ok"}))
+    stale = read_pulse("live", home, MIDSESSION, DEFAULT_MAX_AGE_MINUTES)
+    assert "last ran 30 minutes ago" in stale.alarms[0]
+
+    (home / "runner.json").write_text(json.dumps({"at": "2026-09-09T11:22:00", "status": "idle"}))
+    assert read_pulse("live", home, MIDSESSION, DEFAULT_MAX_AGE_MINUTES).ok
+
+
+def test_no_runner_alarm_before_it_could_have_run_or_on_paper(tmp_path: Path) -> None:
+    live = home_with(tmp_path, "live", "2026-09-09T09:40:00", mode="live")
+    assert read_pulse("live", live, datetime(2026, 9, 9, 9, 42), DEFAULT_MAX_AGE_MINUTES).ok
+    assert read_pulse("live", live, datetime(2026, 9, 9, 17, 0), 10_000).alarms == []
+
+    paper = home_with(tmp_path, "swing20", "2026-09-09T11:25:00", mode="paper")
+    assert read_pulse("swing20", paper, MIDSESSION, DEFAULT_MAX_AGE_MINUTES).ok

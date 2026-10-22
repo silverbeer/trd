@@ -1,0 +1,51 @@
+{
+  "$comment": "The live runner's headless session (deploy/live-runner.sh), loaded with --setting-sources local so the project's `ask` on the equity order path does not apply here. Allowed: exactly the calls a drain makes. The Robinhood app's trade approval is the per-order human gate; the runner refuses to place when approvals are off. Every other write, cancel included, and every local tool is denied.",
+  "permissions": {
+    "allow": [
+      "ToolSearch",
+      "mcp__robinhood-trading__get_trade_approval_setting",
+      "mcp__robinhood-trading__review_equity_order",
+      "mcp__robinhood-trading__place_equity_order",
+      "mcp__robinhood-trading__get_equity_orders",
+      "mcp__robinhood-trading__get_trade_approvals"
+    ],
+    "deny": [
+      "Agent",
+      "Bash",
+      "Edit",
+      "NotebookEdit",
+      "Task",
+      "WebFetch",
+      "WebSearch",
+      "Write",
+      "mcp__robinhood-trading__add_option_to_watchlist",
+      "mcp__robinhood-trading__add_to_watchlist",
+      "mcp__robinhood-trading__cancel_advanced_order",
+      "mcp__robinhood-trading__cancel_crypto_order",
+      "mcp__robinhood-trading__cancel_equity_order",
+      "mcp__robinhood-trading__cancel_option_exercise",
+      "mcp__robinhood-trading__cancel_option_order",
+      "mcp__robinhood-trading__create_alert",
+      "mcp__robinhood-trading__create_scan",
+      "mcp__robinhood-trading__create_watchlist",
+      "mcp__robinhood-trading__decline_trade_approval",
+      "mcp__robinhood-trading__delete_alert",
+      "mcp__robinhood-trading__exercise_option",
+      "mcp__robinhood-trading__follow_watchlist",
+      "mcp__robinhood-trading__mark_alerts_read",
+      "mcp__robinhood-trading__place_advanced_order",
+      "mcp__robinhood-trading__place_crypto_order",
+      "mcp__robinhood-trading__place_option_order",
+      "mcp__robinhood-trading__preview_crypto_order",
+      "mcp__robinhood-trading__remove_from_watchlist",
+      "mcp__robinhood-trading__remove_option_from_watchlist",
+      "mcp__robinhood-trading__review_advanced_order",
+      "mcp__robinhood-trading__review_option_order",
+      "mcp__robinhood-trading__unfollow_watchlist",
+      "mcp__robinhood-trading__update_alert",
+      "mcp__robinhood-trading__update_scan_config",
+      "mcp__robinhood-trading__update_scan_filters",
+      "mcp__robinhood-trading__update_watchlist"
+    ]
+  }
+}
