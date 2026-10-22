@@ -2070,15 +2070,23 @@ def _emit_scan(result: ScanResult, as_json: bool, ndjson: bool) -> None:
         console.print(renderable)
 
 
+LIVE_INTENT_ALERTS_ENV = "TRD_LIVE_INTENT_ALERTS"
+
+
 def _notify_scan(result: ScanResult, label: str | None = None) -> None:
     """Push fills to a chat, if one is configured. A delivery failure is reported
     and swallowed: the trades are already recorded, and failing the scan over an
     undelivered message would make the next pass re-evaluate a stale world.
 
     A live scan's order intents go to the alert chat instead: each asks a person
-    to do something, and the channel is a feed of things already done."""
+    to do something, and the channel is a feed of things already done — but only
+    with TRD_LIVE_INTENT_ALERTS=1. With the live runner draining the outbox
+    (SB-1382) the person's one message per order is the approval request
+    `outbox ack --notify` sends minutes later; "waiting for the outbox" before it
+    is the same order twice. Set it when the outbox is drained by hand."""
     _send(scan_messages(result, label))
-    _send(scan_alert_messages(result, label), alert=True)
+    if os.environ.get(LIVE_INTENT_ALERTS_ENV, "").strip() == "1":
+        _send(scan_alert_messages(result, label), alert=True)
     if result.auto_halt:
         _send([halt_message(result.auto_halt, label)], alert=True)
 

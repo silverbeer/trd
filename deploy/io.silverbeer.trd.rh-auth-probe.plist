@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Hourly: is the Robinhood MCP still signed in for a headless session? Telegram to the private alert chat when it is not, and when it works again (SB-1382).
+
+  Runs the PINNED copy in ~/.trd-runner/bin, never the checkout: code that
+  places orders changes only when deploy/live-runner.sh install is re-run.
+  Secrets are not in this file. They are read from ~/.config/trd/live.env
+  (chmod 600): TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, TRD_BOT_ALLOWED_USER_IDS,
+  RH_ACCOUNT_NUMBER. See docs/robinhood-mcp.md, "The live runner".
+
+  Install:
+    1) Replace USERNAME below with your account name (absolute paths only).
+    2) cp deploy/io.silverbeer.trd.rh-auth-probe.plist ~/Library/LaunchAgents/
+    3) launchctl load ~/Library/LaunchAgents/io.silverbeer.trd.rh-auth-probe.plist
+  Log: ~/Library/Logs/trd-live-runner.log (both jobs, tagged).
+-->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>io.silverbeer.trd.rh-auth-probe</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>/Users/USERNAME/.trd-runner/bin/rh-auth-probe.sh</string>
+    </array>
+
+    <key>StartInterval</key>
+    <integer>3600</integer>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/Users/USERNAME/.local/bin:/opt/homebrew/bin:/usr/bin:/bin</string>
+    </dict>
+
+    <key>StandardOutPath</key>
+    <string>/Users/USERNAME/Library/Logs/trd-rh-auth-probe.out</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/USERNAME/Library/Logs/trd-rh-auth-probe.err</string>
+</dict>
+</plist>

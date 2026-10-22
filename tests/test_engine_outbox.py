@@ -459,6 +459,23 @@ def test_scan_intents_go_to_the_alert_list_not_the_channel_list():
     assert scan_alert_messages(result, LIVE_LABEL) == [intent_message(_row(), LIVE_LABEL)]
 
 
+def test_a_scan_sends_its_intents_only_when_asked(monkeypatch: pytest.MonkeyPatch):
+    """The runner's approval request is the one message per order; the scan's
+    'waiting for the outbox' is opt-in, for an outbox drained by hand."""
+    sent: list[tuple[list[str], bool]] = []
+    monkeypatch.setattr(cli, "_send", lambda messages, alert=False: sent.append((messages, alert)))
+    result = ScanResult(run_id=1, at=NOW, paper=True, scanned=1, intents=[_row()])
+
+    monkeypatch.delenv("TRD_LIVE_INTENT_ALERTS", raising=False)
+    cli._notify_scan(result, LIVE_LABEL)
+    assert not any(alert for _, alert in sent)
+
+    sent.clear()
+    monkeypatch.setenv("TRD_LIVE_INTENT_ALERTS", "1")
+    cli._notify_scan(result, LIVE_LABEL)
+    assert ([intent_message(_row(), LIVE_LABEL)], True) in sent
+
+
 # --------------------------------------------------------------- destinations
 
 
@@ -493,6 +510,7 @@ def test_a_live_scan_sends_intents_to_the_alert_chat(monkeypatch, _no_telegram):
     monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "tok")
     monkeypatch.setenv("TELEGRAM_CHAT_ID", "-100")
     monkeypatch.setenv("TRD_LIVE_ALERT_CHAT_ID", "555")
+    monkeypatch.setenv("TRD_LIVE_INTENT_ALERTS", "1")
     result = ScanResult(run_id=1, at=NOW, paper=True, scanned=1, intents=[_row()])
     cli._notify_scan(result, LIVE_LABEL)
     assert [(m["chat_id"], m["text"].split(":")[0]) for m in _no_telegram] == [("555", "💵 LIVE")]

@@ -350,7 +350,7 @@ seconds. Never re-place an order because an ack failed; the ack is what to retry
 
 | Moment | Destination |
 |---|---|
-| a live scan writes an intent | alert chat |
+| a live scan writes an intent | alert chat, only with `TRD_LIVE_INTENT_ALERTS=1` (off by default: with the runner, the approval request below is the one message per order) |
 | `outbox ack --approval-id … --notify` | alert chat |
 | `fills --notify` books a fill | channel (`TELEGRAM_CHAT_ID`) |
 | `fills --notify` finds something rejected, expired or conflicting | alert chat |
@@ -363,6 +363,67 @@ With neither set, a live alert is **refused** with an error, never posted to the
 public channel (`TELEGRAM_CHAT_ID`): a call to action on real money belongs in a
 private chat. Fill reports still go to the channel. Same bot token throughout.
 Live messages are labelled `💵 live` unless `TRD_ENGINE_LABEL` names the engine.
+
+## The live runner — the outbox drained unattended (SB-1382)
+
+The steps above, run by launchd on the mini every 10 minutes from 09:30 to 16:15
+ET, with nobody at the keyboard. The person's part is the phone:
+
+1. Telegram, private chat: `💵 LIVE: approve BUY NVDA 0.104712 sh (~$20.00 @
+   191.00) in the Robinhood app — expires 16:00 ET`, with the rule's reason.
+2. Approve (or decline) it in the Robinhood app.
+3. Telegram, channel: `filled BUY NVDA … @ 190.88 (scan saw 191.00, -0.06%)`.
+
+`deploy/live-runner.sh`, one pass:
+
+| Step | How |
+|---|---|
+| read the outbox and the open intents | `trd engine outbox --json`, `trd engine intents --json` — nothing to do = no session, no cost |
+| review each spec | headless `claude -p` → `get_trade_approval_setting` + `review_equity_order`. Any `order_checks` → not placed, the person is told once, the intent lapses at 16:00 |
+| refuse without approvals | approvals OFF (or unreadable) → nothing placed, alert. Unattended, the phone tap is the only person in the loop |
+| place the clean ones | a second session → `place_equity_order` with the spec's `ref_id`, then `outbox ack --approval-id … --notify` (the message above) |
+| read back and book | a third session → `get_equity_orders` + `get_trade_approvals` for the open intents → `trd engine fills --notify` |
+| heartbeat | `~/.trd-live/runner.json` every pass; `trd engine watchdog` alarms when it is 25+ minutes old in the session |
+
+**The model makes the calls; it never reports them.** Every session runs with
+`--output-format stream-json`, and `deploy/rh_stream.py` reads each tool call's
+exact input and the broker's exact result from the transcript. The fill snapshot
+is the broker's JSON as returned. Every order call is matched against the spec
+that asked for it (symbol, side, quantity, type, `ref_id`, account); one that
+matches nothing **halts the engine** and tells the person to decline it in the app.
+
+**Permissions.** Sessions run in the trd checkout (the server is local-scope
+config there) with `--setting-sources local` — so this file's `ask` on the order
+path, which cannot prompt with nobody there, does not apply — plus
+`deploy/live-runner-settings.json`: exactly the five calls a drain makes allowed,
+`cancel_equity_order`, every other write and every local tool denied.
+
+**Login.** `deploy/rh-auth-probe.sh` runs hourly and checks the same way. A
+lapsed sign-in (or approvals switched off) is one Telegram message to the private
+chat, a reminder at most every 3 hours in the session, and an all-clear. It
+shares its state with the runner, so the runner hitting the same failure does not
+send a second one. Re-login: on the mini, `cd ~/gitrepos/trd && claude`, `/mcp`,
+pick robinhood-trading, authenticate. Each probe is logged — the gaps between
+failures are how long a sign-in lasts.
+
+**Install** (once, then after every k3s deploy):
+
+```bash
+deploy/live-runner.sh install            # pins trd + these scripts at `main` into ~/.trd-runner
+# ~/.config/trd/live.env, chmod 600: TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID,
+#   TRD_BOT_ALLOWED_USER_IDS, RH_ACCOUNT_NUMBER (the agentic account)
+for n in live-runner rh-auth-probe; do
+  sed "s#/Users/USERNAME#$HOME#g" deploy/io.silverbeer.trd.$n.plist \
+    > ~/Library/LaunchAgents/io.silverbeer.trd.$n.plist
+  launchctl load ~/Library/LaunchAgents/io.silverbeer.trd.$n.plist
+done
+tail -f ~/Library/Logs/trd-live-runner.log
+```
+
+The runner does nothing until `~/.trd-live` exists. `RH_DRY_RUN=1` runs a pass
+that reviews and never places (a review is a broker simulation): the first
+thing to run on a live morning. Pinned, not live-updating: code that places
+orders changes when `install` is re-run, never because the checkout moved.
 
 ## Guardrails before approvals go off (SB-1377)
 
