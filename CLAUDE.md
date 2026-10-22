@@ -56,6 +56,28 @@ trd income ls [--account N] [--json]  # cash a holding PAID you, as opposed to t
                                       # credit the plan with all of it. A REINVESTED dividend
                                       # (DRIP) is an ordinary 'trd buy' — recorded here too it is
                                       # counted twice. 'trd learn income · total-return'
+trd cash deposit 250930 --account fidelity-ira [--date ISO] [--note ...]
+trd cash withdraw AMOUNT --account N | trd cash ls --account N [--json]
+                                      # money moved into/out of an account (migration 029). Not a
+                                      # trade: no lot. cash = deposits - withdrawals - buys + sells
+                                      # + income. Only the alloc views read it so far; portfolio /
+                                      # equity / dashboard returns are still trade-based
+trd alloc set --account fidelity-ira --capital 250930 --name ... [--kind "Rollover IRA"]
+              [--brokerage Fidelity] -t IVV=45 -t IXUS=20 -t QQQM=25 -t SMH=5 -t CASH=5 [--drift 5]
+trd alloc schedule --start ISO --initial 150930 --amount 25000 --every 3 --count 4 [--replace]
+trd alloc show [--json]               # staged allocation plan (SB-1383): worth = holdings + cash,
+                                      # gain vs net deposits (simple, not annualised; XIRR after 30
+                                      # days), same deposits in SPY, drift on the INVESTED sleeve
+                                      # vs targets renormalised without CASH (cash waiting by design
+                                      # is not "underweight everything"), schedule with each
+                                      # milestone's state DERIVED from recorded buys against its
+                                      # fund share (a 5% CASH target stays cash). Missing price =
+                                      # unknown, never zero. The schedule must add up to capital
+trd alloc propose [--amount X | --milestone N] [--mode underweight|target] [--set SYM=AMT]
+                                      # a suggested split, never an order; records nothing.
+                                      # underweight: fill the gaps below (sleeve + D) x weight,
+                                      # overweight funds get nothing; leftover split by weight
+trd alloc edit|history · trd alloc milestone postpone|cancel|resume|note N
 trd backup data.json                 # export user-owned facts (txns/accounts/plans/watch/indicators)
                                       # + the point-in-time earnings archive, which sync CANNOT rebuild
 trd restore data.json [--force]      # rebuild a DB from a backup, then trd sync (cross-machine sync)

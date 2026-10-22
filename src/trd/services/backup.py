@@ -28,7 +28,7 @@ from trd.errors import TrdError
 from trd.models import EngineMode, SizingMode
 from trd.repos.engine import DEFAULT_EARNINGS_BLACKOUT_DAYS
 
-BACKUP_VERSION = 7
+BACKUP_VERSION = 8
 # v1 predates exit triggers and the engine; v2 keyed engine signals by bar date and
 # dropped the engine config fields added after it; v3 predates the point-in-time
 # earnings archive; v4 predates recorded income; v5 predates live-engine order
@@ -43,8 +43,10 @@ BACKUP_VERSION = 7
 # number makes that a stated error instead. v6 is the same rule for order intents:
 # an open one holds a slot and cash, and a restore that dropped it would let the
 # next scan place the same order twice. v7 for the guard: a restore that dropped a
-# thrown kill switch would hand back a live engine that trades again.
-SUPPORTED_VERSIONS = (1, 2, 3, 4, 5, 6, 7)
+# thrown kill switch would hand back a live engine that trades again. v8 for
+# deposits and allocation plans: a restore that dropped a deposit would hand back
+# an account with negative cash and a return measured from the wrong day.
+SUPPORTED_VERSIONS = (1, 2, 3, 4, 5, 6, 7, 8)
 
 
 class BackupStats(BaseModel):
@@ -60,6 +62,8 @@ class BackupStats(BaseModel):
     engine_positions: int = 0
     engine_signals: int = 0
     order_intents: int = 0
+    cash_flows: int = 0
+    alloc_plans: int = 0
 
 
 def _iso(value: date | datetime | None) -> str | None:
@@ -424,8 +428,75 @@ def export_data(conn: duckdb.DuckDBPyConnection) -> dict:
         )
     ]
 
+    # Deposits and withdrawals (migration 029): user-owned, and no provider knows
+    # when money arrived in an account.
+    cash_flows = [
+        {
+            "account": r[0],
+            "kind": r[1],
+            "amount": str(r[2]),
+            "occurred_at": r[3].isoformat(),
+            "note": r[4],
+        }
+        for r in rows(
+            """
+            SELECT a.name, c.kind, c.amount, c.occurred_at, c.note
+            FROM cash_flow c JOIN account a ON a.id = c.account_id
+            ORDER BY c.occurred_at, c.id
+            """
+        )
+    ]
+    alloc_plans = []
+    for r in rows(
+        """
+        SELECT a.name, p.id, p.name, p.account_kind, p.brokerage, p.capital,
+               p.drift_threshold, p.created_at, p.note
+        FROM alloc_plan p JOIN account a ON a.id = p.account_id
+        """
+    ):
+        alloc_plans.append(
+            {
+                "account": r[0],
+                "name": r[2],
+                "account_kind": r[3],
+                "brokerage": r[4],
+                "capital": str(r[5]),
+                "drift_threshold": str(r[6]),
+                "created_at": r[7].isoformat(),
+                "note": r[8],
+                "targets": [
+                    {"symbol": t[0], "weight": str(t[1]), "label": t[2]}
+                    for t in rows(
+                        f"SELECT symbol, weight, label FROM alloc_target WHERE plan_id={r[1]}"
+                    )
+                ],
+                "milestones": [
+                    {
+                        "seq": m[0],
+                        "due_date": m[1].isoformat(),
+                        "amount": str(m[2]),
+                        "status": m[3],
+                        "note": m[4],
+                    }
+                    for m in rows(
+                        "SELECT seq, due_date, amount, status, note FROM alloc_milestone "
+                        f"WHERE plan_id={r[1]} ORDER BY seq"
+                    )
+                ],
+                "events": [
+                    {"at": e[0].isoformat(), "what": e[1]}
+                    for e in rows(
+                        "SELECT logged_at, what FROM alloc_event "
+                        f"WHERE plan_id={r[1]} ORDER BY logged_at, id"
+                    )
+                ],
+            }
+        )
+
     return {
         "version": BACKUP_VERSION,
+        "cash_flows": cash_flows,
+        "alloc_plans": alloc_plans,
         "instruments": instruments,
         "accounts": accounts,
         "transactions": transactions,
@@ -589,6 +660,62 @@ def restore_data(conn: duckdb.DuckDBPyConnection, data: dict) -> BackupStats:
                 entry.get("note"),
             ],
         )
+
+    # v8: deposits and allocation plans. Absent from older files = empty.
+    cash_flows = data.get("cash_flows", [])
+    for flow in cash_flows:
+        conn.execute(
+            """INSERT INTO cash_flow (account_id, kind, amount, occurred_at, note)
+               VALUES (?, ?, ?, ?, ?)""",
+            [
+                account_id[flow["account"]],
+                flow["kind"],
+                _dec(flow["amount"]),
+                datetime.fromisoformat(flow["occurred_at"]),
+                flow.get("note"),
+            ],
+        )
+    alloc_plans = data.get("alloc_plans", [])
+    for plan in alloc_plans:
+        row = conn.execute(
+            """INSERT INTO alloc_plan (account_id, name, account_kind, brokerage, capital,
+                                       drift_threshold, created_at, note)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?) RETURNING id""",
+            [
+                account_id[plan["account"]],
+                plan["name"],
+                plan.get("account_kind"),
+                plan.get("brokerage"),
+                _dec(plan["capital"]),
+                _dec(plan["drift_threshold"]),
+                datetime.fromisoformat(plan["created_at"]),
+                plan.get("note"),
+            ],
+        ).fetchone()
+        assert row is not None
+        for t in plan.get("targets", []):
+            conn.execute(
+                "INSERT INTO alloc_target (plan_id, symbol, weight, label) VALUES (?, ?, ?, ?)",
+                [row[0], t["symbol"], _dec(t["weight"]), t.get("label")],
+            )
+        for m in plan.get("milestones", []):
+            conn.execute(
+                """INSERT INTO alloc_milestone (plan_id, seq, due_date, amount, status, note)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                [
+                    row[0],
+                    m["seq"],
+                    date.fromisoformat(m["due_date"]),
+                    _dec(m["amount"]),
+                    m.get("status", "planned"),
+                    m.get("note"),
+                ],
+            )
+        for e in plan.get("events", []):
+            conn.execute(
+                "INSERT INTO alloc_event (plan_id, logged_at, what) VALUES (?, ?, ?)",
+                [row[0], datetime.fromisoformat(e["at"]), e["what"]],
+            )
 
     # v1 backups predate these sections; treat them as empty rather than failing.
     exit_triggers = data.get("exit_triggers", [])
@@ -814,4 +941,6 @@ def restore_data(conn: duckdb.DuckDBPyConnection, data: dict) -> BackupStats:
         engine_positions=len(positions),
         engine_signals=len(signals),
         order_intents=len(intents),
+        cash_flows=len(cash_flows),
+        alloc_plans=len(alloc_plans),
     )

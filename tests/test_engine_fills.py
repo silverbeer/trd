@@ -556,7 +556,7 @@ def test_backup_round_trips_order_intents(tmp_path: Path, engine, fills, conn, p
     )
 
     data = export_data(conn)
-    assert data["version"] == 7
+    assert data["version"] >= 7  # v7 added the guard; later versions keep it
     assert len(data["engine"]["intents"]) == 2
 
     fresh = connect(tmp_path / "restored.duckdb")
