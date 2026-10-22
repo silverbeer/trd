@@ -99,6 +99,9 @@ and never contend for the same writer lock.
 
 ### live — real money
 
+The full operator guide, including turning it on and off, is
+[docs/live-engine.md](../../docs/live-engine.md).
+
 `--live` deploys the live engine against `~/.trd-live`: CronJobs `trd-live-scan` and
 `trd-live-queue`, label `💵 live`. Its scan writes order intents and fills nothing; an
 agent session places them (docs/robinhood-mcp.md, "Draining the outbox") and ingests the

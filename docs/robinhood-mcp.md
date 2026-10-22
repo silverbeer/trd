@@ -14,6 +14,9 @@ through the MCP and writes the broker's answers back as files trd reads
 (see "Draining the outbox" and "Ingesting fills" below). This is agent-side
 only.
 
+Operating the live engine day to day — turning it on, turning it off, what each
+alert means — is [live-engine.md](live-engine.md). This file is the broker side.
+
 ## Why the split exists
 
 `POST https://agent.robinhood.com/mcp/trading` answers `401` with an OAuth
