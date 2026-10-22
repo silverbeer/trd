@@ -381,6 +381,14 @@ def test_the_summary_states_its_own_caveats(engine: EngineService, conn) -> None
     assert summary.open_trades == 1
 
 
+def test_a_live_summary_says_its_trades_were_broker_fills(engine: EngineService, conn) -> None:
+    service = OutcomeService(conn)
+    service.backfill()
+    live = service.summary().model_copy(update={"mode": "live"})
+    assert any("Broker fills" in c for c in live.caveats)
+    assert not any("Simulation fills" in c for c in live.caveats)
+
+
 def test_cli_backfills_and_emits_json(cli_env: FakeProvider, tmp_path) -> None:
     import json
 

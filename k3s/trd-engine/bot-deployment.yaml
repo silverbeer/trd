@@ -43,7 +43,7 @@ spec:
             # recent config), so the day and swing engines are separate homes.
             # Name each one here — the name is what you type in chat.
             - name: TRD_BOT_ENGINES
-              value: swing=/engines/swing,day=/engines/day,swing20=/engines/swing20
+              value: swing=/engines/swing,day=/engines/day,swing20=/engines/swing20,live=/engines/live
             # Where the acked update_id is remembered. On a mounted volume on
             # purpose: lose it and a restart replays up to 24h of Telegram's
             # retained updates.
@@ -81,6 +81,10 @@ spec:
               mountPath: /engines/day
             - name: swing20-home
               mountPath: /engines/swing20
+            # The live engine, only when ~/.trd-live exists: deploy-k3s.sh deletes
+            # every line marked live-only otherwise (and ,live= from the list above).
+            - name: live-home  # live-only
+              mountPath: /engines/live  # live-only
       volumes:
         # EDIT these paths for the machine you deploy to, same as the CronJob's.
         - name: swing-home
@@ -95,3 +99,7 @@ spec:
           hostPath:
             path: /Users/tomdrake/.trd-swing20
             type: Directory
+        - name: live-home  # live-only
+          hostPath:  # live-only
+            path: /Users/tomdrake/.trd-live  # live-only
+            type: Directory  # live-only

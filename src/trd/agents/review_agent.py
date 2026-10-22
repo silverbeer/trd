@@ -132,9 +132,12 @@ Rules, in order of importance:
 
 5. Never recommend a change you cannot say how to test.
 
-6. These are simulation fills with no slippage or spread, only closed trades have
-   outcomes, and signals that fired with a full book could never have been taken.
-   Do not draw a conclusion that depends on ignoring one of those.
+6. A paper engine's fills are simulated, with no slippage or spread; a live
+   engine's are the broker's real fills on orders a person approved. Each engine
+   in the brief says which it is. Only closed trades have outcomes, and signals
+   that fired with a full book could never have been taken. Do not draw a
+   conclusion that depends on ignoring one of those, and never pool a live
+   engine's trades with a paper engine's.
 
 You have {max_requests} turns of tool use; after that a call is refused and you
 must answer. The brief already carries the deterministic findings and the
@@ -408,7 +411,8 @@ def _brief(deps: ReviewDeps) -> str:
     for pack in deps.pack.engines:
         day = pack.day
         lines.append(
-            f"- {pack.engine} ({pack.config.timeframe}, {pack.config.strategies}): "
+            f"- {pack.engine} ({pack.config.mode}, {pack.config.timeframe}, "
+            f"{pack.config.strategies}): "
             f"{len(pack.trades)} trades closed today booking {day.realized_today:+.2f}, "
             f"{len(pack.signals)} signals fired, {len(pack.window_trades)} measured trades "
             f"and {len(pack.window_signals)} measured signals in the last "

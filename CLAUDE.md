@@ -622,7 +622,12 @@ swing (`~/.trd-engine`, `trd-engine-*`), day (`~/.trd-day`, `--day`) and swing20
 (`~/.trd-swing20`, `--swing20`) — the paper copy of the future live engine, 5 x $20 on
 $100 capital with the cash ledger on, seeded BY HAND with swing's universe and
 strategies (the script never reads another engine's DB). Anything addressing "every
-engine" addresses three homes, and the report, review and bot mount all three.
+engine" addresses three homes, and the report, review and bot mount all three — four
+once `~/.trd-live` exists: `--live` deploys the live engine (`trd-live-*`, label
+`💵 live`), never seeds it, refuses a home that isn't `mode: live`, and refuses
+`--test`. The shared manifests carry the live mount on lines marked `# live-only`,
+deleted by the script while the home is missing, because a `type: Directory` mount on a
+missing path takes the report and the bot down with it.
 
 Telegram names an engine by its label — `swing`, `day`, `swing20` — set as
 `TRD_ENGINE_LABEL` by the deploy script (`ENGINE_LABEL`), never by the Kubernetes name;

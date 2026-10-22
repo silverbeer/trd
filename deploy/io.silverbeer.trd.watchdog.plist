@@ -32,8 +32,12 @@
     <array>
         <string>/bin/zsh</string>
         <string>-lc</string>
-        <!-- Both engines, named exactly as the bot and the report name them. -->
-        <string>trd engine watchdog --engines "swing=$HOME/.trd-engine,day=$HOME/.trd-day" --notify</string>
+        <!-- Every engine, named exactly as the bot and the report name them.
+             Once the live home exists, append ,live=$HOME/.trd-live: that is
+             what makes its stuck order intents and a loss-stop halt alarm.
+             Not before. A home with no status.json reads as an engine that
+             stopped scanning, and would alarm every hour of every session. -->
+        <string>trd engine watchdog --engines "swing=$HOME/.trd-engine,day=$HOME/.trd-day,swing20=$HOME/.trd-swing20" --notify</string>
     </array>
 
     <!-- Every 5 minutes, the same cadence as the scan it is watching. The check
