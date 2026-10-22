@@ -9,6 +9,7 @@ the broker's own, as measured 2026-10-22 on the agentic account.
 import importlib.util
 import json
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -42,7 +43,7 @@ def write_stream(
     tmp_path: Path, calls: list[tuple[str, dict, object, bool]], status="connected"
 ) -> str:
     """A stream-json transcript: init, then each (tool, input, result, is_error)."""
-    lines = [
+    lines: list[dict[str, Any]] = [
         {
             "type": "system",
             "subtype": "init",

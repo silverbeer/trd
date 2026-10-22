@@ -337,7 +337,7 @@ def probe(stream: dict[str, Any]) -> dict[str, Any]:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser = argparse.ArgumentParser(description=(__doc__ or "").splitlines()[0])
     parser.add_argument("command", choices=["args", "probe", "review", "placed", "snapshot"])
     parser.add_argument("--stream")
     parser.add_argument("--specs")
