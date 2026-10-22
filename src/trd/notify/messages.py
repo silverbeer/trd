@@ -19,7 +19,7 @@ Plain text, no markup — see TelegramNotifier for why.
 """
 
 from collections.abc import Callable
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 from typing import Any
 
@@ -35,6 +35,7 @@ from trd.models import (
     Side,
     StrategyStat,
 )
+from trd.models.alloc import AllocView
 from trd.notify.telegram import LIVE_LABEL
 from trd.services.daily_report import DailyReport, EngineDay, ExitEvent, TwinDivergence
 from trd.services.engine import ScanFill, ScanResult
@@ -947,3 +948,103 @@ def review_message(result: ReviewResult, packs: list[EnginePack], judged: Any | 
             + "\n… cut; the rest is in trd engine review"
         )
     return text
+
+
+# ------------------------------------------------------------ allocation plan
+
+
+def _share_pct(part: Decimal | None, whole: Decimal | None) -> str:
+    if part is None or not whole:
+        return "—"
+    value = part / whole * 100
+    return f"{'+' if value >= 0 else '-'}{abs(value):.2f}%"
+
+
+def alloc_report_message(view: AllocView, today: date) -> str:
+    """The daily performance message for an allocation plan (SB-1384).
+
+    Money first, then where it is, then whether the plan needs anything: drift
+    past the threshold, a milestone due or overdue. Every return is named for
+    what it is — 'simple' is gain over deposits, not annualised and not
+    time-weighted. A value that cannot be computed says so instead of printing a
+    number built on a missing price.
+    """
+    plan = view.plan
+    lines = [f"📈 {plan.name} — {today:%a %b %-d}"]
+    if view.total_value is None:
+        lines.append(f"worth: unknown — no price for {', '.join(view.unpriced)}")
+    else:
+        prior = view.total_value - view.day_change if view.day_change is not None else None
+        today_txt = (
+            f"{_signed(view.day_change)} ({_share_pct(view.day_change, prior)})"
+            if view.day_change is not None
+            else "—"
+        )
+        lines.append(f"worth {_money(view.total_value)} · today {today_txt}")
+        if view.gain is not None:
+            xirr_txt = f" · XIRR {view.xirr * 100:+.2f}%/yr" if view.xirr is not None else ""
+            lines.append(
+                f"since funding {_signed(view.gain)} "
+                f"({_share_pct(view.gain, view.cash.net_deposits)} of "
+                f"{_money(view.cash.net_deposits)} deposited, simple){xirr_txt}"
+            )
+        if view.benchmark_value is not None:
+            lines.append(
+                f"vs the same deposits in SPY: {_signed(view.total_value - view.benchmark_value)}"
+            )
+    cash_share = f" ({view.cash.cash / view.total_value * 100:.0f}%)" if view.total_value else ""
+    lines.append(
+        f"in funds {_money(view.holdings_value)} · cash {_money(view.cash.cash)}{cash_share}"
+    )
+    funds = [r for r in view.rows if r.value is not None and r.quantity != 0]
+    if funds:
+        lines.append(
+            "  "
+            + " · ".join(
+                f"{r.symbol} {r.invested_pct:.0f}%"
+                + (
+                    f" {r.gain / r.cost_basis * 100:+.1f}%"
+                    if r.gain is not None and r.cost_basis
+                    else ""
+                )
+                for r in funds
+                if r.invested_pct is not None
+            )
+        )
+    off = [r for r in view.rows if r.action in ("underweight", "overweight")]
+    if off:
+        lines.append(
+            f"⚠ drift past ±{plan.drift_threshold.normalize():f}pp: "
+            + ", ".join(f"{r.symbol} {r.drift_pp:+.1f}pp ({r.action})" for r in off)
+        )
+    elif any(r.drift_pp is not None for r in view.rows):
+        lines.append(f"drift: all within ±{plan.drift_threshold.normalize():f}pp of target")
+    pending = [
+        p for p in view.progress if p.state in ("overdue", "partial", "planned", "postponed")
+    ]
+    if pending:
+        nxt = pending[0]
+        m = nxt.milestone
+        label = "initial tranche" if m.seq == 0 else f"milestone {m.seq}"
+        days = (m.due_date - today).days
+        # Past its date is overdue whatever else is true: a tranche half bought
+        # and a week late is late.
+        if days < 0:
+            when = f"OVERDUE by {-days} day(s)"
+        elif days == 0:
+            when = "due today"
+        else:
+            when = f"due {m.due_date:%b %-d} ({days} days)"
+        done = (
+            f", {_money(nxt.invested_toward)} of {_money(nxt.fund_target)} in"
+            if nxt.state == "partial"
+            else ""
+        )
+        lines.append(f"next: {label} {_money(m.amount)} {when}{done}")
+        if days <= 7:
+            lines.append("  trd alloc propose — a split to review; you place it at the broker")
+    elif view.progress:
+        lines.append("schedule: every milestone done")
+    if view.stale:
+        lines.append(f"stale prices: {', '.join(view.stale)}")
+    return "\n".join(lines)

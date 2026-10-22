@@ -1,0 +1,69 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  The Rollover IRA's daily performance message to Telegram (SB-1384): weekdays
+  16:25 local time (the mini runs on New York time), after the close and clear
+  of the engine report at 16:16.
+
+  Read-only on the iCloud portfolio database. Secrets are not here: they are read
+  from ~/.config/trd/live.env (chmod 600) by deploy/alloc-report.sh.
+
+  Install:
+    1) Replace USERNAME below with your account name (absolute paths only).
+    2) cp deploy/io.silverbeer.trd.alloc-report.plist ~/Library/LaunchAgents/
+    3) launchctl load ~/Library/LaunchAgents/io.silverbeer.trd.alloc-report.plist
+    Test now:  launchctl start io.silverbeer.trd.alloc-report
+               tail ~/Library/Logs/trd-alloc-report.log
+-->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>io.silverbeer.trd.alloc-report</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>/Users/USERNAME/.trd-runner/bin/alloc-report.sh</string>
+    </array>
+
+    <key>StartCalendarInterval</key>
+    <array>
+        <dict>
+            <key>Weekday</key><integer>1</integer>
+            <key>Hour</key><integer>16</integer>
+            <key>Minute</key><integer>25</integer>
+        </dict>
+        <dict>
+            <key>Weekday</key><integer>2</integer>
+            <key>Hour</key><integer>16</integer>
+            <key>Minute</key><integer>25</integer>
+        </dict>
+        <dict>
+            <key>Weekday</key><integer>3</integer>
+            <key>Hour</key><integer>16</integer>
+            <key>Minute</key><integer>25</integer>
+        </dict>
+        <dict>
+            <key>Weekday</key><integer>4</integer>
+            <key>Hour</key><integer>16</integer>
+            <key>Minute</key><integer>25</integer>
+        </dict>
+        <dict>
+            <key>Weekday</key><integer>5</integer>
+            <key>Hour</key><integer>16</integer>
+            <key>Minute</key><integer>25</integer>
+        </dict>
+    </array>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/Users/USERNAME/.local/bin:/opt/homebrew/bin:/usr/bin:/bin</string>
+    </dict>
+
+    <key>StandardOutPath</key>
+    <string>/Users/USERNAME/Library/Logs/trd-alloc-report.out</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/USERNAME/Library/Logs/trd-alloc-report.err</string>
+</dict>
+</plist>
