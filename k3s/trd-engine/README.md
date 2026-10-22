@@ -97,6 +97,44 @@ while the directory is missing.
 engines running at once — that is fine, because they hold separate DuckDB files
 and never contend for the same writer lock.
 
+### live — real money
+
+`--live` deploys the live engine against `~/.trd-live`: CronJobs `trd-live-scan` and
+`trd-live-queue`, label `💵 live`. Its scan writes order intents and fills nothing; an
+agent session places them (docs/robinhood-mcp.md, "Draining the outbox") and ingests the
+fills. The scan keeps `--notify`, because that is what sends each new intent to the
+private alert chat — never the channel (see "Live engine alerts" below).
+
+```bash
+./scripts/deploy-k3s.sh --skip-build --live
+```
+
+Three things it refuses, each on purpose:
+
+- **An unconfigured home.** It never seeds. `engine init --live` needs a real account, a
+  capital and the swing universe, and guessing any of them would put money on a config
+  nobody chose. Create it by hand, copying swing's universe the way swing20's was:
+
+  ```bash
+  TRD_HOME=~/.trd-live trd init
+  TRD_HOME=~/.trd-live trd account add ***REMOVED***          # real, not --type simulation
+  TRD_HOME=~/.trd-live trd engine init --live --account ***REMOVED*** --capital 100 \
+      --size 20 --max 5 --symbols "$SYMS" --strategies "$STRATS"
+  TRD_HOME=~/.trd-live trd sync --full
+  TRD_HOME=~/.trd-live trd engine guard                 # the hard caps it starts with
+  ```
+- **A paper home.** A CronJob named and labelled live that trades paper is the one
+  mislabel that matters; the script checks `mode: live` in `trd engine status --json`.
+- **`--test`.** A forced scan proves an image on paper; on real money it proves nothing
+  `--test --swing20` does not, and an exit it fires is a real sell intent off an
+  after-hours quote.
+
+The report, review and bot pick the live home up **by existing**: their manifests carry
+it on lines marked `# live-only`, which the script deletes while `~/.trd-live` is missing
+(a `type: Directory` mount on a missing path fails the pod). So the order is: create the
+home, `--live`, then re-run `--report`, `--review` and `--bot`, and add it to the
+watchdog after its first scan.
+
 ### `~/.trd-engine` is not your real database
 
 It is a separate, paper-only DuckDB holding one simulation account and its
@@ -291,7 +329,7 @@ Three guards now exist, and only the third can catch a cluster that is wholly go
 ```bash
 cp deploy/io.silverbeer.trd.watchdog.plist ~/Library/LaunchAgents/   # edit USERNAME + tokens
 launchctl load ~/Library/LaunchAgents/io.silverbeer.trd.watchdog.plist
-trd engine watchdog --engines "swing=$HOME/.trd-engine,day=$HOME/.trd-day"
+trd engine watchdog --engines "swing=$HOME/.trd-engine,day=$HOME/.trd-day,swing20=$HOME/.trd-swing20"
 ```
 
 It reads only the `status.json` each scan publishes, never a database, so it cannot contend
@@ -304,10 +342,12 @@ recovery rules: `stuck_intents` > 0 (an order the broker held past its session, 
 approval past its 16:00 expiry) and a halt thrown by the engine's own loss stop
 (`halted_by: max_loss`). A halt someone threw by hand is not an alarm. Those alerts lead
 with "🟠 trd live engine needs a person" rather than "not scanning", and exit non-zero like
-any other failure. Add the live home to `--engines` for it to be watched:
+any other failure. Add the live home to `--engines` for it to be watched — in the
+installed plist too, once `~/.trd-live` has scanned at least once (before that it has no
+`status.json` and reads as an engine that stopped):
 
 ```bash
-trd engine watchdog --engines "swing=$HOME/.trd-engine,day=$HOME/.trd-day,live=$HOME/.trd-live"
+trd engine watchdog --engines "swing=$HOME/.trd-engine,day=$HOME/.trd-day,swing20=$HOME/.trd-swing20,live=$HOME/.trd-live"
 ```
 
 **It must not be deployed into the cluster it watches.** That is the whole point.

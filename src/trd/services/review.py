@@ -173,6 +173,9 @@ class ConfigSummary(BaseModel):
     # Starting cash when the engine trades a cash account (T+1 ledger on), None
     # when off. A refill skipped for unsettled cash is the ledger, not a quiet tape.
     capital: Decimal | None = None
+    # paper = the engine filled itself at a bar price; live = a broker filled it.
+    # Defaulted so a review stored before live engines existed still loads.
+    mode: str = "paper"
 
     @classmethod
     def of(cls, config: EngineConfig, account: str) -> "ConfigSummary":
@@ -188,6 +191,7 @@ class ConfigSummary(BaseModel):
             regime_sma=int(config.exit_params.get("regime_sma", 0)),
             regime_vix_max=float(config.exit_params.get("regime_vix_max", 0)),
             capital=config.capital,
+            mode=str(config.mode),
         )
 
 
@@ -210,10 +214,18 @@ class EnginePack(BaseModel):
     @computed_field  # type: ignore[prop-decorator]
     @property
     def caveats(self) -> list[str]:
-        out = [
-            "Simulation fills: every entry and exit is assumed at a bar price. No "
-            "slippage, no spread, no partial fills.",
-        ]
+        if self.config.mode == "live":
+            out = [
+                "Broker fills: every entry and exit is the broker's real fill — "
+                "slippage and spread included — on an order a person approved, so "
+                "it can land minutes after the signal. Compare it with its paper "
+                "twin, not with the backtest.",
+            ]
+        else:
+            out = [
+                "Simulation fills: every entry and exit is assumed at a bar price. No "
+                "slippage, no spread, no partial fills.",
+            ]
         if self.unmeasured:
             out.append(
                 f"{self.unmeasured} closed trade(s) have no outcome measured yet — run "

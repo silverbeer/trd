@@ -134,14 +134,24 @@ class OutcomeSummary(BaseModel):
     taken: OutcomeGroup
     passed: OutcomeGroup
     passed_takeable: OutcomeGroup
+    # paper = the engine filled itself at bar prices; live = a broker filled it.
+    mode: str = "paper"
 
     @computed_field  # type: ignore[prop-decorator]
     @property
     def caveats(self) -> list[str]:
-        out = [
-            "Simulation fills: entries and exits are assumed at bar prices. No "
-            "slippage, no partial fills, no spread — MFE and capture flatter reality.",
-        ]
+        if self.mode == "live":
+            out = [
+                "Broker fills: closed trades are the broker's real fills, slippage and "
+                "spread included. Signals were never filled at all — their outcomes "
+                "are walked from bar prices, so taken-vs-passed compares a real fill "
+                "with an assumed one.",
+            ]
+        else:
+            out = [
+                "Simulation fills: entries and exits are assumed at bar prices. No "
+                "slippage, no partial fills, no spread — MFE and capture flatter reality.",
+            ]
         if self.open_trades:
             out.append(
                 f"Survivorship: {self.open_trades} open trade(s) have no outcome yet, so "
@@ -619,6 +629,7 @@ class OutcomeService:
             taken=summarize_signals("signals taken", taken),
             passed=summarize_signals("signals passed", passed),
             passed_takeable=summarize_signals("passed (takeable)", takeable),
+            mode=str(config.mode),
         )
 
     def trade_rows(

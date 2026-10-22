@@ -601,6 +601,7 @@ def test_the_brief_carries_the_findings_and_the_window() -> None:
     assert "swing/breakout over 30d: 40 trades" in brief
     assert "capture 10%" in brief
     assert "FINDING swing/strategy breakout (n=40)" in brief
+    assert "- swing (paper, " in brief  # rule 6 relies on the brief naming the mode
 
 
 # ----------------------------------------------------------- cache accounting

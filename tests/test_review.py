@@ -333,6 +333,20 @@ def test_the_pack_states_what_it_could_not_measure(
     assert any("no outcome measured yet" in c for c in built.caveats)
 
 
+def test_a_live_pack_says_its_fills_are_the_brokers(
+    engine: EngineService, conn: duckdb.DuckDBPyConnection
+) -> None:
+    """ "Simulation fills" on a live engine would tell the reviewer the one thing
+    that is no longer true: those prices were paid."""
+    built = engine_pack(engine, OutcomeService(conn), "swing", ON)
+    assert built.config.mode == "paper"
+    assert any("Simulation fills" in c for c in built.caveats)
+
+    live = built.model_copy(update={"config": built.config.model_copy(update={"mode": "live"})})
+    assert any("Broker fills" in c for c in live.caveats)
+    assert not any("Simulation fills" in c for c in live.caveats)
+
+
 # --------------------------------------------------------------- read-only
 
 

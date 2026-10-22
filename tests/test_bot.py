@@ -349,6 +349,35 @@ def test_a_refused_config_is_surfaced_in_status():
     assert "⚠" in text and "refuse" in text
 
 
+def test_a_halted_engine_says_so_before_anything_else():
+    """Positions and P&L look normal on a halted engine; only the halt line says
+    it is placing nothing."""
+    text = format_status(
+        {
+            "universe": [],
+            "mode": "live",
+            "halted": True,
+            "halted_by": "max_loss",
+            "halted_at": "2026-10-22T11:05:00.123",
+            "halt_reason": "loss -21.00 reached max-loss 20.00",
+            "open_intents": 1,
+            "awaiting_approval": 1,
+            "cash_settled": "64.5",
+            "stuck_intents": 2,
+        }
+    )
+    first = text.splitlines()[0]
+    assert first.startswith("⛔ HALTED (max_loss, since 2026-10-22 11:05)")
+    assert "max-loss 20.00" in first
+    assert "💵 LIVE · open intents 1 · awaiting approval 1 · settled cash 64.50" in text
+    assert "2 stuck intent(s)" in text
+
+
+def test_a_paper_engine_status_has_no_live_lines():
+    text = format_status({"universe": [], "mode": "paper", "halted": False})
+    assert "HALTED" not in text and "LIVE" not in text
+
+
 def test_report_leads_with_expectancy(bot, homes):
     (homes[0].home / "report.json").write_text(
         '[{"strategy": "pullback", "trades": 9, "win_rate": 55.5, "expectancy_r": 0.42}]'
