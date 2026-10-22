@@ -37,6 +37,7 @@ from trd.models import (
     TradeExplanation,
     TradeOutcome,
 )
+from trd.models.alloc import AllocView, CashBalance, CashFlow, Proposal
 from trd.repos import PrepSnapshotRow
 from trd.services.backtest import BacktestResult as EngineBacktestResult
 from trd.services.dashboard import Dashboard, Holding
@@ -3089,3 +3090,170 @@ def edge_table(report: EdgeReport) -> Table:
         for group in report.by_time:
             add(group)
     return table
+
+
+# ------------------------------------------------------------- allocation plan
+
+
+def _pp(value: Decimal | None) -> str:
+    if value is None:
+        return "—"
+    color = "green" if abs(value) < 1 else "yellow"
+    return f"[{color}]{'+' if value >= 0 else ''}{value:.1f}pp[/{color}]"
+
+
+def cash_flows_table(flows: list[CashFlow], balance: CashBalance) -> RenderableType:
+    table = Table(title=f"Cash — {balance.account}", title_justify="left")
+    table.add_column("Date")
+    table.add_column("Kind")
+    table.add_column("Amount", justify="right")
+    table.add_column("Note")
+    for f in flows:
+        table.add_row(f"{f.occurred_at:%Y-%m-%d}", f.kind.value, fmt_signed(f.signed), f.note or "")
+    summary = Text.from_markup(
+        f"deposits {fmt_money(balance.deposits)} · withdrawals {fmt_money(balance.withdrawals)}"
+        f" · bought {fmt_money(balance.bought)} · sold {fmt_money(balance.sold)}"
+        f" · income {fmt_money(balance.income)}\n"
+        f"[bold]cash {fmt_money(balance.cash)}[/bold]"
+        + ("  [red]negative — a deposit is missing?[/red]" if balance.cash < 0 else "")
+    )
+    return Group(table, summary)
+
+
+def alloc_view_renderables(view: AllocView) -> list[RenderableType]:
+    plan = view.plan
+    kind = " · ".join(x for x in (plan.account_kind, plan.brokerage) if x)
+    head = [
+        f"[bold]{plan.name}[/bold]  ({plan.account}{' · ' + kind if kind else ''})",
+        f"capital {fmt_money(plan.capital)} · deposited {fmt_money(view.cash.net_deposits)}"
+        f" · in funds {fmt_money(view.deployed)} · still to invest "
+        f"{fmt_money(view.remaining_to_deploy)}",
+    ]
+    if view.total_value is None:
+        head.append(
+            f"[red]value unknown — no price for {', '.join(view.unpriced)}[/red] "
+            "(never counted as zero)"
+        )
+    else:
+        head.append(
+            f"[bold]worth {fmt_money(view.total_value)}[/bold] = holdings "
+            f"{fmt_money(view.holdings_value)} + cash {fmt_money(view.cash.cash)}"
+        )
+        if view.gain is not None:
+            head.append(
+                f"gain {fmt_signed(view.gain)} ({fmt_signed_pct(view.simple_return_pct)} of net "
+                f"deposits — simple, not annualised)"
+                + (f" · XIRR {view.xirr * 100:+.2f}%/yr" if view.xirr is not None else "")
+            )
+        if view.benchmark_value is not None:
+            head.append(
+                f"same deposits in SPY: {fmt_money(view.benchmark_value)} "
+                f"({fmt_signed(view.total_value - view.benchmark_value)} vs you)"
+            )
+    head.append(
+        f"[dim]as of {view.as_of:%Y-%m-%d %H:%M}"
+        + (f" · stale prices: {', '.join(view.stale)}" if view.stale else "")
+        + "[/dim]"
+    )
+
+    table = Table(title="Allocation", title_justify="left")
+    for col, just in [
+        ("Symbol", "left"),
+        ("Target", "right"),
+        ("Target $", "right"),
+        ("Shares", "right"),
+        ("Value", "right"),
+        ("Gain", "right"),
+        ("Of funds", "right"),
+        ("Target", "right"),
+        ("Drift", "right"),
+        ("", "left"),
+    ]:
+        table.add_column(col, justify="right" if just == "right" else "left")
+    for r in view.rows + view.other_holdings:
+        in_plan = r in view.rows
+        if r.symbol == "CASH":
+            value = fmt_money(view.cash.cash)
+        else:
+            value = (
+                fmt_money(r.value)
+                if r.value is not None or r.quantity == 0
+                else "[red]no price[/red]"
+            )
+        table.add_row(
+            r.symbol + (" [yellow](not in plan)[/yellow]" if not in_plan else ""),
+            f"{r.target_pct.normalize():f}%" if in_plan else "—",
+            fmt_money(r.target_value) if in_plan else "—",
+            fmt_qty(r.quantity) if r.quantity else "—",
+            value,
+            fmt_signed(r.gain),
+            f"{r.invested_pct:.1f}%" if r.invested_pct is not None else "—",
+            f"{r.invested_target_pct:.1f}%" if r.invested_target_pct is not None else "—",
+            _pp(r.drift_pp),
+            {"underweight": "[yellow]under[/yellow]", "overweight": "[yellow]over[/yellow]"}.get(
+                r.action or "", "[green]ok[/green]" if r.action else ""
+            ),
+        )
+    sched = Table(title="Deployment schedule", title_justify="left")
+    for col in ("#", "Due", "Planned", "Into funds", "Invested", "State", "Note"):
+        sched.add_column(
+            col, justify="right" if col in ("Planned", "Into funds", "Invested") else "left"
+        )
+    colors = {"completed": "green", "partial": "yellow", "overdue": "red", "cancelled": "dim"}
+    for p in view.progress:
+        m = p.milestone
+        c = colors.get(p.state, "white")
+        sched.add_row(
+            "initial" if m.seq == 0 else str(m.seq),
+            f"{m.due_date:%Y-%m-%d}",
+            fmt_money(m.amount),
+            fmt_money(p.fund_target),
+            fmt_money(p.invested_toward),
+            f"[{c}]{p.state}[/{c}]",
+            m.note or "",
+        )
+    out: list[RenderableType] = [Text.from_markup("\n".join(head)), table]
+    if view.progress:
+        out.append(sched)
+        if view.plan.scheduled != view.plan.capital:
+            out.append(
+                Text.from_markup(
+                    f"[yellow]schedule totals {fmt_money(view.plan.scheduled)}, capital is "
+                    f"{fmt_money(view.plan.capital)}[/yellow]"
+                )
+            )
+    else:
+        out.append(Text.from_markup("[dim]no schedule yet — trd alloc schedule[/dim]"))
+    out.append(
+        Text.from_markup(
+            "[dim]Of funds = share of the money in funds; drift is measured there, against the "
+            "targets renormalised without CASH, so cash waiting to be deployed is not "
+            "'underweight everything'. Planning aid, not advice.[/dim]"
+        )
+    )
+    return out
+
+
+def proposal_renderables(p: Proposal) -> list[RenderableType]:
+    table = Table(
+        title=f"Proposal — {fmt_money(p.amount)} ({p.mode}) · a suggestion, not an order",
+        title_justify="left",
+    )
+    for col in ("Fund", "Amount", "≈ Shares", "@ Price", "Of funds now", "After", "Target"):
+        table.add_column(col, justify="left" if col == "Fund" else "right")
+    for leg in p.legs:
+        table.add_row(
+            leg.symbol,
+            fmt_money(leg.amount),
+            fmt_qty(leg.shares) if leg.shares is not None else "—",
+            fmt_money(leg.price),
+            f"{leg.weight_before:.1f}%" if leg.weight_before is not None else "—",
+            f"{leg.weight_after:.1f}%" if leg.weight_after is not None else "—",
+            f"{leg.target_pct:.1f}%" if leg.target_pct is not None else "—",
+        )
+    lines = [f"cash recorded: {fmt_money(p.cash_available)}"] + [f"• {n}" for n in p.notes]
+    lines.append(
+        "[dim]Shares are estimates at the quote shown; the fill decides. Edit any leg with "
+        "--set SYMBOL=AMOUNT. Record what you actually bought with 'trd buy'.[/dim]"
+    )
+    return [table, Text.from_markup("\n".join(lines))]
