@@ -415,14 +415,14 @@ def test_the_report_leads_with_money_and_names_its_returns(conn, provider, ira) 
     view = ira.view(IRA, today=date(2026, 10, 27))
     text = alloc_report_message(view, date(2026, 10, 27))
     lines = text.splitlines()
-    assert lines[0] == "📈 Fidelity Rollover IRA Growth Plan — Tue Oct 27"
-    assert lines[1] == "worth 251,530.00 · today +600.00 (+0.24%)"
-    assert "since funding +600.00 (+0.24% of ***REMOVED*** deposited, simple)" in lines[2]
-    assert "IVV 100% +1.0%" in text
-    assert "drift past ±5pp: IVV +52.6pp (overweight)" in text
-    assert (
-        "next: initial tranche 150,930.00 OVERDUE by 1 day(s), 60,000.00 of 143,383.50 in" in text
-    )
+    assert lines[:2] == ["📈 Fidelity Rollover IRA Growth Plan", "Tuesday, Oct 27"]
+    assert lines[3] == "💰 $251,530.00"
+    assert lines[4] == "   Today: +$600.00 (+0.24%)"
+    assert lines[5] == "   Since funding: +$600.00 (+0.24%, simple)"
+    assert "   IVV $60,600 · 100% of funds · +1.0%" in lines
+    assert "⚠️ Off target (±5 pts): IVV +52.6 (overweight)" in text
+    assert "🗓 Initial purchase: $150,930 OVERDUE by 1 day(s)" in text
+    assert "   $60,000 of $143,384 bought so far" in text
     assert "trd alloc propose" in text
 
 
@@ -433,8 +433,8 @@ def test_the_report_will_not_print_a_value_built_on_a_missing_price(conn, provid
     buy(conn, provider, "IVV", "1", "600")
     del provider.quotes["IVV"]
     text = alloc_report_message(ira.view(IRA), date(2026, 10, 27))
-    assert "worth: unknown — no price for IVV" in text
-    assert "since funding" not in text
+    assert "💰 Worth: unknown — no price for IVV" in text
+    assert "Since funding" not in text
 
 
 def test_the_report_reads_without_writing(cli_env: FakeProvider, monkeypatch) -> None:
@@ -564,9 +564,19 @@ def test_the_report_shows_the_moonshot_and_reserved_cash(conn, provider, moonsho
 
     buy(conn, provider, "SPCX", "2", "150")
     text = alloc_report_message(moonshot.view(IRA, today=START), START)
-    assert "7,227.90 reserved" in text
-    assert "🚀 SPCX: 300.00 of 7,527.90 bought (1/24 instalments due)" in text
-    assert "buy 13.66 of SPCX to be on schedule" in text
+    assert "   $7,228 set aside for SPCX" in text
+    assert "   🚀 SPCX $300 · +0.0%" in text
+    assert "🚀 SPCX: 0 of 24 buys done · buy $13.66 now" in text
+
+
+def test_a_few_cents_short_of_an_instalment_is_on_schedule(conn, provider, moonshot) -> None:
+    from trd.notify.messages import alloc_report_message
+
+    buy(conn, provider, "SPCX", "2.0910", "150")  # 313.65 of a 313.66 instalment
+    view = moonshot.view(IRA, today=START)
+    assert view.paced[0].behind == 0
+    text = alloc_report_message(view, START)
+    assert "🚀 SPCX: 1 of 24 buys done · next $313.66 on Nov 26" in text
 
 
 def test_pace_survives_backup_and_restore(conn, provider, moonshot, tmp_path) -> None:
