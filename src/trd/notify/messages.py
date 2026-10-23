@@ -960,94 +960,118 @@ def _share_pct(part: Decimal | None, whole: Decimal | None) -> str:
     return f"{'+' if value >= 0 else '-'}{abs(value):.2f}%"
 
 
-def alloc_report_message(view: AllocView, today: date) -> str:
-    """The daily performance message for an allocation plan (SB-1384).
+def _usd(value: Decimal | None, cents: bool = False) -> str:
+    if value is None:
+        return "—"
+    return f"${value:,.2f}" if cents else f"${value:,.0f}"
 
-    Money first, then where it is, then whether the plan needs anything: drift
-    past the threshold, a milestone due or overdue. Every return is named for
-    what it is — 'simple' is gain over deposits, not annualised and not
-    time-weighted. A value that cannot be computed says so instead of printing a
-    number built on a missing price.
+
+def _usd_signed(value: Decimal | None) -> str:
+    if value is None:
+        return "—"
+    return f"{'+' if value >= 0 else '-'}${abs(value):,.2f}"
+
+
+def alloc_report_message(view: AllocView, today: date) -> str:
+    """The daily performance message for an allocation plan (SB-1384, SB-1390).
+
+    Four blocks, each led by one emoji so it can be found on a phone without
+    reading: the money, what is invested, the cash, and what the plan wants next.
+    Whole dollars except the headline worth and the day's moves, where cents are
+    the signal. Every return is named for what it is — 'simple' is gain over
+    deposits, not annualised and not time-weighted. A value that cannot be
+    computed says so instead of printing a number built on a missing price.
     """
     plan = view.plan
-    lines = [f"📈 {plan.name} — {today:%a %b %-d}"]
+    lines = [f"📈 {plan.name}", f"{today:%A, %b %-d}", ""]
+
+    # --- the money
     if view.total_value is None:
-        lines.append(f"worth: unknown — no price for {', '.join(view.unpriced)}")
+        lines.append(f"💰 Worth: unknown — no price for {', '.join(view.unpriced)}")
     else:
-        prior = view.total_value - view.day_change if view.day_change is not None else None
-        today_txt = (
-            f"{_signed(view.day_change)} ({_share_pct(view.day_change, prior)})"
-            if view.day_change is not None
-            else "—"
-        )
-        lines.append(f"worth {_money(view.total_value)} · today {today_txt}")
-        if view.gain is not None:
-            xirr_txt = f" · XIRR {view.xirr * 100:+.2f}%/yr" if view.xirr is not None else ""
+        lines.append(f"💰 {_usd(view.total_value, cents=True)}")
+        if view.day_change is not None:
+            prior = view.total_value - view.day_change
             lines.append(
-                f"since funding {_signed(view.gain)} "
-                f"({_share_pct(view.gain, view.cash.net_deposits)} of "
-                f"{_money(view.cash.net_deposits)} deposited, simple){xirr_txt}"
+                f"   Today: {_usd_signed(view.day_change)} ({_share_pct(view.day_change, prior)})"
             )
+        if view.gain is not None:
+            lines.append(
+                f"   Since funding: {_usd_signed(view.gain)} "
+                f"({_share_pct(view.gain, view.cash.net_deposits)}, simple)"
+            )
+        if view.xirr is not None:
+            lines.append(f"   Annualised (XIRR): {view.xirr * 100:+.2f}%")
         if view.benchmark_value is not None:
             lines.append(
-                f"vs the same deposits in SPY: {_signed(view.total_value - view.benchmark_value)}"
+                f"   vs same money in SPY: {_usd_signed(view.total_value - view.benchmark_value)}"
             )
-    cash_share = f" ({view.cash.cash / view.total_value * 100:.0f}%)" if view.total_value else ""
-    reserved = f", {_money(view.reserved_cash)} reserved" if view.reserved_cash else ""
-    lines.append(
-        f"in funds {_money(view.holdings_value)} · cash {_money(view.cash.cash)}{cash_share}"
-        f"{reserved}"
-    )
+    total = view.total_value
+
+    # --- invested
     funds = [
         r
         for r in view.rows
         if r.value is not None and r.quantity != 0 and r.invested_pct is not None
     ]
-    if funds:
-        lines.append(
-            "  "
-            + " · ".join(
-                f"{r.symbol} {r.invested_pct:.0f}%"
-                + (
-                    f" {r.gain / r.cost_basis * 100:+.1f}%"
-                    if r.gain is not None and r.cost_basis
-                    else ""
-                )
-                for r in funds
-                if r.invested_pct is not None
-            )
+    if view.holdings_value or funds or view.paced:
+        share = (
+            f" ({view.holdings_value / total * 100:.0f}%)" if total and view.holdings_value else ""
         )
-    for p in view.paced:
-        held = ""
-        if p.value is not None and p.quantity:
-            held = f" · worth {_money(p.value)}" + (
-                f" ({p.gain / p.cost_basis * 100:+.1f}%)"
-                if p.gain is not None and p.cost_basis
+        lines += ["", f"📊 Invested {_usd(view.holdings_value)}{share}"]
+        for r in funds:
+            gain = (
+                f" · {r.gain / r.cost_basis * 100:+.1f}%"
+                if r.gain is not None and r.cost_basis
                 else ""
             )
-        lines.append(
-            f"🚀 {p.symbol}: {_money(p.invested)} of {_money(p.earmark)} bought "
-            f"({p.instalments_due}/{p.months} instalments due){held}"
-        )
-        if p.behind:
-            lines.append(f"  buy {_money(p.behind)} of {p.symbol} to be on schedule")
-        elif p.next_date:
-            lines.append(f"  next {_money(p.instalment)} on {p.next_date:%b %-d}")
+            lines.append(f"   {r.symbol} {_usd(r.value)} · {r.invested_pct:.0f}% of funds{gain}")
+        for p in view.paced:
+            if p.quantity and p.value is not None:
+                gain = (
+                    f" · {p.gain / p.cost_basis * 100:+.1f}%"
+                    if p.gain is not None and p.cost_basis
+                    else ""
+                )
+                lines.append(f"   🚀 {p.symbol} {_usd(p.value)}{gain}")
+
+    # --- cash
+    cash = view.cash.cash
+    share = f" ({cash / total * 100:.0f}%)" if total else ""
+    lines += ["", f"💵 Cash {_usd(cash)}{share}"]
+    if view.reserved_cash:
+        names = ", ".join(p.symbol for p in view.paced)
+        lines.append(f"   {_usd(view.reserved_cash)} set aside for {names}")
+
+    # --- the plan
+    lines.append("")
     off = [r for r in view.rows if r.action in ("underweight", "overweight")]
     if off:
         lines.append(
-            f"⚠ drift past ±{plan.drift_threshold.normalize():f}pp: "
-            + ", ".join(f"{r.symbol} {r.drift_pp:+.1f}pp ({r.action})" for r in off)
+            f"⚠️ Off target (±{plan.drift_threshold.normalize():f} pts): "
+            + ", ".join(f"{r.symbol} {r.drift_pp:+.1f} ({r.action})" for r in off)
         )
     elif any(r.drift_pp is not None for r in view.rows):
-        lines.append(f"drift: all within ±{plan.drift_threshold.normalize():f}pp of target")
+        lines.append(f"✅ On target (all within ±{plan.drift_threshold.normalize():f} pts)")
+    for p in view.paced:
+        done = min(p.months, int((p.invested + Decimal(1)) / p.instalment)) if p.instalment else 0
+        progress = f"{done} of {p.months} buys done"
+        if p.behind:
+            lines.append(f"🚀 {p.symbol}: {progress} · buy {_usd(p.behind, cents=True)} now")
+        elif p.next_date:
+            lines.append(
+                f"🚀 {p.symbol}: {progress} · next {_usd(p.instalment, cents=True)} "
+                f"on {p.next_date:%b %-d}"
+            )
+        else:
+            lines.append(f"🚀 {p.symbol}: {progress}")
     pending = [
         p for p in view.progress if p.state in ("overdue", "partial", "planned", "postponed")
     ]
     if pending:
         nxt = pending[0]
         m = nxt.milestone
-        label = "initial tranche" if m.seq == 0 else f"milestone {m.seq}"
+        label = "Initial purchase" if m.seq == 0 else f"Purchase {m.seq}"
         days = (m.due_date - today).days
         # Past its date is overdue whatever else is true: a tranche half bought
         # and a week late is late.
@@ -1056,17 +1080,14 @@ def alloc_report_message(view: AllocView, today: date) -> str:
         elif days == 0:
             when = "due today"
         else:
-            when = f"due {m.due_date:%b %-d} ({days} days)"
-        done = (
-            f", {_money(nxt.invested_toward)} of {_money(nxt.fund_target)} in"
-            if nxt.state == "partial"
-            else ""
-        )
-        lines.append(f"next: {label} {_money(m.amount)} {when}{done}")
+            when = f"on {m.due_date:%b %-d} ({days} days)"
+        lines.append(f"🗓 {label}: {_usd(m.amount)} {when}")
+        if nxt.state == "partial":
+            lines.append(f"   {_usd(nxt.invested_toward)} of {_usd(nxt.fund_target)} bought so far")
         if days <= 7:
-            lines.append("  trd alloc propose — a split to review; you place it at the broker")
+            lines.append("   trd alloc propose → a split to review; you place it at Fidelity")
     elif view.progress:
-        lines.append("schedule: every milestone done")
+        lines.append("🗓 Every scheduled purchase is done")
     if view.stale:
-        lines.append(f"stale prices: {', '.join(view.stale)}")
+        lines.append(f"\n(stale prices: {', '.join(view.stale)})")
     return "\n".join(lines)

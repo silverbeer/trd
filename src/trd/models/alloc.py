@@ -14,6 +14,8 @@ from pydantic import BaseModel, computed_field
 # A target that means "hold this share as uninvested cash". A Treasury fund held
 # for the same reason is its own ticker: priced, and drifting like any other.
 CASH = "CASH"
+# A paced target this close to its schedule is on it (SB-1390).
+PACED_TOLERANCE = Decimal(1)
 
 
 class CashFlowKind(StrEnum):
@@ -203,8 +205,11 @@ class PacedRow(BaseModel):
     @computed_field  # type: ignore[prop-decorator]
     @property
     def behind(self) -> Decimal:
-        """Due by today and not yet bought — what to buy now to be on schedule."""
-        return max(Decimal(0), self.due_to_date - self.invested)
+        """Due by today and not yet bought — what to buy now to be on schedule.
+        Under a dollar is nothing: a dollar order that fills a few cents short
+        of its instalment is on schedule, not behind."""
+        short = self.due_to_date - self.invested
+        return short if short >= PACED_TOLERANCE else Decimal(0)
 
     @computed_field  # type: ignore[prop-decorator]
     @property
