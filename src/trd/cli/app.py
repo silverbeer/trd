@@ -101,9 +101,10 @@ from trd.notify.messages import (
     fill_alert_message,
     fill_messages,
     halt_message,
+    live_report_message,
     review_message,
 )
-from trd.notify.telegram import TelegramNotifier
+from trd.notify.telegram import LIVE_LABEL, TelegramNotifier
 from trd.notify.telegram import from_env as notify_from_env
 from trd.providers import YFinanceProvider
 from trd.repos import AccountRepo
@@ -159,6 +160,7 @@ from trd.services.engine import (
 from trd.services.exit_whatif import ExitWhatIfService, parse_variants
 from trd.services.fidelity import FidelityService, window_start
 from trd.services.indicators import seed_defaults
+from trd.services.live_report import live_report
 from trd.services.outcomes import OutcomeService
 from trd.services.plan import PlanStatus
 from trd.services.review import (
@@ -2670,6 +2672,68 @@ def _report_targets(spec: str | None) -> list[tuple[str, Path]]:
     # TRD_ENGINE_LABEL, or a neutral name — deliberately not label_from_env(),
     # whose day/swing fallback reads the rule set, which is not open yet here.
     return [(os.environ.get("TRD_ENGINE_LABEL", "").strip() or "engine", get_settings().home)]
+
+
+@engine_app.command("live-report")
+def engine_live_report(
+    date_str: Annotated[
+        str | None,
+        typer.Option("--date", "-d", help="Session to report (YYYY-MM-DD). Default: today."),
+    ] = None,
+    notify: Annotated[
+        bool, typer.Option("--notify", help="Send it to the private live alert chat.")
+    ] = False,
+    as_json: JsonOpt = False,
+) -> None:
+    """The LIVE engine's post-market message: the account, then every position.
+
+    Capital, worth and return as the daily report defines them, today's move,
+    cash and orders in flight — then each open position with its day change,
+    P&L, R, stop in force (↑ = trailing), distance to stop and target, and money
+    at risk — then the session's buys, exits and orders that never filled.
+
+    READ-ONLY connection, no network. Refused on a paper engine. --notify goes
+    to the private alert chat (TRD_LIVE_ALERT_CHAT_ID, else the first
+    TRD_BOT_ALLOWED_USER_IDS), never the channel, and sends nothing on a date
+    the engine has no bar for.
+    """
+    _use_json(as_json)
+    on = (_parse_date(date_str) or datetime.now()).date()
+    label = os.environ.get("TRD_ENGINE_LABEL", "").strip() or LIVE_LABEL
+    db_path = get_settings().db_path
+    conn = None
+    try:
+        if not db_path.exists():
+            raise TrdError(f"No database at {db_path}. Run 'trd init' first.")
+        conn = connect_read_only(db_path)
+        report = live_report(EngineService(conn, YFinanceProvider()), label, on)
+    except TrdError as exc:
+        _fail(exc)
+        return
+    finally:
+        if conn is not None:
+            conn.close()
+
+    message = live_report_message(report, label)
+    sent = False
+    if notify and report.market_open:
+        refused: list[str] = []
+        notifier = alert_notifier_from_env(error=refused.append)
+        if notifier is None:
+            _fail(TrdError(refused[0] if refused else "No TELEGRAM_BOT_TOKEN set."))
+            return
+        try:
+            notifier.send(message)
+        except TrdError as exc:  # NotifyError: delivery failed, token never shown
+            _fail(exc)
+            return
+        sent = True
+    if as_json:
+        _emit_json({"message": message, "sent": sent, "report": report.model_dump(mode="json")})
+        return
+    console.print(message, markup=False, highlight=False)
+    if notify and not report.market_open:
+        console.print("[dim]No session stored for this date — nothing sent.[/dim]")
 
 
 @engine_app.command("outcomes")

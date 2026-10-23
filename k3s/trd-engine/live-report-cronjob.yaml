@@ -1,0 +1,94 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: trd-live-report
+  namespace: trd
+  labels:
+    app: trd
+    component: live-report
+spec:
+  # 16:20 ET on weekdays: after the close, and after the combined report (16:16)
+  # so the two messages arrive in the order they are read — every engine's day,
+  # then the live book position by position.
+  #
+  # timeZone, so DST is handled and this does not silently become 15:20 in
+  # November — an hour when the market is still open and the marks are not final.
+  schedule: "20 16 * * 1-5"
+  timeZone: "America/New_York"
+
+  # One message, not two: a duplicated report on real money reads as two books.
+  concurrencyPolicy: Forbid
+
+  # A late report is still the day's report. An hour of slack covers a node that
+  # was asleep at 16:20.
+  startingDeadlineSeconds: 3600
+
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      # One attempt. The command opens the database read-only and either sends
+      # or says why not; retrying into the same answer only adds a second send.
+      backoffLimit: 0
+      ttlSecondsAfterFinished: 3600
+      template:
+        metadata:
+          labels:
+            app: trd
+            component: live-report
+        spec:
+          restartPolicy: Never
+          containers:
+            - name: trd
+              image: trd:latest
+              imagePullPolicy: Never # locally built, imported with ctr
+              # Passthrough mode of the entrypoint: runs this trd subcommand only.
+              # --notify goes to the PRIVATE live alert chat (TRD_LIVE_ALERT_CHAT_ID,
+              # else the first TRD_BOT_ALLOWED_USER_IDS), never the channel, and the
+              # command refuses rather than falling back. Nothing is sent on a date
+              # the engine has no bar for.
+              args:
+                - engine
+                - live-report
+                - --notify
+              env:
+                - name: TRD_HOME
+                  value: /data
+                - name: TZ
+                  value: America/New_York
+                - name: NO_COLOR
+                  value: "1" # plain text in kubectl logs
+              envFrom:
+                # TELEGRAM_BOT_TOKEN plus TRD_LIVE_ALERT_CHAT_ID / TRD_BOT_ALLOWED_USER_IDS
+                # — the same secret the live scan reads its alert chat from.
+                - secretRef:
+                    name: trd-engine-telegram
+                    optional: true
+              resources:
+                requests:
+                  memory: "128Mi"
+                  cpu: "50m"
+                limits:
+                  memory: "512Mi"
+                  cpu: "500m"
+              securityContext:
+                runAsNonRoot: true
+                # Must match the uid that owns the engine home.
+                runAsUser: 1000
+                allowPrivilegeEscalation: false
+                capabilities:
+                  drop:
+                    - ALL
+              volumeMounts:
+                - name: trd-home
+                  mountPath: /data
+          volumes:
+            # The live home ONLY. EDIT for the machine you deploy to —
+            # deploy-k3s.sh --live rewrites it to ENGINE_HOME.
+            #
+            # `type: Directory`, never DirectoryOrCreate: a dead host share must
+            # fail the mount, not hand the pod an empty directory (SB-1054).
+            - name: trd-home
+              hostPath:
+                path: /Users/***REMOVED***/.trd-live
+                type: Directory
