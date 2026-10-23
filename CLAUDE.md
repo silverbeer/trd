@@ -550,6 +550,20 @@ trd engine daily-report [--json] [--date ISO] [--engines swing=/a,day=/b] [--win
                                       # Every term used carries its definition in the message: the
                                       # report is read by someone learning the vocabulary, so R,
                                       # expectancy and 'at risk' are glossed where they appear
+trd engine live-report [--date ISO] [--notify] [--json]
+                                      # the LIVE engine's own post-market message (SB-1406):
+                                      # account (capital, worth, return — same definitions as
+                                      # daily-report's live block — today's move, settled/
+                                      # unsettled cash, orders, halt), then every open position
+                                      # best first: P&L $/%, R, today's move (vs the previous
+                                      # close; the ENTRY for a position opened today), stop in
+                                      # force (↑ = trailing) and % below, target and % above,
+                                      # at risk; then today's buys, exits and rejected/expired
+                                      # orders. Stale marks at the top, and a stale position's
+                                      # day move is unknown, never yesterday's. READ-ONLY
+                                      # connection, no network. Refused on paper. --notify =
+                                      # PRIVATE alert chat only (refused without one), nothing
+                                      # sent on a date with no bar. --json {message, sent, report}
 trd engine agenda [--engines ...] [--window 10] [--min-sessions 3] [--json]
                                       # which review findings have EARNED a ticket. The review
                                       # recomputes nightly and does not remember yesterday, so a
@@ -644,6 +658,11 @@ The nightly decision review is the third CronJob (`k3s/trd-engine/review-cronjob
 `./scripts/deploy-k3s.sh --review`): 16:31 ET weekdays, every home, `trd engine review
 --ai --snapshot --notify`. Same shape as the report and deployed once for the same reason.
 The image carries the `ai` extra for it; the scan never imports it.
+
+The live engine has its own post-market message, `k3s/trd-engine/live-report-cronjob.yaml`
+(`trd-live-report`): 16:20 ET weekdays, mounting the live home ONLY, `trd engine
+live-report --notify` to the private alert chat. Per-home, so `./scripts/deploy-k3s.sh
+--live` applies it with the scan and queue drain, never `--report`.
 
 The Telegram command bot is a **Deployment**, not a CronJob — long polling has to stay
 resident: `k3s/trd-engine/bot-deployment.yaml`. `replicas: 1` and `strategy: Recreate`
