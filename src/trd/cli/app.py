@@ -4167,6 +4167,20 @@ TargetOpt = Annotated[
         help="SYMBOL=WEIGHT, repeated; weights sum to 100. CASH=5 holds 5% uninvested.",
     ),
 ]
+PaceOpt = Annotated[
+    list[str] | None,
+    typer.Option(
+        "--pace",
+        help="SYMBOL=MONTHS: buy that target's share of the capital in monthly instalments "
+        "over MONTHS, outside the tranches (SPCX=24). SYMBOL=0 un-paces it.",
+    ),
+]
+PaceStartOpt = Annotated[
+    str | None,
+    typer.Option(
+        "--pace-start", help="First instalment date (default: the schedule's start, else today)."
+    ),
+]
 
 
 def _cash_service() -> CashService:
@@ -4189,6 +4203,30 @@ def _parse_targets(raw: list[str] | None) -> list[AllocTarget] | None:
             AllocTarget(symbol=symbol.strip().upper(), weight=_parse_decimal(weight, "weight"))
         )
     return out
+
+
+def _apply_pace(
+    targets: list[AllocTarget], raw: list[str] | None, start: date
+) -> list[AllocTarget]:
+    """Mark targets as paced: SYMBOL=MONTHS, or SYMBOL=0 to make one ordinary again."""
+    by_symbol = {t.symbol: t for t in targets}
+    for item in raw or []:
+        if "=" not in item:
+            _fail(TrdError(f"--pace looks like SYMBOL=MONTHS, got {item!r}"))
+        symbol, months = item.split("=", 1)
+        symbol = symbol.strip().upper()
+        if symbol not in by_symbol:
+            _fail(TrdError(f"--pace {symbol}: not a target in this plan."))
+        try:
+            n = int(months)
+        except ValueError:
+            _fail(TrdError(f"--pace {symbol}: months must be a whole number, got {months!r}"))
+            raise
+        t = by_symbol[symbol]
+        by_symbol[symbol] = t.model_copy(
+            update={"pace_months": n or None, "pace_start": start if n else None}
+        )
+    return [by_symbol[t.symbol] for t in targets]
 
 
 def _cash_move(
@@ -4267,6 +4305,8 @@ def alloc_set(
     account: Annotated[str, typer.Option("--account", "-a", help="Existing account.")],
     capital: Annotated[str, typer.Option("--capital", help="What the plan invests in total.")],
     target: TargetOpt = None,
+    pace: PaceOpt = None,
+    pace_start: PaceStartOpt = None,
     name: Annotated[str | None, typer.Option("--name", help="Plan name.")] = None,
     kind: Annotated[
         str | None, typer.Option("--kind", help="Account kind, e.g. 'Rollover IRA'.")
@@ -4286,6 +4326,8 @@ def alloc_set(
     if not targets:
         _fail(TrdError("A plan needs --target SYMBOL=WEIGHT entries."))
         return
+    started = _parse_date(pace_start)
+    targets = _apply_pace(targets, pace, started.date() if started else date.today())
     try:
         plan = _alloc_service().create(
             account,
@@ -4308,19 +4350,31 @@ def alloc_set(
 def alloc_edit(
     account: AllocAccountOpt = None,
     target: TargetOpt = None,
+    pace: PaceOpt = None,
+    pace_start: PaceStartOpt = None,
     capital: Annotated[str | None, typer.Option("--capital")] = None,
     drift: Annotated[str | None, typer.Option("--drift")] = None,
     name: Annotated[str | None, typer.Option("--name")] = None,
     note: Annotated[str | None, typer.Option("--note")] = None,
 ) -> None:
-    """Change the targets (all of them, summing to 100), capital, drift threshold
-    or name. Every change is kept in 'trd alloc history'."""
+    """Change the targets (all of them, summing to 100), pace, capital, drift
+    threshold or name. Every change is kept in 'trd alloc history'.
+
+    --target replaces every target, so restate --pace with it; --pace alone
+    re-paces the targets the plan already has."""
     service = _alloc_service()
     try:
         name_ = account or service.default_account()
+        targets = _parse_targets(target)
+        if pace:
+            current = service.get(name_)
+            started = _parse_date(pace_start)
+            first = min((m.due_date for m in current.milestones if m.seq == 0), default=None)
+            start = started.date() if started else first or date.today()
+            targets = _apply_pace(targets or current.targets, pace, start)
         plan = service.edit(
             name_,
-            targets=_parse_targets(target),
+            targets=targets,
             capital=_parse_decimal(capital, "capital") if capital else None,
             drift_threshold=_parse_decimal(drift, "drift") if drift else None,
             name=name,

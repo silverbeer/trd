@@ -64,6 +64,13 @@ trd cash withdraw AMOUNT --account N | trd cash ls --account N [--json]
                                       # equity / dashboard returns are still trade-based
 trd alloc set --account fidelity-ira --capital 250930 --name ... [--kind "Rollover IRA"]
               [--brokerage Fidelity] -t IVV=45 -t IXUS=20 -t QQQM=25 -t SMH=5 -t CASH=5 [--drift 5]
+                                      # --pace SPCX=24 [--pace-start ISO] (set or edit): a PACED
+                                      # target (SB-1388, migration 030) — its weight of capital is
+                                      # earmarked and bought in equal monthly instalments, outside
+                                      # the tranches. Unbought earmark = reserved cash (part of
+                                      # cash, never added to it); out of the tranche fund share,
+                                      # milestone progress and the drift sleeve. propose lists an
+                                      # instalment due as 'buy alongside'; show/report track it
 trd alloc schedule --start ISO --initial 150930 --amount 25000 --every 3 --count 4 [--replace]
 trd alloc show [--json]               # staged allocation plan (SB-1383): worth = holdings + cash,
                                       # gain vs net deposits (simple, not annualised; XIRR after 30

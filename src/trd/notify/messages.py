@@ -993,10 +993,16 @@ def alloc_report_message(view: AllocView, today: date) -> str:
                 f"vs the same deposits in SPY: {_signed(view.total_value - view.benchmark_value)}"
             )
     cash_share = f" ({view.cash.cash / view.total_value * 100:.0f}%)" if view.total_value else ""
+    reserved = f", {_money(view.reserved_cash)} reserved" if view.reserved_cash else ""
     lines.append(
         f"in funds {_money(view.holdings_value)} · cash {_money(view.cash.cash)}{cash_share}"
+        f"{reserved}"
     )
-    funds = [r for r in view.rows if r.value is not None and r.quantity != 0]
+    funds = [
+        r
+        for r in view.rows
+        if r.value is not None and r.quantity != 0 and r.invested_pct is not None
+    ]
     if funds:
         lines.append(
             "  "
@@ -1011,6 +1017,22 @@ def alloc_report_message(view: AllocView, today: date) -> str:
                 if r.invested_pct is not None
             )
         )
+    for p in view.paced:
+        held = ""
+        if p.value is not None and p.quantity:
+            held = f" · worth {_money(p.value)}" + (
+                f" ({p.gain / p.cost_basis * 100:+.1f}%)"
+                if p.gain is not None and p.cost_basis
+                else ""
+            )
+        lines.append(
+            f"🚀 {p.symbol}: {_money(p.invested)} of {_money(p.earmark)} bought "
+            f"({p.instalments_due}/{p.months} instalments due){held}"
+        )
+        if p.behind:
+            lines.append(f"  buy {_money(p.behind)} of {p.symbol} to be on schedule")
+        elif p.next_date:
+            lines.append(f"  next {_money(p.instalment)} on {p.next_date:%b %-d}")
     off = [r for r in view.rows if r.action in ("underweight", "overweight")]
     if off:
         lines.append(
