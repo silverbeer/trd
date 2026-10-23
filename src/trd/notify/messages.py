@@ -39,6 +39,7 @@ from trd.models.alloc import AllocView
 from trd.notify.telegram import LIVE_LABEL
 from trd.services.daily_report import DailyReport, EngineDay, ExitEvent, TwinDivergence
 from trd.services.engine import ScanFill, ScanResult
+from trd.services.live_report import LivePosition, LiveReport
 from trd.services.review import EnginePack, ReviewResult
 
 
@@ -808,6 +809,114 @@ def _trades_section(live: list[EngineDay], budget: int) -> list[str]:
         if tail:
             lines += [_trade_line(e, engine.timeframe) for e in events[-tail:]]
     return lines
+
+
+# ------------------------------------------------------------ live report
+
+
+def _live_position_lines(p: LivePosition) -> list[str]:
+    """One open position in three short lines, so it reads on a phone without
+    wrapping: the result, the price path, and where it gets out."""
+    held = "opened today" if p.opened_today else f"{p.sessions_held}d held"
+    head = (
+        f"{p.symbol} {_signed(p.unrealized)} ({_pct(p.unrealized_pct)}, {_r(p.r_now)})"
+        f" · {held} · {_strategy_name(p.strategy)}"
+    )
+    today = (
+        f"today {_signed(p.day_change)} ({_pct(p.day_change_pct)})"
+        if p.day_change is not None
+        else "today —"
+    )
+    path = f"  {_shares(p.quantity)} sh @ {_money(p.entry_price)} → {_money(p.mark)} · {today}"
+    stop = f"↑{_money(p.stop_in_force)}" if p.trailing else _money(p.stop_in_force)
+    exits = (
+        f"  stop {stop} ({_distance(p.stop_distance_pct, 'below', 'THROUGH by')}) · "
+        f"target {_money(p.target)} ({_distance(p.target_distance_pct, 'above', 'past by')}) · "
+        f"at risk {_money(p.risk_at_stop)}"
+    )
+    return [head, path, exits]
+
+
+def _distance(value: Decimal | None, ahead: str, crossed: str) -> str:
+    """How far the mark is from a level, in words that cannot be misread: "7.3%
+    below" for a stop still ahead, "THROUGH by 0.4%" for one already crossed
+    between scans — a signed percentage leaves the reader to work out which."""
+    if value is None:
+        return "—"
+    if value >= 0:
+        return f"{float(value):.1f}% {ahead}"
+    return f"{crossed} {abs(float(value)):.1f}%"
+
+
+def live_report_message(report: LiveReport, label: str | None = None) -> str:
+    """The live engine's post-market message: the account, then every position.
+
+    Warnings come first for the same reason as the daily report — a stale mark
+    or a halt makes every number below it read differently — then the money,
+    then the book position by position, then what the session did.
+    """
+    day = report.day
+    tag = "" if label in (None, LIVE_LABEL) else f" [{label}]"
+    lines = [f"💵 trd live{tag} — {report.on:%a %b %-d}"]
+
+    if day.marks_are_stale:
+        marked = f"{day.marked_at:%b %-d}" if day.marked_at else "an older session"
+        lines.append(f"⚠ marks are stale — priced at {marked}, not today")
+    if not report.market_open:
+        lines.append("⚠ no session stored for this date — the market may not have opened")
+    if day.halted:
+        lines.append(f"⛔ HALTED — {day.halt_reason or 'kill switch on'}; no new buys")
+
+    rows: list[tuple[str, str, str]] = [
+        ("capital", _money(day.capital), "real money this engine trades"),
+        ("worth now", _money(day.live_worth), ""),
+        ("return", _signed(day.net), _pct(day.live_return_pct)),
+        ("  cash booked", _signed(day.realized_all), "out of trades that are done"),
+        ("  still open", _signed(day.unrealized), "not sold yet"),
+        (
+            "today",
+            _signed(report.today_change),
+            f"{_pct(report.today_change_pct)} since the last close",
+        ),
+        (
+            "cash",
+            f"{_money(day.cash_settled)} settled",
+            f"{_money(day.cash_unsettled)} unsettled (T+1)",
+        ),
+        ("orders", f"{day.open_intents} open", f"{day.awaiting_approval} awaiting approval"),
+    ]
+    lines += ["", "ACCOUNT (real money)", *_aligned(rows)]
+
+    lines += ["", f"OPEN — {len(report.positions)} position(s), best first"]
+    if not report.positions:
+        lines.append("  flat")
+    for position in report.positions:
+        lines += _live_position_lines(position)
+    if report.positions:
+        lines.append(f"  at risk on the book: {_money(day.risk_at_stop)}")
+
+    activity: list[str] = []
+    for o in report.opened_today:
+        note = "" if o.still_open else " (closed again)"
+        activity.append(
+            f"  bought {o.symbol} {_shares(o.quantity)} sh @ {_money(o.entry_price)} · "
+            f"{_strategy_name(o.strategy)}{note}"
+        )
+    for c in report.closed_today:
+        activity.append("  sold " + _trade_line(c.trade, day.timeframe).lstrip())
+    for u in report.unfilled_today:
+        why = f" — {u.error}" if u.error else ""
+        activity.append(
+            f"  {u.status.value} {u.side.value.upper()} {u.symbol} {_shares(u.quantity)} sh{why}"
+        )
+    lines += ["", "TODAY"]
+    lines += activity or ["  no fills, no exits"]
+
+    lines.append(
+        "R = the trade's result in units of what it risked at entry · "
+        "↑ = trailing stop in force · at risk = lost if the stop hits"
+    )
+    return "\n".join(lines)
 
 
 # ---------------------------------------------------------------- the review

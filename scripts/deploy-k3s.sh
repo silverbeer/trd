@@ -470,6 +470,14 @@ sed -E \
     -e "s#value: trd-engine\$#value: ${ENGINE_LABEL}#" \
     k3s/trd-engine/apply-queue-cronjob.yaml | kubectl apply -f -
 echo -e "${GREEN}✅ Applied${NC} (${ENGINE_NAME}-queue, every 10 min outside the session)"
+
+# The live engine's own post-market message, position by position (SB-1406).
+# Per-home like the queue drain, so it ships with --live and mounts that home only.
+if [[ "$LIVE_MODE" == true ]]; then
+    sed -E -e "s#path: /Users/[^[:space:]]+#path: ${ENGINE_HOME}#" \
+        k3s/trd-engine/live-report-cronjob.yaml | kubectl apply -f -
+    echo -e "${GREEN}✅ Applied${NC} (trd-live-report, 16:20 ET weekdays → ${ENGINE_HOME}, private alert chat)"
+fi
 echo ""
 
 if ! kubectl get secret trd-engine-telegram -n "$NAMESPACE" &>/dev/null; then
