@@ -28,7 +28,7 @@ from trd.errors import TrdError
 from trd.models import EngineMode, SizingMode
 from trd.repos.engine import DEFAULT_EARNINGS_BLACKOUT_DAYS
 
-BACKUP_VERSION = 8
+BACKUP_VERSION = 9
 # v1 predates exit triggers and the engine; v2 keyed engine signals by bar date and
 # dropped the engine config fields added after it; v3 predates the point-in-time
 # earnings archive; v4 predates recorded income; v5 predates live-engine order
@@ -45,8 +45,10 @@ BACKUP_VERSION = 8
 # next scan place the same order twice. v7 for the guard: a restore that dropped a
 # thrown kill switch would hand back a live engine that trades again. v8 for
 # deposits and allocation plans: a restore that dropped a deposit would hand back
-# an account with negative cash and a return measured from the wrong day.
-SUPPORTED_VERSIONS = (1, 2, 3, 4, 5, 6, 7, 8)
+# an account with negative cash and a return measured from the wrong day. v9: a
+# target's pace (SB-1388) — old code would restore a paced moonshot as an ordinary
+# fund the tranches try to fill.
+SUPPORTED_VERSIONS = (1, 2, 3, 4, 5, 6, 7, 8, 9)
 
 
 class BackupStats(BaseModel):
@@ -465,9 +467,16 @@ def export_data(conn: duckdb.DuckDBPyConnection) -> dict:
                 "created_at": r[7].isoformat(),
                 "note": r[8],
                 "targets": [
-                    {"symbol": t[0], "weight": str(t[1]), "label": t[2]}
+                    {
+                        "symbol": t[0],
+                        "weight": str(t[1]),
+                        "label": t[2],
+                        "pace_months": t[3],
+                        "pace_start": t[4].isoformat() if t[4] else None,
+                    }
                     for t in rows(
-                        f"SELECT symbol, weight, label FROM alloc_target WHERE plan_id={r[1]}"
+                        "SELECT symbol, weight, label, pace_months, pace_start "
+                        f"FROM alloc_target WHERE plan_id={r[1]}"
                     )
                 ],
                 "milestones": [
@@ -695,8 +704,17 @@ def restore_data(conn: duckdb.DuckDBPyConnection, data: dict) -> BackupStats:
         assert row is not None
         for t in plan.get("targets", []):
             conn.execute(
-                "INSERT INTO alloc_target (plan_id, symbol, weight, label) VALUES (?, ?, ?, ?)",
-                [row[0], t["symbol"], _dec(t["weight"]), t.get("label")],
+                """INSERT INTO alloc_target (plan_id, symbol, weight, label, pace_months,
+                                            pace_start)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                [
+                    row[0],
+                    t["symbol"],
+                    _dec(t["weight"]),
+                    t.get("label"),
+                    t.get("pace_months"),  # v9; absent = an ordinary target
+                    date.fromisoformat(t["pace_start"]) if t.get("pace_start") else None,
+                ],
             )
         for m in plan.get("milestones", []):
             conn.execute(
