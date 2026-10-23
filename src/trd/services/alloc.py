@@ -15,6 +15,12 @@ gain over net deposits: not annualised, not time-weighted. XIRR (money-weighted,
 annualised) appears only once the first deposit is 30 days old, the same floor
 every other XIRR in trd uses. A time-weighted return needs a valuation history
 this does not keep yet, so it is not offered.
+
+A PACED target (SB-1388) — the ***REMOVED*** moonshot — sits outside the tranches: its
+weight of the capital is earmarked and bought in monthly instalments on its own
+clock. Until bought, that earmark is cash, reported as reserved and never added
+to the cash it is part of. Its buys do not count toward any milestone, and it is
+not in the drift sleeve; its own row says how far along the instalments it is.
 """
 
 import calendar
@@ -37,6 +43,7 @@ from trd.models.alloc import (
     Milestone,
     MilestoneProgress,
     MilestoneStatus,
+    PacedRow,
     Proposal,
     ProposalLeg,
     TargetRow,
@@ -327,7 +334,9 @@ class AllocService:
         holdings_value = (
             None if unpriced else sum((r.value or Decimal(0) for r in priced), Decimal(0))
         )
-        deployed = cash.bought - cash.sold
+        paced_net = self._net_invested(plan, [t.symbol for t in plan.targets if t.paced])
+        paced = paced_rows(plan, positions, paced_net, today)
+        deployed = cash.bought - cash.sold - sum(paced_net.values(), Decimal(0))
         flows = self.cash.flows_for(account_name)
         view = AllocView(
             plan=plan,
@@ -342,6 +351,7 @@ class AllocService:
             holdings_value=holdings_value,
             benchmark_value=self._benchmark(flows),
             day_change=_day_change(positions),
+            paced=paced,
         )
         if view.total_value is not None and flows:
             view.xirr = xirr(
@@ -349,6 +359,24 @@ class AllocService:
                 + [(today, float(view.total_value))]
             )
         return view
+
+    def _net_invested(self, plan: AllocPlan, symbols: list[str]) -> dict[str, Decimal]:
+        """Net dollars put into each symbol: buys + fees - sale proceeds net of fees."""
+        ids = {}
+        for symbol in symbols:
+            instrument = self.portfolio.instruments.get_by_symbol(symbol)
+            if instrument is not None:
+                ids[instrument.id] = symbol
+        out = dict.fromkeys(symbols, Decimal(0))
+        for t in self.cash.txns.list_chronological(plan.account_id):
+            symbol = ids.get(t.instrument_id)
+            if symbol is None:
+                continue
+            if t.side == Side.BUY:
+                out[symbol] += t.quantity * t.price + t.fees
+            else:
+                out[symbol] -= t.quantity * t.price - t.fees
+        return out
 
     def _benchmark(self, flows: list[CashFlow]) -> Decimal | None:
         """What the same deposits would be worth had each bought SPY on its day.
@@ -379,10 +407,12 @@ class AllocService:
             nxt = next_milestone(view.progress, seq)
             if nxt is None:
                 raise TrdError("No open milestone to propose for. Pass --amount.")
-            # Back to a whole-tranche amount: propose() holds the CASH share back
-            # again, so what reaches the funds is exactly what is still missing.
-            fraction = view.plan.fund_fraction
-            amount = ((nxt.fund_target - nxt.invested_toward) / fraction).quantize(CENT)
+            # Back to a whole-tranche amount: propose() holds the CASH and paced
+            # shares back again, so what reaches the funds is what is still
+            # missing. Scaled from the milestone's own amount, so an untouched
+            # tranche proposes exactly its amount, not a cent off.
+            share = (nxt.fund_target - nxt.invested_toward) / nxt.fund_target
+            amount = (nxt.milestone.amount * share).quantize(CENT)
         quotes = self.provider.get_quotes([t.symbol for t in view.plan.targets if t.symbol != CASH])
         prices = {s: q.price for s, q in quotes.items()}
         return propose(view, amount, mode, prices, overrides or {})
@@ -412,6 +442,13 @@ def validate_plan(capital: Decimal, targets: list[AllocTarget], drift: Decimal) 
         seen.add(t.symbol)
         if t.weight <= 0:
             raise TrdError(f"{t.symbol}: a target weight must be positive, got {t.weight}.")
+        if t.paced:
+            if t.symbol == CASH:
+                raise TrdError("CASH cannot be paced — it is never bought.")
+            if t.pace_months is None or t.pace_months < 1:
+                raise TrdError(f"{t.symbol}: pace months must be at least 1.")
+            if t.pace_start is None:
+                raise TrdError(f"{t.symbol}: a paced target needs a start date.")
     total = sum((t.weight for t in targets), Decimal(0))
     if total != 100:
         raise TrdError(
@@ -422,7 +459,11 @@ def validate_plan(capital: Decimal, targets: list[AllocTarget], drift: Decimal) 
 
 
 def _targets_text(targets: list[AllocTarget]) -> str:
-    return " ".join(f"{t.symbol}={t.weight.normalize():f}" for t in targets)
+    return " ".join(
+        f"{t.symbol}={t.weight.normalize():f}"
+        + (f" (over {t.pace_months} months from {t.pace_start})" if t.paced else "")
+        for t in targets
+    )
 
 
 def add_months(start: date, months: int) -> date:
@@ -517,9 +558,10 @@ def next_milestone(
 
 
 def _invested_targets(plan: AllocPlan) -> dict[str, Decimal]:
-    """Target weights over the invested targets only, renormalised to 100 —
-    what the money already in funds is measured against."""
-    invested = [t for t in plan.targets if t.symbol != CASH]
+    """Target weights over the tranche funds only, renormalised to 100 — what the
+    money already in funds is measured against. CASH and paced targets are out:
+    neither is filled by a tranche."""
+    invested = [t for t in plan.targets if t.symbol != CASH and not t.paced]
     total = sum((t.weight for t in invested), Decimal(0))
     if total == 0:
         return {}
@@ -568,7 +610,7 @@ def drift_rows(
         )
         for s, p in sorted(by_symbol.items())
     ]
-    funds = [r for r in rows if r.symbol != CASH]
+    funds = [r for r in rows if r.invested_target_pct is not None]
     if any(r.quantity != 0 and r.value is None for r in funds):
         return rows, others
     sleeve = sum((r.value or Decimal(0) for r in funds), Decimal(0))
@@ -587,6 +629,53 @@ def drift_rows(
     return rows, others
 
 
+def instalments(earmark: Decimal, months: int, start: date) -> list[tuple[date, Decimal]]:
+    """`months` equal monthly instalments from `start`; the last takes the rounding
+    so they sum to the earmark exactly."""
+    each = (earmark / months).quantize(CENT, ROUND_DOWN)
+    rows = [(add_months(start, i), each) for i in range(months)]
+    last_date, _ = rows[-1]
+    rows[-1] = (last_date, earmark - each * (months - 1))
+    return rows
+
+
+def paced_rows(
+    plan: AllocPlan,
+    positions: list[Position],
+    net_invested: dict[str, Decimal],
+    today: date,
+) -> list[PacedRow]:
+    by_symbol = {p.instrument.symbol: p for p in positions if p.quantity != 0}
+    out = []
+    for t in plan.targets:
+        if not t.paced:
+            continue
+        assert t.pace_months is not None and t.pace_start is not None
+        earmark = (plan.capital * t.weight / 100).quantize(CENT)
+        steps = instalments(earmark, t.pace_months, t.pace_start)
+        due = [amt for d, amt in steps if d <= today]
+        p = by_symbol.get(t.symbol)
+        out.append(
+            PacedRow(
+                symbol=t.symbol,
+                label=t.label,
+                weight=t.weight,
+                earmark=earmark,
+                months=t.pace_months,
+                start=t.pace_start,
+                instalment=steps[0][1],
+                instalments_due=len(due),
+                due_to_date=sum(due, Decimal(0)),
+                invested=net_invested.get(t.symbol, Decimal(0)),
+                next_date=next((d for d, _ in steps if d > today), None),
+                quantity=p.quantity if p else Decimal(0),
+                value=p.market_value if p else None,
+                cost_basis=p.cost_basis if p else Decimal(0),
+            )
+        )
+    return out
+
+
 def propose(
     view: AllocView,
     amount: Decimal,
@@ -596,7 +685,9 @@ def propose(
 ) -> Proposal:
     """Split `amount` across the plan. A suggestion to edit, never an order.
 
-    The CASH target's share is held back as cash. The rest goes to the funds:
+    The CASH target's share is held back as cash, and so is every paced
+    target's: those are bought in their own instalments, listed in `paced_due`
+    when one is due and unbought. The rest goes to the funds:
 
     - target: by target weight, whatever the account already holds.
     - underweight: toward the funds furthest below target after the deployment.
@@ -619,8 +710,10 @@ def propose(
     if unknown:
         raise TrdError(f"Not a fund in this plan: {', '.join(sorted(unknown))}.")
     cash_weight = next((t.weight for t in plan.targets if t.symbol == CASH), Decimal(0))
+    paced_weight = sum((t.weight for t in plan.targets if t.paced), Decimal(0))
     held_as_cash = (amount * cash_weight / 100).quantize(CENT)
-    to_funds = amount - held_as_cash
+    held_for_paced = (amount * paced_weight / 100).quantize(CENT)
+    to_funds = amount - held_as_cash - held_for_paced
     notes: list[str] = []
 
     fixed = {s: v.quantize(CENT) for s, v in overrides.items()}
@@ -700,6 +793,27 @@ def propose(
         notes.append(
             f"{held_as_cash:,.2f} ({cash_weight.normalize():f}% CASH target) stays uninvested."
         )
+    if held_for_paced:
+        names = ", ".join(t.symbol for t in plan.targets if t.paced)
+        notes.append(
+            f"{held_for_paced:,.2f} ({paced_weight.normalize():f}% for {names}) is not in this "
+            "split — paced targets are bought in their own monthly instalments."
+        )
+    paced_due = []
+    for row in view.paced:
+        if row.behind <= 0:
+            continue
+        price = prices.get(row.symbol)
+        paced_due.append(
+            ProposalLeg(
+                symbol=row.symbol,
+                amount=row.behind,
+                price=price,
+                shares=(row.behind / price).quantize(Decimal("0.001"), ROUND_DOWN)
+                if price
+                else None,
+            )
+        )
     missing_prices = [s for s in weights if s not in prices and amounts.get(s)]
     if missing_prices:
         notes.append(f"No quote for {', '.join(missing_prices)}: no share estimate.")
@@ -710,5 +824,7 @@ def propose(
         cash_available=available,
         legs=legs,
         held_as_cash=held_as_cash,
+        held_for_paced=held_for_paced,
+        paced_due=paced_due,
         notes=notes,
     )

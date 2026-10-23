@@ -69,6 +69,15 @@ class AllocTarget(BaseModel):
     symbol: str
     weight: Decimal  # percent
     label: str | None = None
+    # PACED (SB-1388): the weight is earmarked from the plan's capital and bought
+    # in equal monthly instalments over pace_months from pace_start, outside the
+    # tranches. None = an ordinary target the tranches fill.
+    pace_months: int | None = None
+    pace_start: date | None = None
+
+    @property
+    def paced(self) -> bool:
+        return self.pace_months is not None
 
 
 class Milestone(BaseModel):
@@ -97,9 +106,10 @@ class AllocPlan(BaseModel):
     @computed_field  # type: ignore[prop-decorator]
     @property
     def fund_fraction(self) -> Decimal:
-        """The share of every tranche meant for funds: 1 less the CASH target."""
-        cash = sum((t.weight for t in self.targets if t.symbol == CASH), Decimal(0))
-        return 1 - cash / 100
+        """The share of every tranche meant for funds: 1 less the CASH target and
+        every paced target, which are funded on their own clock."""
+        held = sum((t.weight for t in self.targets if t.symbol == CASH or t.paced), Decimal(0))
+        return 1 - held / 100
 
     @computed_field  # type: ignore[prop-decorator]
     @property
@@ -160,6 +170,50 @@ class TargetRow(BaseModel):
         return self.value - self.cost_basis
 
 
+class PacedRow(BaseModel):
+    """A paced target against what has been bought of it.
+
+    The earmark is weight x capital. Instalments are earmark / months on the
+    same day of each month from the start, the last absorbing the rounding.
+    `invested` is net dollars put in (buys + fees - sells), so a sale releases
+    earmark back rather than reading as progress.
+    """
+
+    symbol: str
+    label: str | None = None
+    weight: Decimal
+    earmark: Decimal
+    months: int
+    start: date
+    instalment: Decimal
+    instalments_due: int  # instalment dates on or before today
+    due_to_date: Decimal
+    invested: Decimal
+    next_date: date | None = None  # next instalment after today; None once all are past
+    quantity: Decimal = Decimal(0)
+    value: Decimal | None = None
+    cost_basis: Decimal = Decimal(0)
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def reserved(self) -> Decimal:
+        """Earmarked and not yet bought: cash held for this, not free cash."""
+        return max(Decimal(0), self.earmark - self.invested)
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def behind(self) -> Decimal:
+        """Due by today and not yet bought — what to buy now to be on schedule."""
+        return max(Decimal(0), self.due_to_date - self.invested)
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def gain(self) -> Decimal | None:
+        if self.value is None or self.quantity == 0:
+            return None
+        return self.value - self.cost_basis
+
+
 class AllocView(BaseModel):
     """`trd alloc show`: the plan, the account, and how far apart they are."""
 
@@ -171,11 +225,18 @@ class AllocView(BaseModel):
     unpriced: list[str] = []
     stale: list[str] = []
     progress: list[MilestoneProgress] = []
-    deployed: Decimal  # net cost of securities bought (buys - sells)
+    deployed: Decimal  # net cost of tranche funds bought (buys - sells), paced targets excluded
     holdings_value: Decimal | None  # None when anything held is unpriced
     benchmark_value: Decimal | None = None  # the same deposits in SPY, same days
     xirr: float | None = None
     day_change: Decimal | None = None  # today's move on what is held; None if unknown
+    paced: list[PacedRow] = []
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def reserved_cash(self) -> Decimal:
+        """Cash earmarked for paced targets — part of `cash`, never added to it."""
+        return sum((p.reserved for p in self.paced), Decimal(0))
 
     @computed_field  # type: ignore[prop-decorator]
     @property
@@ -228,4 +289,6 @@ class Proposal(BaseModel):
     cash_available: Decimal
     legs: list[ProposalLeg]
     held_as_cash: Decimal = Decimal(0)  # the CASH target's share
+    held_for_paced: Decimal = Decimal(0)  # paced targets' share: bought on their own clock
+    paced_due: list[ProposalLeg] = []  # paced instalments due and not yet bought
     notes: list[str] = []

@@ -103,9 +103,10 @@ class AllocRepo:
 
     def targets(self, plan_id: int) -> list[AllocTarget]:
         return [
-            AllocTarget(symbol=r[0], weight=r[1], label=r[2])
+            AllocTarget(symbol=r[0], weight=r[1], label=r[2], pace_months=r[3], pace_start=r[4])
             for r in self.conn.execute(
-                """SELECT symbol, weight, label FROM alloc_target WHERE plan_id = ?
+                """SELECT symbol, weight, label, pace_months, pace_start
+                   FROM alloc_target WHERE plan_id = ?
                    ORDER BY weight DESC, symbol""",
                 [plan_id],
             ).fetchall()
@@ -115,8 +116,10 @@ class AllocRepo:
         self.conn.execute("DELETE FROM alloc_target WHERE plan_id = ?", [plan_id])
         for t in targets:
             self.conn.execute(
-                "INSERT INTO alloc_target (plan_id, symbol, weight, label) VALUES (?, ?, ?, ?)",
-                [plan_id, t.symbol, t.weight, t.label],
+                """INSERT INTO alloc_target (plan_id, symbol, weight, label, pace_months,
+                                            pace_start)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                [plan_id, t.symbol, t.weight, t.label, t.pace_months, t.pace_start],
             )
 
     def milestones(self, plan_id: int) -> list[Milestone]:

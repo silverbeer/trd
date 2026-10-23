@@ -3138,6 +3138,12 @@ def alloc_view_renderables(view: AllocView) -> list[RenderableType]:
         head.append(
             f"[bold]worth {fmt_money(view.total_value)}[/bold] = holdings "
             f"{fmt_money(view.holdings_value)} + cash {fmt_money(view.cash.cash)}"
+            + (
+                f" (of which {fmt_money(view.reserved_cash)} reserved for "
+                f"{', '.join(p.symbol for p in view.paced)})"
+                if view.reserved_cash
+                else ""
+            )
         )
         if view.gain is not None:
             head.append(
@@ -3170,6 +3176,7 @@ def alloc_view_renderables(view: AllocView) -> list[RenderableType]:
         ("", "left"),
     ]:
         table.add_column(col, justify="right" if just == "right" else "left")
+    paced = {p.symbol for p in view.paced}
     for r in view.rows + view.other_holdings:
         in_plan = r in view.rows
         if r.symbol == "CASH":
@@ -3190,9 +3197,12 @@ def alloc_view_renderables(view: AllocView) -> list[RenderableType]:
             f"{r.invested_pct:.1f}%" if r.invested_pct is not None else "—",
             f"{r.invested_target_pct:.1f}%" if r.invested_target_pct is not None else "—",
             _pp(r.drift_pp),
-            {"underweight": "[yellow]under[/yellow]", "overweight": "[yellow]over[/yellow]"}.get(
-                r.action or "", "[green]ok[/green]" if r.action else ""
-            ),
+            "[cyan]paced[/cyan]"
+            if r.symbol in paced
+            else {
+                "underweight": "[yellow]under[/yellow]",
+                "overweight": "[yellow]over[/yellow]",
+            }.get(r.action or "", "[green]ok[/green]" if r.action else ""),
         )
     sched = Table(title="Deployment schedule", title_justify="left")
     for col in ("#", "Due", "Planned", "Into funds", "Invested", "State", "Note"):
@@ -3213,6 +3223,31 @@ def alloc_view_renderables(view: AllocView) -> list[RenderableType]:
             m.note or "",
         )
     out: list[RenderableType] = [Text.from_markup("\n".join(head)), table]
+    if view.paced:
+        pt = Table(title="Paced (bought monthly, outside the tranches)", title_justify="left")
+        for col in (
+            "Symbol",
+            "Earmark",
+            "Each",
+            "Due so far",
+            "Bought",
+            "Behind",
+            "Reserved",
+            "Next",
+        ):
+            pt.add_column(col, justify="left" if col == "Symbol" else "right")
+        for row in view.paced:
+            pt.add_row(
+                row.symbol,
+                fmt_money(row.earmark),
+                fmt_money(row.instalment),
+                f"{fmt_money(row.due_to_date)} ({row.instalments_due}/{row.months})",
+                fmt_money(row.invested),
+                f"[yellow]{fmt_money(row.behind)}[/yellow]" if row.behind else "—",
+                fmt_money(row.reserved),
+                f"{row.next_date:%Y-%m-%d}" if row.next_date else "—",
+            )
+        out.append(pt)
     if view.progress:
         out.append(sched)
         if view.plan.scheduled != view.plan.capital:
@@ -3252,8 +3287,21 @@ def proposal_renderables(p: Proposal) -> list[RenderableType]:
             f"{leg.target_pct:.1f}%" if leg.target_pct is not None else "—",
         )
     lines = [f"cash recorded: {fmt_money(p.cash_available)}"] + [f"• {n}" for n in p.notes]
+    out: list[RenderableType] = [table]
+    if p.paced_due:
+        due = Table(title="Paced instalments due — buy alongside", title_justify="left")
+        for col in ("Symbol", "Amount", "≈ Shares", "@ Price"):
+            due.add_column(col, justify="left" if col == "Symbol" else "right")
+        for leg in p.paced_due:
+            due.add_row(
+                leg.symbol,
+                fmt_money(leg.amount),
+                fmt_qty(leg.shares) if leg.shares is not None else "—",
+                fmt_money(leg.price),
+            )
+        out.append(due)
     lines.append(
         "[dim]Shares are estimates at the quote shown; the fill decides. Edit any leg with "
         "--set SYMBOL=AMOUNT. Record what you actually bought with 'trd buy'.[/dim]"
     )
-    return [table, Text.from_markup("\n".join(lines))]
+    return [*out, Text.from_markup("\n".join(lines))]

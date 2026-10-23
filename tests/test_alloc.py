@@ -307,7 +307,7 @@ def test_deposits_and_the_plan_survive_backup_and_restore(conn, provider, ira, t
     ira.schedule(IRA, START, D(150930), D(25000), 3, 4)
     ira.cancel(IRA, 4)
     data = json.loads(json.dumps(export_data(conn)))
-    assert data["version"] == 8
+    assert data["version"] == 9
 
     from trd.db.connection import connect
 
@@ -480,3 +480,117 @@ def test_the_report_reads_without_writing(cli_env: FakeProvider, monkeypatch) ->
     monkeypatch.setattr(cli, "alert_notifier_from_env", lambda **_: None)
     refused = runner.invoke(app, ["alloc", "report", "--notify"])
     assert refused.exit_code == 1
+
+
+# ------------------------------------------------------------------ paced (SB-1388)
+
+MOONSHOT = [
+    AllocTarget(symbol="IVV", weight=D(43)),
+    AllocTarget(symbol="IXUS", weight=D(20)),
+    AllocTarget(symbol="QQQM", weight=D(24)),
+    AllocTarget(symbol="SMH", weight=D(5)),
+    AllocTarget(symbol="SPCX", weight=D(3), pace_months=24, pace_start=START),
+    AllocTarget(symbol=CASH, weight=D(5)),
+]
+
+
+@pytest.fixture
+def moonshot(conn, provider, ira) -> AllocService:
+    provider.add_symbol("SPCX", price="150", prev_close="150")
+    ira.edit(IRA, targets=MOONSHOT)
+    CashService(conn).record(IRA, CashFlowKind.DEPOSIT, D("***REMOVED***"), datetime(2026, 10, 24))
+    ira.schedule(IRA, START, D(150930), D(25000), 3, 4)
+    return ira
+
+
+def test_instalments_sum_to_the_earmark_exactly() -> None:
+    from trd.services.alloc import instalments
+
+    rows = instalments(D("7527.90"), 24, START)
+    assert rows[0] == (START, D("313.66")) and rows[1][0] == date(2026, 11, 26)
+    assert rows[-1] == (date(2028, 9, 26), D("313.72"))
+    assert sum(a for _, a in rows) == D("7527.90")
+
+
+def test_cash_cannot_be_paced() -> None:
+    bad = [*TARGETS[:4], AllocTarget(symbol=CASH, weight=D(5), pace_months=12, pace_start=START)]
+    with pytest.raises(TrdError, match="CASH cannot be paced"):
+        validate_plan(D(1000), bad, D(5))
+
+
+def test_a_paced_target_is_earmarked_cash_not_double_counted(conn, provider, moonshot) -> None:
+    view = moonshot.view(IRA, today=START)
+    (row,) = view.paced
+    assert (row.earmark, row.instalment, row.instalments_due) == (D("7527.90"), D("313.66"), 1)
+    assert (row.behind, row.reserved, row.next_date) == (
+        D("313.66"),
+        D("7527.90"),
+        date(2026, 11, 26),
+    )
+    assert view.reserved_cash == D("7527.90")
+    assert view.total_value == D("***REMOVED***")  # reserved is part of cash, not added to it
+    assert view.plan.fund_fraction == D("0.92")
+
+
+def test_paced_buys_count_toward_the_earmark_not_the_milestones(conn, provider, moonshot) -> None:
+    buy(conn, provider, "SPCX", "2", "150")  # 300 of the first 313.66 instalment
+    buy(conn, provider, "IVV", "100", "600")
+    view = moonshot.view(IRA, today=START)
+    (row,) = view.paced
+    assert (row.invested, row.behind, row.reserved) == (D(300), D("13.66"), D("7227.90"))
+    assert view.deployed == D(60000)  # SPCX is not tranche money
+    initial = view.progress[0]
+    assert (initial.fund_target, initial.invested_toward) == (D("138855.60"), D(60000))
+    ivv = next(r for r in view.rows if r.symbol == "IVV")
+    spcx = next(r for r in view.rows if r.symbol == "SPCX")
+    assert ivv.invested_pct == 100  # the drift sleeve leaves the moonshot out
+    assert spcx.invested_target_pct is None and spcx.drift_pp is None
+
+
+def test_a_proposal_holds_the_paced_share_back_and_lists_what_is_due(
+    conn, provider, moonshot
+) -> None:
+    p = moonshot.proposal(IRA, mode="target", today=START)
+    assert p.amount == D("150930.00")
+    assert (p.held_as_cash, p.held_for_paced) == (D("7546.50"), D("4527.90"))
+    assert sum(leg.amount for leg in p.legs) == D("138855.60")
+    assert "SPCX" not in {leg.symbol for leg in p.legs}
+    (due,) = p.paced_due
+    assert (due.symbol, due.amount, due.shares) == ("SPCX", D("313.66"), D("2.091"))
+
+
+def test_the_report_shows_the_moonshot_and_reserved_cash(conn, provider, moonshot) -> None:
+    from trd.notify.messages import alloc_report_message
+
+    buy(conn, provider, "SPCX", "2", "150")
+    text = alloc_report_message(moonshot.view(IRA, today=START), START)
+    assert "7,227.90 reserved" in text
+    assert "🚀 SPCX: 300.00 of 7,527.90 bought (1/24 instalments due)" in text
+    assert "buy 13.66 of SPCX to be on schedule" in text
+
+
+def test_pace_survives_backup_and_restore(conn, provider, moonshot, tmp_path) -> None:
+    from trd.db.connection import connect
+
+    data = json.loads(json.dumps(export_data(conn)))
+    fresh = connect(tmp_path / "restored.duckdb")
+    restore_data(fresh, data)
+    spcx = next(t for t in AllocService(fresh, provider).get(IRA).targets if t.symbol == "SPCX")
+    assert (spcx.pace_months, spcx.pace_start) == (24, START)
+
+
+def test_cli_pace_re_paces_existing_targets(cli_env: FakeProvider) -> None:
+    for symbol, price in [("IVV", "600"), ("IXUS", "80"), ("QQQM", "250"), ("SMH", "300")]:
+        cli_env.add_symbol(symbol, price=price, prev_close=price)
+    cli_env.add_symbol("SPCX", price="150", prev_close="150")
+    assert runner.invoke(app, ["init"]).exit_code == 0
+    assert runner.invoke(app, ["account", "add", IRA]).exit_code == 0
+    targets = [x for t in MOONSHOT for x in ("-t", f"{t.symbol}={t.weight}")]
+    r = runner.invoke(app, ["alloc", "set", "-a", IRA, "--capital", "***REMOVED***", *targets])
+    assert r.exit_code == 0, r.output
+    r = runner.invoke(app, ["alloc", "edit", "--pace", "SPCX=24", "--pace-start", "2026-10-26"])
+    assert r.exit_code == 0, r.output
+    r = runner.invoke(app, ["alloc", "history"])
+    assert "SPCX=3 (over 24 months from 2026-10-26)" in r.output
+    r = runner.invoke(app, ["alloc", "edit", "--pace", "IVV=x"])
+    assert r.exit_code != 0
