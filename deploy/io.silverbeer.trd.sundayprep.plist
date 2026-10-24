@@ -15,6 +15,12 @@
 -->
 <plist version="1.0">
 <dict>
+    <!-- The portfolio DB is LOCAL (never iCloud): real account data stays on this Mac. -->
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>TRD_HOME</key>
+        <string>/Users/USERNAME/.trd-portfolio</string>
+    </dict>
     <key>Label</key>
     <string>io.silverbeer.trd.sundayprep</string>
 

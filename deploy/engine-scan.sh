@@ -22,7 +22,8 @@ export TRD_HOME="${TRD_HOME:-$HOME/.trd-engine}"
 
 # Where to publish a readable snapshot so other Macs can see results without
 # opening the engine DB. Leave empty to skip publishing.
-ICLOUD_TRD="${ICLOUD_TRD:-$HOME/Library/Mobile Documents/com~apple~CloudDocs/trd}"
+# Publishing OFF by default (2026-10-24): data stays on this Mac, never iCloud.
+ICLOUD_TRD="${ICLOUD_TRD:-}"
 
 export PATH="$HOME/.local/bin:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin"
 # ----------------------------------------------------------------------------

@@ -4,7 +4,7 @@
   16:25 local time (the mini runs on New York time), after the close and clear
   of the engine report at 16:16.
 
-  Read-only on the iCloud portfolio database. Secrets are not here: they are read
+  Read-only on the local portfolio database (~/.trd-portfolio, never iCloud). Secrets are not here: they are read
   from ~/.config/trd/live.env (chmod 600) by deploy/alloc-report.sh.
 
   Install:
@@ -57,6 +57,8 @@
 
     <key>EnvironmentVariables</key>
     <dict>
+        <key>TRD_HOME</key>
+        <string>/Users/USERNAME/.trd-portfolio</string>
         <key>PATH</key>
         <string>/Users/USERNAME/.local/bin:/opt/homebrew/bin:/usr/bin:/bin</string>
     </dict>

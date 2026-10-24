@@ -15,7 +15,9 @@ set -eu
 # --- edit these for your machine --------------------------------------------
 # Must match the hostPath in k3s/trd-engine/cronjob.yaml.
 ENGINE_HOME="${ENGINE_HOME:-$HOME/.trd-engine}"
-ICLOUD_TRD="${ICLOUD_TRD:-$HOME/Library/Mobile Documents/com~apple~CloudDocs/trd}"
+# OFF by default (2026-10-24): engine and account data stays on this Mac, never
+# iCloud. Set ICLOUD_TRD explicitly to a LOCAL folder to publish there.
+ICLOUD_TRD="${ICLOUD_TRD:-}"
 export PATH="$HOME/.local/bin:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin"
 # ----------------------------------------------------------------------------
 
@@ -23,6 +25,10 @@ LOG_DIR="$HOME/Library/Logs"
 mkdir -p "$LOG_DIR"
 LOG="$LOG_DIR/trd-engine-publish.log"
 
+if [ -z "$ICLOUD_TRD" ]; then
+    echo "$(date) :: publishing disabled (ICLOUD_TRD unset) — nothing copied" >> "$LOG"
+    exit 0
+fi
 OUT="$ICLOUD_TRD/engine"
 if ! mkdir -p "$OUT" 2>>"$LOG"; then
     # Usually means launchd lacks Full Disk Access for iCloud Drive.
