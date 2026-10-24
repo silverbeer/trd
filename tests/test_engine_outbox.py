@@ -351,7 +351,7 @@ def test_intent_message_for_a_live_buy():
     text = intent_message(_row(), LIVE_LABEL)
     assert text.splitlines()[0] == (
         "💵 LIVE: BUY XYZ 0.069 sh (~$20.00 @ 288.10) — Momentum. Waiting for the outbox; "
-        "approve in Robinhood when it arrives, expires 16:00"
+        "approve in your broker app when it arrives, expires 16:00"
     )
     assert text.splitlines()[1] == "close broke the 20-session high"
 
@@ -380,7 +380,7 @@ def test_approval_message():
     )
     lines = approval_message(ack, LIVE_LABEL).splitlines()
     assert lines[0] == (
-        "💵 LIVE: approve SELL XYZ 0.069 sh (~$20.00 @ 288.10) in the Robinhood app "
+        "💵 LIVE: approve SELL XYZ 0.069 sh (~$20.00 @ 288.10) in your broker app "
         "— expires 16:00 ET"
     )
     assert lines[1] == "Stop Loss exit: close 279 < stop 280"

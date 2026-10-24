@@ -203,8 +203,8 @@ TRD_HOME=~/.trd-live trd engine reconcile broker.json --compare-cash
 That compares the snapshot's `cash` (and `unsettled`, when present) with the
 engine's T+1 settled-cash ledger (`trd engine cash`) and reports a **CASH
 MISMATCH** — exit non-zero — beyond $0.05. It is opt-in because the broker
-account usually holds more than the engine's capital: the account funding the
-$100 live engine was given $300, and that surplus is not a mismatch. Pass the
+account usually holds more than the engine's capital, and that surplus is not
+a mismatch. Pass the
 flag only when the account's cash is the engine's alone. Compare after the
 outbox is drained: the ledger reserves every open buy intent's notional, and
 the broker only reserves what has been placed.

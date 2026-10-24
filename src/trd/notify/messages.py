@@ -290,7 +290,7 @@ def intent_message(row: OrderIntentRow, label: str | None = None) -> str:
     return "\n".join(
         [
             f"{_live_head(label)} {_order_terms(intent, row.instrument.symbol)} — "
-            f"{_why(intent)}. Waiting for the outbox; approve in Robinhood when it "
+            f"{_why(intent)}. Waiting for the outbox; approve in your broker app when it "
             "arrives, expires 16:00",
             intent.reason,
         ]
@@ -303,8 +303,8 @@ def approval_message(ack: OutboxAck, label: str | None = None) -> str:
     intent = ack.intent
     return "\n".join(
         [
-            f"{_live_head(label)} approve {_order_terms(intent, ack.symbol)} in the "
-            "Robinhood app — expires 16:00 ET",
+            f"{_live_head(label)} approve {_order_terms(intent, ack.symbol)} in your "
+            "broker app — expires 16:00 ET",
             f"{_why(intent)}: {intent.reason}",
         ]
     )
@@ -1337,7 +1337,7 @@ def alloc_report_message(report: AllocReport) -> str:
         if cash_pct is not None and cash_pct > ALLOC_CASH_NOTE_PCT:
             lines.append(
                 f"<i>{float(cash_pct):.0f}% is cash by plan, earning {cy.yield_pct:.2f}% in "
-                f"{_h(cy.fund)} while it waits.</i>"
+                "a money market fund while it waits.</i>"
                 if cy is not None
                 else f"<i>{float(cash_pct):.0f}% is cash by plan — the whole account lags in "
                 "up markets and cushions in down ones.</i>"
@@ -1365,8 +1365,10 @@ def alloc_report_message(report: AllocReport) -> str:
     names = ", ".join(p.symbol for p in view.paced)
     if cy is not None:
         # Phone-short lines: the yield takes the header, the rest go under it.
+        # Never the stored fund: a core money-market ticker names the brokerage,
+        # and Telegram never says where money is held (SB-1421).
         lines[-1] += (
-            f" — working in <b>{_h(cy.fund)}</b> at {cy.yield_pct:.2f}% ≈ "
+            f" — working in a money market fund at {cy.yield_pct:.2f}% ≈ "
             f"<b>+{_usd(view.cash_monthly_interest)}/mo</b>"
         )
         if view.reserved_cash:
@@ -1422,7 +1424,7 @@ def alloc_report_message(report: AllocReport) -> str:
             lines.append(f"   {_usd(nxt.invested_toward)} of {_usd(nxt.fund_target)} bought so far")
         if days <= 7:
             lines.append(
-                "   <i>trd alloc propose → a split to review; you place it at Fidelity</i>"
+                "   <i>trd alloc propose → a split to review; you place it at your broker</i>"
             )
     elif view.progress:
         lines.append("🗓 Every scheduled purchase is done")

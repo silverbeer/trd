@@ -92,5 +92,5 @@ spec:
             # EDIT this path for the machine you deploy to.
             - name: trd-home
               hostPath:
-                path: /Users/***REMOVED***/.trd-engine
+                path: /Users/USERNAME/.trd-engine
                 type: Directory

@@ -89,17 +89,17 @@ spec:
         # EDIT these paths for the machine you deploy to, same as the CronJob's.
         - name: swing-home
           hostPath:
-            path: /Users/***REMOVED***/.trd-engine
+            path: /Users/USERNAME/.trd-engine
             type: Directory
         - name: day-home
           hostPath:
-            path: /Users/***REMOVED***/.trd-day
+            path: /Users/USERNAME/.trd-day
             type: Directory
         - name: swing20-home
           hostPath:
-            path: /Users/***REMOVED***/.trd-swing20
+            path: /Users/USERNAME/.trd-swing20
             type: Directory
         - name: live-home  # live-only
           hostPath:  # live-only
-            path: /Users/***REMOVED***/.trd-live  # live-only
+            path: /Users/USERNAME/.trd-live  # live-only
             type: Directory  # live-only

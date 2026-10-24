@@ -61,7 +61,7 @@ from trd.services.xirr import xirr
 CENT = Decimal("0.01")
 # A milestone counts as done when the buys cover it to within this share of its
 # amount. Whole-share fills land a few dollars short of a round tranche; without
-# the slack a $150,930 initial investment that bought $150,912 of funds would read
+# the slack a $60,000 initial investment that bought $59,982 of funds would read
 # "partial" for ever.
 COMPLETE_TOLERANCE = Decimal("0.005")
 DEFAULT_DRIFT_THRESHOLD = Decimal(5)

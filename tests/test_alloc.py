@@ -64,7 +64,7 @@ def ira(conn: duckdb.DuckDBPyConnection, provider: FakeProvider) -> AllocService
     service.create(
         IRA,
         "Fidelity Rollover IRA Growth Plan",
-        D("***REMOVED***"),
+        D("100000"),
         TARGETS,
         account_kind="Rollover IRA",
         brokerage="Fidelity",
@@ -101,10 +101,10 @@ def test_targets_must_sum_to_100_and_be_unique_and_positive() -> None:
 
 
 def test_a_schedule_that_does_not_reconcile_is_refused(ira: AllocService) -> None:
-    """The prompt's own defaults: 150,000 + 4 x 25,000 = 250,000, not ***REMOVED***."""
-    with pytest.raises(TrdError, match=r"930\.00 unaccounted"):
-        ira.schedule(IRA, START, D(150000), D(25000), 3, 4)
-    plan = ira.schedule(IRA, START, D(150930), D(25000), 3, 4)
+    """59,500 + 4 x 10,000 = 99,500: half a thousand short of the 100,000 capital."""
+    with pytest.raises(TrdError, match=r"500\.00 unaccounted"):
+        ira.schedule(IRA, START, D(59500), D(10000), 3, 4)
+    plan = ira.schedule(IRA, START, D(60000), D(10000), 3, 4)
     assert [m.due_date for m in plan.milestones] == [
         date(2026, 10, 26),
         date(2027, 1, 26),
@@ -112,9 +112,9 @@ def test_a_schedule_that_does_not_reconcile_is_refused(ira: AllocService) -> Non
         date(2027, 7, 26),
         date(2027, 10, 26),
     ]
-    assert plan.scheduled == D("***REMOVED***")
+    assert plan.scheduled == D("100000")
     with pytest.raises(TrdError, match="--replace"):
-        ira.schedule(IRA, START, D(150930), D(25000), 3, 4)
+        ira.schedule(IRA, START, D(60000), D(10000), 3, 4)
 
 
 def test_months_clamp_to_the_end_of_a_short_month() -> None:
@@ -134,17 +134,17 @@ def ms(seq: int, due: date, amount: str, status=MilestoneStatus.PLANNED) -> Mile
 
 def test_milestones_are_filled_in_order_by_what_was_actually_bought() -> None:
     plan = [
-        ms(0, date(2026, 10, 26), "150930"),
-        ms(1, date(2027, 1, 26), "25000"),
-        ms(2, date(2027, 4, 26), "25000"),
+        ms(0, date(2026, 10, 26), "60000"),
+        ms(1, date(2027, 1, 26), "10000"),
+        ms(2, date(2027, 4, 26), "10000"),
     ]
     states = lambda dep, today: [p.state for p in progress(plan, D(dep), today)]  # noqa: E731
     assert states("0", date(2026, 10, 1)) == ["planned", "planned", "planned"]
     assert states("0", date(2026, 11, 1)) == ["overdue", "planned", "planned"]
-    assert states("100000", date(2026, 11, 1)) == ["partial", "planned", "planned"]
+    assert states("40000", date(2026, 11, 1)) == ["partial", "planned", "planned"]
     # Whole-share fills land a few dollars short of a round tranche: still done.
-    assert states("150912", date(2026, 11, 1)) == ["completed", "planned", "planned"]
-    assert states("160930", date(2027, 2, 1)) == ["completed", "partial", "planned"]
+    assert states("59982", date(2026, 11, 1)) == ["completed", "planned", "planned"]
+    assert states("64000", date(2027, 2, 1)) == ["completed", "partial", "planned"]
 
 
 def test_a_cancelled_milestone_takes_no_money_and_a_postponed_one_waits() -> None:
@@ -164,11 +164,11 @@ def test_a_cancelled_milestone_takes_no_money_and_a_postponed_one_waits() -> Non
 
 def test_cash_is_deposits_less_buys_plus_sells_and_income(conn, provider, ira) -> None:
     cash = CashService(conn)
-    cash.record(IRA, CashFlowKind.DEPOSIT, D("***REMOVED***"), datetime(2026, 10, 24))
+    cash.record(IRA, CashFlowKind.DEPOSIT, D("100000"), datetime(2026, 10, 24))
     buy(conn, provider, "IVV", "100", "600")
     bal = cash.balance(IRA)
-    assert bal.net_deposits == D("***REMOVED***")
-    assert bal.cash == D("190930")
+    assert bal.net_deposits == D("100000")
+    assert bal.cash == D("40000")
     with pytest.raises(TrdError, match="positive"):
         cash.record(IRA, CashFlowKind.DEPOSIT, D("-5"), datetime(2026, 10, 24))
 
@@ -179,27 +179,27 @@ def test_cash_is_deposits_less_buys_plus_sells_and_income(conn, provider, ira) -
 def test_drift_is_measured_on_the_money_in_funds_not_the_cash_waiting(conn, provider, ira) -> None:
     """After the initial tranche most of the account is cash by design. Against
     the whole account every fund would read 35 points underweight."""
-    CashService(conn).record(IRA, CashFlowKind.DEPOSIT, D("***REMOVED***"), datetime(2026, 10, 24))
-    ira.schedule(IRA, START, D(150930), D(25000), 3, 4)
-    # 45/20/25/5 of ~143,383 (150,930 minus the CASH share), at the fake prices.
-    buy(conn, provider, "IVV", "113", "600")  # 67,800
-    buy(conn, provider, "IXUS", "377", "80")  # 30,160
-    buy(conn, provider, "QQQM", "151", "250")  # 37,750
-    buy(conn, provider, "SMH", "25", "300")  # 7,500
+    CashService(conn).record(IRA, CashFlowKind.DEPOSIT, D("100000"), datetime(2026, 10, 24))
+    ira.schedule(IRA, START, D(60000), D(10000), 3, 4)
+    # 45/20/25/5 of 57,000 (60,000 minus the CASH share), at the fake prices.
+    buy(conn, provider, "IVV", "45", "600")  # 27,000
+    buy(conn, provider, "IXUS", "149", "80")  # 11,920, one share short
+    buy(conn, provider, "QQQM", "60", "250")  # 15,000
+    buy(conn, provider, "SMH", "10", "300")  # 3,000
     view = ira.view(IRA, today=date(2026, 10, 27))
     rows = {r.symbol: r for r in view.rows}
-    assert view.deployed == D("143210")
-    assert view.cash.cash == D("107720")
-    assert view.total_value == D("***REMOVED***")
+    assert view.deployed == D("56920")
+    assert view.cash.cash == D("43080")
+    assert view.total_value == D("100000")
     assert view.gain == 0
     assert all(rows[s].action == "on target" for s in ("IVV", "IXUS", "QQQM", "SMH"))
     assert rows["IVV"].invested_target_pct is not None
     assert abs(rows["IVV"].invested_target_pct - D("47.368")) < D("0.001")  # 45/95
-    # 95% of the initial 150,930 goes into funds (5% CASH stays cash): 143,383.50.
-    # 143,210 bought is within tolerance of it: done, not "partial" for ever.
-    assert view.progress[0].fund_target == D("143383.50")
+    # 95% of the initial 60,000 goes into funds (5% CASH stays cash): 57,000.
+    # 56,920 bought is within tolerance of it: done, not "partial" for ever.
+    assert view.progress[0].fund_target == D("57000.00")
     assert view.progress[0].state == "completed"
-    assert view.remaining_to_deploy == D("***REMOVED***") * D("0.95") - D("143210")
+    assert view.remaining_to_deploy == D("100000") * D("0.95") - D("56920")
 
 
 def test_a_missing_price_is_never_a_zero(conn, provider, ira) -> None:
@@ -225,13 +225,13 @@ def test_a_holding_outside_the_plan_is_shown_not_hidden(conn, provider, ira) -> 
 
 
 def test_target_mode_splits_by_weight_and_holds_back_the_cash_share(conn, provider, ira) -> None:
-    CashService(conn).record(IRA, CashFlowKind.DEPOSIT, D("***REMOVED***"), datetime(2026, 10, 24))
-    p = ira.proposal(IRA, amount=D("150930"), mode="target")
+    CashService(conn).record(IRA, CashFlowKind.DEPOSIT, D("100000"), datetime(2026, 10, 24))
+    p = ira.proposal(IRA, amount=D("60001"), mode="target")
     legs = {leg.symbol: leg for leg in p.legs}
-    assert p.held_as_cash == D("7546.50")
-    assert sum(leg.amount for leg in p.legs) == D("143383.50")
-    assert legs["IVV"].amount == D("67918.50")  # 143,383.50 x 45/95
-    assert legs["IVV"].shares == D("113.197")  # rounded down: never more than the amount buys
+    assert p.held_as_cash == D("3000.05")
+    assert sum(leg.amount for leg in p.legs) == D("57000.95")
+    assert legs["IVV"].amount == D("27000.45")  # 57,000.95 x 45/95
+    assert legs["IVV"].shares == D("45.000")  # 45.00075 rounded down: never more than it buys
     assert not any("more than" in n for n in p.notes)
 
 
@@ -270,7 +270,7 @@ def test_underweight_first_refuses_without_a_price_for_a_held_fund(conn, provide
 
 
 def test_a_proposal_says_when_there_is_not_the_cash_for_it(conn, provider, ira) -> None:
-    p = ira.proposal(IRA, amount=D("150930"), mode="target")  # nothing deposited yet
+    p = ira.proposal(IRA, amount=D("60000"), mode="target")  # nothing deposited yet
     assert any("Record the deposit first" in n for n in p.notes)
 
 
@@ -285,13 +285,13 @@ def test_an_edited_leg_is_kept_and_the_rest_re_split(conn, provider, ira) -> Non
 
 
 def test_the_next_open_milestone_is_the_default_amount(conn, provider, ira) -> None:
-    CashService(conn).record(IRA, CashFlowKind.DEPOSIT, D("***REMOVED***"), datetime(2026, 10, 24))
-    ira.schedule(IRA, START, D(150930), D(25000), 3, 4)
-    buy(conn, provider, "IVV", "100", "600")  # 60,000 of the initial 150,930
+    CashService(conn).record(IRA, CashFlowKind.DEPOSIT, D("100000"), datetime(2026, 10, 24))
+    ira.schedule(IRA, START, D(60000), D(10000), 3, 4)
+    buy(conn, provider, "IVV", "50", "600")  # 30,000 of the initial 60,000
     p = ira.proposal(IRA, mode="target")
-    # 143,383.50 for funds less 60,000 bought = 83,383.50, grossed up by the 5% CASH.
-    assert p.amount == D("87772.11")
-    assert sum(leg.amount for leg in p.legs) == D("83383.50")
+    # 57,000 for funds less 30,000 bought = 27,000, grossed up by the 5% CASH.
+    assert p.amount == D("28421.05")
+    assert sum(leg.amount for leg in p.legs) == D("27000.00")
 
 
 # ------------------------------------------------------------------ history
@@ -299,7 +299,7 @@ def test_the_next_open_milestone_is_the_default_amount(conn, provider, ira) -> N
 
 def test_changes_are_kept_in_the_history(conn, provider, ira) -> None:
     ira.edit(IRA, targets=[*TARGETS[:3], AllocTarget(symbol="SMH", weight=D(10))])
-    ira.schedule(IRA, START, D(150930), D(25000), 3, 4)
+    ira.schedule(IRA, START, D(60000), D(10000), 3, 4)
     ira.postpone(IRA, 1, date(2027, 2, 15), note="waiting for earnings season")
     text = " | ".join(e.what for e in ira.history(IRA))
     assert "CASH=5 → IVV=45 IQQ" not in text  # sanity: readable, not a repr
@@ -312,9 +312,9 @@ def test_changes_are_kept_in_the_history(conn, provider, ira) -> None:
 
 def test_deposits_and_the_plan_survive_backup_and_restore(conn, provider, ira, tmp_path) -> None:
     CashService(conn).record(
-        IRA, CashFlowKind.DEPOSIT, D("***REMOVED***"), datetime(2026, 10, 24), "rollover"
+        IRA, CashFlowKind.DEPOSIT, D("100000"), datetime(2026, 10, 24), "rollover"
     )
-    ira.schedule(IRA, START, D(150930), D(25000), 3, 4)
+    ira.schedule(IRA, START, D(60000), D(10000), 3, 4)
     ira.cancel(IRA, 4)
     data = json.loads(json.dumps(export_data(conn)))
     assert data["version"] == 11
@@ -325,10 +325,10 @@ def test_deposits_and_the_plan_survive_backup_and_restore(conn, provider, ira, t
     stats = restore_data(fresh, data)
     assert (stats.cash_flows, stats.alloc_plans) == (1, 1)
     restored = AllocService(fresh, provider).get(IRA)
-    assert restored.capital == D("***REMOVED***")
+    assert restored.capital == D("100000")
     assert [t.symbol for t in restored.targets] == ["IVV", "QQQM", "IXUS", CASH, "SMH"]
     assert restored.milestones[4].status == MilestoneStatus.CANCELLED
-    assert CashService(fresh).balance(IRA).deposits == D("***REMOVED***")
+    assert CashService(fresh).balance(IRA).deposits == D("100000")
 
 
 # ------------------------------------------------------------------ CLI
@@ -344,13 +344,13 @@ def test_cli_end_to_end(cli_env: FakeProvider) -> None:
         [
             "cash",
             "deposit",
-            "***REMOVED***",
+            "100000",
             "-a",
             IRA,
             "-d",
             "2026-10-24",
             "--note",
-            "***REMOVED***",
+            "401(k) rollover",
         ],
     )
     assert result.exit_code == 0, result.output
@@ -362,7 +362,7 @@ def test_cli_end_to_end(cli_env: FakeProvider) -> None:
             "-a",
             IRA,
             "--capital",
-            "***REMOVED***",
+            "100000",
             "--name",
             "Growth Plan",
             "--kind",
@@ -390,9 +390,9 @@ def test_cli_end_to_end(cli_env: FakeProvider) -> None:
             "--start",
             "2026-10-26",
             "--initial",
-            "150930",
+            "60000",
             "--amount",
-            "25000",
+            "10000",
             "--count",
             "4",
         ],
@@ -402,12 +402,12 @@ def test_cli_end_to_end(cli_env: FakeProvider) -> None:
     result = runner.invoke(app, ["alloc", "propose", "--mode", "target", "--json"])
     assert result.exit_code == 0, result.output
     proposal = json.loads(result.output)
-    assert D(proposal["amount"]) == D("150930")
+    assert D(proposal["amount"]) == D("60000")
     result = runner.invoke(app, ["alloc", "show", "--json"])
     assert result.exit_code == 0, result.output
     view = json.loads(result.output)
-    assert D(view["cash"]["cash"]) == D("***REMOVED***")
-    assert D(view["total_value"]) == D("***REMOVED***")
+    assert D(view["cash"]["cash"]) == D("100000")
+    assert D(view["total_value"]) == D("100000")
     bad = runner.invoke(app, ["alloc", "edit", "-t", "IVV=50"])
     assert bad.exit_code == 1 and "sum to 100" in bad.output
 
@@ -437,23 +437,23 @@ def small_account(conn, provider, ira, ivv_price: str = "606") -> None:
 
 
 def test_the_report_leads_with_the_day_and_names_its_returns(conn, provider, ira) -> None:
-    CashService(conn).record(IRA, CashFlowKind.DEPOSIT, D("***REMOVED***"), datetime(2026, 10, 24))
-    ira.schedule(IRA, START, D(150930), D(25000), 3, 4)
+    CashService(conn).record(IRA, CashFlowKind.DEPOSIT, D("100000"), datetime(2026, 10, 24))
+    ira.schedule(IRA, START, D(60000), D(10000), 3, 4)
     provider.add_symbol("IVV", price="606", prev_close="600")
     provider.add_bars("IVV", bars((START, "600"), (date(2026, 10, 27), "606")))
-    buy(conn, provider, "IVV", "100", "600")
+    buy(conn, provider, "IVV", "40", "600")
     text = report_text(ira, date(2026, 10, 27))
     lines = text.splitlines()
     assert lines[0] == "📈 <b>Fidelity Rollover IRA Growth Plan</b> · Tue Oct 27"
-    assert lines[2] == "⚪ <b>FLAT DAY  +$600.00 (+0.24%)</b>"
+    assert lines[2] == "⚪ <b>FLAT DAY  +$240.00 (+0.24%)</b>"
     assert (
-        "💰 Worth <b>$251,530.00</b> — up $600.00 (+0.24%) since funding on "
-        "$***REMOVED*** deposited (simple)"
+        "💰 Worth <b>$100,240.00</b> — up $240.00 (+0.24%) since funding on "
+        "$100,000 deposited (simple)"
     ) in lines
-    assert "🟢 <b>IVV</b> +1.00% · today +1.00% · $60,600 (100%)" in lines
+    assert "🟢 <b>IVV</b> +1.00% · today +1.00% · $24,240 (100%)" in lines
     assert "⚠️ Off target (±5 pts): IVV +52.6 (overweight)" in text
-    assert "🗓 Initial purchase: $150,930 <b>OVERDUE</b> by 1 day(s)" in text
-    assert "   $60,000 of $143,384 bought so far" in text
+    assert "🗓 Initial purchase: $60,000 <b>OVERDUE</b> by 1 day(s)" in text
+    assert "   $24,000 of $57,000 bought so far" in text
     assert "trd alloc propose" in text
     assert "simple = gain ÷ money put in" in lines[-1]
 
@@ -637,7 +637,9 @@ def test_the_report_escapes_what_it_did_not_write(conn, provider, ira) -> None:
     text = report_text(ira, date(2026, 10, 27))
     assert text.startswith("📈 <b>Growth &amp; &lt;Moonshot&gt;</b>")
     assert "S&amp;P 500" in text and "S&P 500" not in text
-    assert "working in <b>S&amp;&lt;P&gt;</b>" in text and "<P>" not in text
+    # The stored fund is never printed (SB-1421), escaped or otherwise.
+    assert "working in a money market fund" in text
+    assert "S&amp;&lt;P&gt;" not in text and "<P>" not in text
     assert strip_html(text).startswith("📈 Growth & <Moonshot> · Tue Oct 27")
 
 
@@ -800,18 +802,18 @@ MOONSHOT = [
 def moonshot(conn, provider, ira) -> AllocService:
     provider.add_symbol("SPCX", price="150", prev_close="150")
     ira.edit(IRA, targets=MOONSHOT)
-    CashService(conn).record(IRA, CashFlowKind.DEPOSIT, D("***REMOVED***"), datetime(2026, 10, 24))
-    ira.schedule(IRA, START, D(150930), D(25000), 3, 4)
+    CashService(conn).record(IRA, CashFlowKind.DEPOSIT, D("100000"), datetime(2026, 10, 24))
+    ira.schedule(IRA, START, D(60000), D(10000), 3, 4)
     return ira
 
 
 def test_instalments_sum_to_the_earmark_exactly() -> None:
     from trd.services.alloc import instalments
 
-    rows = instalments(D("7527.90"), 24, START)
-    assert rows[0] == (START, D("313.66")) and rows[1][0] == date(2026, 11, 26)
-    assert rows[-1] == (date(2028, 9, 26), D("313.72"))
-    assert sum(a for _, a in rows) == D("7527.90")
+    rows = instalments(D("3000.10"), 24, START)
+    assert rows[0] == (START, D("125.00")) and rows[1][0] == date(2026, 11, 26)
+    assert rows[-1] == (date(2028, 9, 26), D("125.10"))
+    assert sum(a for _, a in rows) == D("3000.10")
 
 
 def test_cash_cannot_be_paced() -> None:
@@ -823,26 +825,26 @@ def test_cash_cannot_be_paced() -> None:
 def test_a_paced_target_is_earmarked_cash_not_double_counted(conn, provider, moonshot) -> None:
     view = moonshot.view(IRA, today=START)
     (row,) = view.paced
-    assert (row.earmark, row.instalment, row.instalments_due) == (D("7527.90"), D("313.66"), 1)
+    assert (row.earmark, row.instalment, row.instalments_due) == (D("3000.00"), D("125.00"), 1)
     assert (row.behind, row.reserved, row.next_date) == (
-        D("313.66"),
-        D("7527.90"),
+        D("125.00"),
+        D("3000.00"),
         date(2026, 11, 26),
     )
-    assert view.reserved_cash == D("7527.90")
-    assert view.total_value == D("***REMOVED***")  # reserved is part of cash, not added to it
+    assert view.reserved_cash == D("3000.00")
+    assert view.total_value == D("100000")  # reserved is part of cash, not added to it
     assert view.plan.fund_fraction == D("0.92")
 
 
 def test_paced_buys_count_toward_the_earmark_not_the_milestones(conn, provider, moonshot) -> None:
-    buy(conn, provider, "SPCX", "2", "150")  # 300 of the first 313.66 instalment
-    buy(conn, provider, "IVV", "100", "600")
+    buy(conn, provider, "SPCX", "0.8", "150")  # 120 of the first 125.00 instalment
+    buy(conn, provider, "IVV", "50", "600")
     view = moonshot.view(IRA, today=START)
     (row,) = view.paced
-    assert (row.invested, row.behind, row.reserved) == (D(300), D("13.66"), D("7227.90"))
-    assert view.deployed == D(60000)  # SPCX is not tranche money
+    assert (row.invested, row.behind, row.reserved) == (D(120), D("5.00"), D("2880.00"))
+    assert view.deployed == D(30000)  # SPCX is not tranche money
     initial = view.progress[0]
-    assert (initial.fund_target, initial.invested_toward) == (D("138855.60"), D(60000))
+    assert (initial.fund_target, initial.invested_toward) == (D("55200.00"), D(30000))
     ivv = next(r for r in view.rows if r.symbol == "IVV")
     spcx = next(r for r in view.rows if r.symbol == "SPCX")
     assert ivv.invested_pct == 100  # the drift sleeve leaves the moonshot out
@@ -853,33 +855,33 @@ def test_a_proposal_holds_the_paced_share_back_and_lists_what_is_due(
     conn, provider, moonshot
 ) -> None:
     p = moonshot.proposal(IRA, mode="target", today=START)
-    assert p.amount == D("150930.00")
-    assert (p.held_as_cash, p.held_for_paced) == (D("7546.50"), D("4527.90"))
-    assert sum(leg.amount for leg in p.legs) == D("138855.60")
+    assert p.amount == D("60000.00")
+    assert (p.held_as_cash, p.held_for_paced) == (D("3000.00"), D("1800.00"))
+    assert sum(leg.amount for leg in p.legs) == D("55200.00")
     assert "SPCX" not in {leg.symbol for leg in p.legs}
     (due,) = p.paced_due
-    assert (due.symbol, due.amount, due.shares) == ("SPCX", D("313.66"), D("2.091"))
+    assert (due.symbol, due.amount, due.shares) == ("SPCX", D("125.00"), D("0.833"))
 
 
 def test_the_report_shows_the_moonshot_and_reserved_cash(conn, provider, moonshot) -> None:
     from trd.notify.messages import alloc_report_message
 
-    buy(conn, provider, "SPCX", "2", "150")
+    buy(conn, provider, "SPCX", "0.8", "150")
     provider.add_bars("SPCX", bars((date(2026, 10, 23), "150"), (START, "150")))
     text = alloc_report_message(AllocReportService(moonshot).report(IRA, today=START))
-    assert " · $7,228 set aside for SPCX" in text
-    assert "🚀 <b>SPCX</b> +0.00% · today +0.00% · $300 (100%)" in text
-    assert "🚀 SPCX: 0 of 24 buys done · buy $13.66 now" in text
+    assert " · $2,880 set aside for SPCX" in text
+    assert "🚀 <b>SPCX</b> +0.00% · today +0.00% · $120 (100%)" in text
+    assert "🚀 SPCX: 0 of 24 buys done · buy $5.00 now" in text
 
 
 def test_a_few_cents_short_of_an_instalment_is_on_schedule(conn, provider, moonshot) -> None:
     from trd.notify.messages import alloc_report_message
 
-    buy(conn, provider, "SPCX", "2.0910", "150")  # 313.65 of a 313.66 instalment
+    buy(conn, provider, "SPCX", "0.8333", "150")  # 124.995 of a 125.00 instalment
     report = AllocReportService(moonshot).report(IRA, today=START)
     assert report.view.paced[0].behind == 0
     text = alloc_report_message(report)
-    assert "🚀 SPCX: 1 of 24 buys done · next $313.66 on Nov 26" in text
+    assert "🚀 SPCX: 1 of 24 buys done · next $125.00 on Nov 26" in text
 
 
 def test_pace_survives_backup_and_restore(conn, provider, moonshot, tmp_path) -> None:
@@ -899,7 +901,7 @@ def test_cli_pace_re_paces_existing_targets(cli_env: FakeProvider) -> None:
     assert runner.invoke(app, ["init"]).exit_code == 0
     assert runner.invoke(app, ["account", "add", IRA]).exit_code == 0
     targets = [x for t in MOONSHOT for x in ("-t", f"{t.symbol}={t.weight}")]
-    r = runner.invoke(app, ["alloc", "set", "-a", IRA, "--capital", "***REMOVED***", *targets])
+    r = runner.invoke(app, ["alloc", "set", "-a", IRA, "--capital", "100000", *targets])
     assert r.exit_code == 0, r.output
     r = runner.invoke(app, ["alloc", "edit", "--pace", "SPCX=24", "--pace-start", "2026-10-26"])
     assert r.exit_code == 0, r.output
@@ -947,11 +949,11 @@ def test_a_new_rate_keeps_the_fund_and_is_dated_today() -> None:
 
 
 def test_monthly_interest_is_all_the_cash_at_the_yield(conn, provider, ira) -> None:
-    CashService(conn).record(IRA, CashFlowKind.DEPOSIT, D("111804.67"), datetime(2026, 10, 24))
+    CashService(conn).record(IRA, CashFlowKind.DEPOSIT, D("40000"), datetime(2026, 10, 24))
     ira.edit(IRA, cash_yield=SPAXX)
     view = ira.view(IRA, TODAY)
-    assert view.cash_monthly_interest == D("111804.67") * D("3.51") / 100 / 12
-    assert round(view.cash_monthly_interest, 2) == D("327.03")
+    assert view.cash_monthly_interest == D("40000") * D("3.51") / 100 / 12
+    assert round(view.cash_monthly_interest, 2) == D("117.00")
     assert view.cash_interest_earned == 0
 
 
@@ -974,8 +976,14 @@ def test_the_report_says_the_cash_is_working(conn, provider, ira) -> None:
     small_account(conn, provider, ira)  # 4,000 cash of 10,060 = 40%
     ira.edit(IRA, cash_yield=SPAXX.model_copy(update={"as_of": TODAY}))
     lines = report_text(ira, TODAY).splitlines()
-    assert "💵 Cash $4,000 (40%) — working in <b>SPAXX</b> at 3.51% ≈ <b>+$12/mo</b>" in lines
-    assert "<i>40% is cash by plan, earning 3.51% in SPAXX while it waits.</i>" in lines
+    assert (
+        "💵 Cash $4,000 (40%) — working in a money market fund at 3.51% ≈ <b>+$12/mo</b>" in lines
+    )
+    assert (
+        "<i>40% is cash by plan, earning 3.51% in a money market fund while it waits.</i>" in lines
+    )
+    # The stored fund is a core money-market ticker, and one names the brokerage.
+    assert "SPAXX" not in "\n".join(lines)
     text = "\n".join(lines)
     assert "earned so far" not in text and "rate as of" not in text and "lags in up" not in text
 
@@ -1002,13 +1010,13 @@ def test_no_yield_leaves_the_cash_line_as_it_was(conn, provider, ira) -> None:
 def test_the_yield_moves_reserved_cash_under_the_header(conn, provider, moonshot) -> None:
     from trd.notify.messages import alloc_report_message
 
-    buy(conn, provider, "SPCX", "2", "150")
+    buy(conn, provider, "SPCX", "0.8", "150")
     provider.add_bars("SPCX", bars((date(2026, 10, 23), "150"), (START, "150")))
     moonshot.edit(IRA, cash_yield=SPAXX)
     lines = alloc_report_message(AllocReportService(moonshot).report(IRA, today=START)).splitlines()
     head = next(i for i, line in enumerate(lines) if line.startswith("💵 Cash"))
-    assert "working in <b>SPAXX</b>" in lines[head] and "set aside" not in lines[head]
-    assert lines[head + 1] == "   $7,228 set aside for SPCX"
+    assert "working in a money market fund" in lines[head] and "set aside" not in lines[head]
+    assert lines[head + 1] == "   $2,880 set aside for SPCX"
 
 
 def test_the_cash_yield_survives_backup_and_restore(conn, provider, ira, tmp_path) -> None:
@@ -1038,7 +1046,7 @@ def test_cli_cash_yield_set_edit_show_and_clear(cli_env: FakeProvider) -> None:
     for args in (
         ["init"],
         ["account", "add", IRA],
-        ["cash", "deposit", "111804.67", "-a", IRA, "-d", "2026-10-24"],
+        ["cash", "deposit", "40000", "-a", IRA, "-d", "2026-10-24"],
     ):
         assert runner.invoke(app, args).exit_code == 0, args
     plan = ["alloc", "set", "-a", IRA, "--capital", "1000", "-t", "IVV=95", "-t", "CASH=5"]
@@ -1052,7 +1060,7 @@ def test_cli_cash_yield_set_edit_show_and_clear(cli_env: FakeProvider) -> None:
     r = runner.invoke(app, ["alloc", "show"])
     assert r.exit_code == 0, r.output
     assert (
-        "cash 111,804.67 in SPAXX at 3.51% (as of 2026-10-21) ≈ +327.03/mo · earned so far 0.00"
+        "cash 40,000.00 in SPAXX at 3.51% (as of 2026-10-21) ≈ +117.00/mo · earned so far 0.00"
         in " ".join(r.output.split())  # Rich wraps at the test terminal's width
     )
     view = json.loads(runner.invoke(app, ["alloc", "show", "--json"]).output)
@@ -1061,7 +1069,7 @@ def test_cli_cash_yield_set_edit_show_and_clear(cli_env: FakeProvider) -> None:
         "yield_pct": "3.5100",
         "as_of": "2026-10-21",
     }
-    assert round(D(view["cash_monthly_interest"]), 2) == D("327.03")
+    assert round(D(view["cash_monthly_interest"]), 2) == D("117.00")
     assert D(view["cash_interest_earned"]) == 0
 
     bad = runner.invoke(app, ["alloc", "edit", "--cash-yield", "35"])

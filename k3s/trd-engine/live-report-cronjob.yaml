@@ -90,5 +90,5 @@ spec:
             # fail the mount, not hand the pod an empty directory (SB-1054).
             - name: trd-home
               hostPath:
-                path: /Users/***REMOVED***/.trd-live
+                path: /Users/USERNAME/.trd-live
                 type: Directory

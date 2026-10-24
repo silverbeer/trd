@@ -77,8 +77,8 @@ class ReconcileService:
         `cash` is the engine's settled-cash ledger, passed only when the caller
         has been told the broker account's cash is the engine's alone
         (`--compare-cash`). The broker routinely holds more than an engine's
-        capital — the account funding a $100 engine was given $300 — so the
-        comparison is opt-in rather than a mismatch reported every day. Given a
+        capital, so the comparison is opt-in rather than a mismatch reported
+        every day. Given a
         ledger, the snapshot must carry `cash`; a check with nothing to compare
         would read as a pass.
         """

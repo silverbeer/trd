@@ -1,0 +1,7 @@
+#!/bin/sh
+# Block real account data from entering a public repo (SB-1421, docs/privacy.md).
+# Scans the ADDED lines and the names/types of staged files. Bypassing it with
+# `git commit --no-verify` is possible and visible: CI runs the same scanner
+# over the whole tree on every PR.
+root=$(git rev-parse --show-toplevel) || exit 1
+exec python3 "$root/scripts/privacy_scan.py" --staged

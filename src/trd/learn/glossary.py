@@ -137,7 +137,7 @@ _ENTRIES: list[GlossaryEntry] = [
         category=Category.BASICS,
         definition=(
             "Automatically using each dividend to buy more shares (often fractions). Each "
-            "reinvestment is a new lot — the tiny quarterly lots in your Fidelity history."
+            "reinvestment is a new lot — the tiny quarterly lots in a broker's history."
         ),
         example="A holding pays a $15 dividend -> the broker buys 0.217 more shares -> a new lot.",
         related=["dividend", "fifo"],
@@ -473,8 +473,8 @@ _ENTRIES: list[GlossaryEntry] = [
             "plan's share of a payment = plan shares held / account shares held, that day"
         ),
         example=(
-            "'trd income add 1.98 --symbol VOO --account sofi --date 2026-07-01'. Five "
-            "payments totalling $3.43 over three months on a $2,300 account is "
+            "'trd income add 2.50 --symbol VOO --account brokerage --date 2026-07-01'. A "
+            "few dollars of payments over three months on a small account is "
             "rounding — and it is the cheapest this problem will ever be to fix."
         ),
         related=["total-return", "xirr", "cost-basis", "dca"],

@@ -76,7 +76,7 @@ trd import fidelity ACTIVITY.csv --account managed-ira [--create "Managed IRA"]
                                       # cash (core ** rows + Pending Activity); mismatch = exit 1.
                                       # The POSITIONS PARSER IS UNVERIFIED against a real export
                                       # (says so in its output) — check it on the first one
-trd income add 1.98 --symbol VOO [--account sofi] [--date ISO] [--kind dividend|interest|cash_sweep|capital_gain]
+trd income add 2.50 --symbol VOO [--account brokerage] [--date ISO] [--kind dividend|interest|cash_sweep|capital_gain]
 trd income ls [--account N] [--json]  # cash a holding PAID you, as opposed to the price rising.
                                       # Not a buy: creates no shares, consumes none, never reaches
                                       # FIFO — which is why it is its own table and not a third
@@ -88,13 +88,13 @@ trd income ls [--account N] [--json]  # cash a holding PAID you, as opposed to t
                                       # credit the plan with all of it. A REINVESTED dividend
                                       # (DRIP) is an ordinary 'trd buy' — recorded here too it is
                                       # counted twice. 'trd learn income · total-return'
-trd cash deposit ***REMOVED*** --account ***REMOVED*** [--date ISO] [--note ...]
+trd cash deposit 100000 --account ***REMOVED*** [--date ISO] [--note ...]
 trd cash withdraw AMOUNT --account N | trd cash ls --account N [--json]
                                       # money moved into/out of an account (migration 029). Not a
                                       # trade: no lot. cash = deposits - withdrawals - fees - buys
                                       # + sells + income. ls labels kind 'fee' "advisory fee". Only the alloc views read it so far; portfolio /
                                       # equity / dashboard returns are still trade-based
-trd alloc set --account ***REMOVED*** --capital ***REMOVED*** --name ... [--kind "Rollover IRA"]
+trd alloc set --account ***REMOVED*** --capital 100000 --name ... [--kind "Rollover IRA"]
               [--brokerage Fidelity] -t IVV=45 -t IXUS=20 -t QQQM=25 -t SMH=5 -t CASH=5 [--drift 5]
                                       # --pace SPCX=24 [--pace-start ISO] (set or edit): a PACED
                                       # target (SB-1388, migration 030) — its weight of capital is
@@ -109,7 +109,7 @@ trd alloc set --account ***REMOVED*** --capital ***REMOVED*** --name ... [--kind
                                       # migration 031): what the uninvested cash earns. show/report
                                       # print cash x yield / 12 a month and 'earned so far' = income
                                       # of kind interest|cash_sweep; a rate over 35 days old says so
-trd alloc schedule --start ISO --initial 150930 --amount 25000 --every 3 --count 4 [--replace]
+trd alloc schedule --start ISO --initial 60000 --amount 10000 --every 3 --count 4 [--replace]
 trd alloc show [--json]               # staged allocation plan (SB-1383): worth = holdings + cash,
                                       # gain vs net deposits (simple, not annualised; XIRR after 30
                                       # days), same deposits in SPY, drift on the INVESTED sleeve
@@ -277,7 +277,7 @@ trd engine outbox ack INTENT (--approval-id X | --broker-order-id Y | --error MS
                                       # or a different approval/order id than the one recorded =
                                       # IntentAckError, exit 1. Never mints a ref_id: a retry reuses
                                       # the intent's. Same transition helpers as 'engine fills'.
-                                      # --notify with --approval-id: "approve … in the Robinhood
+                                      # --notify with --approval-id: "approve … in your broker
                                       # app" to the ALERT chat = TRD_LIVE_ALERT_CHAT_ID, else first
                                       # TRD_BOT_ALLOWED_USER_IDS id, else REFUSED with an error —
                                       # a call to action on real money never falls back to the
@@ -677,8 +677,8 @@ trd engine reconcile broker.json [--account NAME] [--compare-cash]
                                       # --compare-cash: snapshot "cash" (settled) and optional
                                       # "unsettled" vs the engine's T+1 ledger; beyond CASH_TOLERANCE
                                       # ($0.05) = CASH MISMATCH, exit 1. OPT-IN because the broker
-                                      # account usually holds more than the engine's capital ($300
-                                      # funded for a $100 engine) — only for dedicated cash
+                                      # account usually holds more than the engine's capital
+                                      # — only for dedicated cash
 ```
 
 ## Deployment
@@ -865,6 +865,25 @@ CSV import format (header required): `date,account,symbol,side,quantity,price[,f
   a missing or empty `trd.duckdb` for the same reason, naming the share as the likely cause.
 - An engine is **paper** or **live** (`engine_config.mode`, migration 027 — a mode on the config, never a third account type, because `account.type`'s `CHECK` cannot be widened). A **paper** engine trades a `simulation` account and fills its own decisions as ordinary `txn` rows — so portfolio/equity/XIRR/drawdown work on it unchanged. A **live** engine trades a `real` account and fills nothing: where paper would write a txn, the scan writes an `order_intent` (side, quantity, the price it saw, the entry plan or the exit rule, a uuid `ref_id` the broker uses as its idempotency key) and leaves `engine_position` alone. The fill is the broker's and is ingested separately, at the real price, with the stop re-derived from the intent's `atr_at_entry` by `stop_distance` so live R is measured from what was paid. An open intent claims what it asked for: a buy holds a slot, the name, its entry-budget place and its notional in the cash ledger; a sell blocks a second exit on the same position. Nothing under `src/trd` places an order — the intent is the hand-off to the agent-side broker session. Either way, `engine_position` stores only what a txn can't: strategy, stop/target, trail high-water mark, exit reason. The initial stop is immutable so closed-trade R-multiples stay meaningful.
 - Tests never hit the network. Extend `FakeProvider` in [tests/conftest.py](tests/conftest.py).
+
+### Privacy (public repo)
+
+This repo is public and trd tracks real accounts: **no real account data ever enters the
+repo or its git metadata**, and **Telegram never says where money is held**. Rules, hooks,
+CI and the send guard: [docs/privacy.md](docs/privacy.md).
+
+- Real data lives in `TRD_HOME` only (`~/.trd-portfolio`, the engine homes). Tests use
+  synthetic data — invented figures, public tickers, `TEST-ACCT-*` ids; an export-shaped
+  fixture is listed in [tests/fixtures/SYNTHETIC.md](tests/fixtures/SYNTHETIC.md).
+- Commit messages, PR titles/bodies and branch names never carry real figures, account
+  numbers or brokerage names (lowercase `fidelity`, the ordinary word, is allowed).
+- Every new clone runs `scripts/install-hooks.sh`. `--no-verify` is visible in review; CI
+  scans the tree and the PR text regardless. Exceptions go in
+  `scripts/privacy_exceptions.txt` with a reason; private terms in
+  `~/.config/trd/private-terms.txt`, never in the repo.
+- Every Telegram message passes `trd.notify.privacy.guard` (in `TelegramNotifier.send` and
+  the bot transport) and is refused whole on a match. Renderers never print a stored fund,
+  account name or firm: "a money market fund", "your broker app".
 
 ## Environment
 

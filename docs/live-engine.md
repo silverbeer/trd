@@ -1,7 +1,7 @@
 # The live engine — real money on Robinhood
 
 The swing engine's rules, trading **$100 of real money** in the Robinhood agentic
-account (••4422, a cash account): 5 slots of $20, T+1 settled cash, every order
+account (a cash account): 5 slots of $20, T+1 settled cash, every order
 approved by you on your phone.
 
 This is the operator's guide: what it is, how an order travels, how to turn it
@@ -23,7 +23,7 @@ live runner") and the tickets SB-1325 (go/no-go) and SB-1373–1382.
 |---|---|
 | Rules | swing's: `breakout`, `macd_cross`, `momentum`, `pullback` on daily bars, same 137 names |
 | Size | `--capital 100 --size 20 --max 5` — five $20 positions, fractional shares |
-| Account | `***REMOVED***` in `~/.trd-live` = the Robinhood agentic account. The other ~$200 in that account is idle and **not** the engine's |
+| Account | `***REMOVED***` in `~/.trd-live` = the Robinhood agentic account. Anything else in that account is idle and **not** the engine's |
 | Paper twin | `swing20` (`~/.trd-swing20`): identical config on paper. The daily report compares them — this is how live fills are judged |
 | Human gate | Robinhood trade approvals **ON**. Nothing executes until you tap Approve |
 
@@ -40,7 +40,7 @@ k3s  trd-live-scan (every 5 min, 09:30–16:00)
 mini launchd  live-runner (every 10 min, 09:30–16:15)
        ├─ review_equity_order        (Robinhood's pre-trade check)
        ├─ place_equity_order         → held as a trade approval
-       ├─ outbox ack --notify        → 📱 Telegram: "approve BUY X … in the Robinhood app"
+       ├─ outbox ack --notify        → 📱 Telegram: "approve BUY X … in your broker app"
 you    └─ tap Approve in the Robinhood app  (or Decline, or ignore → expires 16:00)
 mini  live-runner, next pass
        ├─ get_equity_orders / get_trade_approvals
@@ -57,7 +57,7 @@ for it. An order call nothing asked for halts the engine.
 
 | When | Where | Message |
 |---|---|---|
-| an order is waiting for you | private chat | `💵 LIVE: approve BUY NVDA 0.104712 sh (~$20.00 @ 191.00) in the Robinhood app — expires 16:00 ET` + the reason |
+| an order is waiting for you | private chat | `💵 LIVE: approve BUY NVDA 0.104712 sh (~$20.00 @ 191.00) in your broker app — expires 16:00 ET` + the reason |
 | it filled | channel | `[💵 live] filled BUY NVDA 0.104712 @ 190.88 (scan saw 191.00, -0.06%)`; a sell adds realized $ and R |
 | rejected, expired, or Robinhood's review flagged it | private chat | what happened; nothing for you to do |
 | Robinhood login lapsed, or approvals switched off | private chat | how to fix it; reminders ≤ every 3h in the session; an all-clear |
@@ -94,7 +94,7 @@ Do steps 1–5 with the market closed (after 16:45, or before 09:00). Step 3 pul
 two years of bars for 137 names and takes several minutes. Nothing spends money
 until step 6.
 
-**Already in place** (2026-10-22): trade approvals ON, $300 funded, launchd jobs
+**Already in place** (2026-10-22): trade approvals ON, account funded, launchd jobs
 `io.silverbeer.trd.live-runner` and `io.silverbeer.trd.rh-auth-probe` loaded,
 `~/.config/trd/live.env` written. Check with:
 
@@ -350,7 +350,7 @@ RH_DRY_RUN=1 ~/.trd-runner/bin/live-runner.sh   # a review-only pass
   Until then the phone tap stays.
 - **Your portfolio view.** Live trades live in `~/.trd-live`, not the iCloud
   `trd.duckdb` (`***REMOVED***`), so they do not show in `trd portfolio` yet.
-- **The idle $200.** The engine's $100 is enforced by trd (ledger + caps), not by
+- **The idle surplus.** The engine's $100 is enforced by trd (ledger + caps), not by
   Robinhood: the broker would accept a sixth $20 buy.
 - **How long a Robinhood sign-in lasts.** Being measured: every hourly login
   check is in the log. Decides whether "unattended" means a weekly or a daily

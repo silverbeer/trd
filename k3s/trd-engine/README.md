@@ -601,7 +601,7 @@ kubectl logs -n trd -l component=bot -f
 
 The script rewrites each `hostPath` for this machine, matched by its suffix
 (`.trd-engine`, `.trd-day`, `.trd-swing20`) — the committed
-`/Users/***REMOVED***/...` is a default, exactly as it is for the CronJobs — and
+`/Users/USERNAME/...` is a default, exactly as it is for the CronJobs — and
 refuses to apply anything if the secret has no `TRD_BOT_ALLOWED_USER_IDS`, or if
 an engine home does not exist. Both refusals print the fix: a pod that
 crash-loops with the answer buried in its logs is a worse way to learn either
