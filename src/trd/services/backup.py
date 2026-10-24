@@ -28,7 +28,7 @@ from trd.errors import TrdError
 from trd.models import EngineMode, SizingMode
 from trd.repos.engine import DEFAULT_EARNINGS_BLACKOUT_DAYS
 
-BACKUP_VERSION = 9
+BACKUP_VERSION = 10
 # v1 predates exit triggers and the engine; v2 keyed engine signals by bar date and
 # dropped the engine config fields added after it; v3 predates the point-in-time
 # earnings archive; v4 predates recorded income; v5 predates live-engine order
@@ -47,8 +47,9 @@ BACKUP_VERSION = 9
 # deposits and allocation plans: a restore that dropped a deposit would hand back
 # an account with negative cash and a return measured from the wrong day. v9: a
 # target's pace (SB-1388) — old code would restore a paced moonshot as an ordinary
-# fund the tranches try to fill.
-SUPPORTED_VERSIONS = (1, 2, 3, 4, 5, 6, 7, 8, 9)
+# fund the tranches try to fill. v10: the plan's stated cash yield (SB-1417) — old
+# code would restore the plan with its cash reported as idle.
+SUPPORTED_VERSIONS = (1, 2, 3, 4, 5, 6, 7, 8, 9, 10)
 
 
 class BackupStats(BaseModel):
@@ -499,6 +500,16 @@ def export_data(conn: duckdb.DuckDBPyConnection) -> dict:
                         f"WHERE plan_id={r[1]} ORDER BY logged_at, id"
                     )
                 ],
+                "cash_yield": next(
+                    (
+                        {"fund": y[0], "yield_pct": str(y[1]), "as_of": y[2].isoformat()}
+                        for y in rows(
+                            "SELECT fund, yield_pct, as_of FROM alloc_cash_yield "
+                            f"WHERE plan_id={r[1]}"
+                        )
+                    ),
+                    None,
+                ),
             }
         )
 
@@ -733,6 +744,18 @@ def restore_data(conn: duckdb.DuckDBPyConnection, data: dict) -> BackupStats:
             conn.execute(
                 "INSERT INTO alloc_event (plan_id, logged_at, what) VALUES (?, ?, ?)",
                 [row[0], datetime.fromisoformat(e["at"]), e["what"]],
+            )
+        cash_yield = plan.get("cash_yield")  # v10; absent = no yield stated
+        if cash_yield:
+            conn.execute(
+                """INSERT INTO alloc_cash_yield (plan_id, fund, yield_pct, as_of)
+                   VALUES (?, ?, ?, ?)""",
+                [
+                    row[0],
+                    cash_yield["fund"],
+                    _dec(cash_yield["yield_pct"]),
+                    date.fromisoformat(cash_yield["as_of"]),
+                ],
             )
 
     # v1 backups predate these sections; treat them as empty rather than failing.
