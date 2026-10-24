@@ -88,10 +88,20 @@ trd alloc propose [--amount X | --milestone N] [--mode underweight|target] [--se
                                       # underweight: fill the gaps below (sleeve + D) x weight,
                                       # overweight funds get nothing; leftover split by weight
 trd alloc edit|history · trd alloc milestone postpone|cancel|resume|note N
-trd alloc report [--notify] [--json]  # the daily performance message (SB-1384): worth, today, since
-                                      # funding (simple; XIRR after 30d), vs SPY, cash, drift past
-                                      # threshold, next milestone. READ-ONLY connection and no quote
-                                      # snapshots — safe unattended on the iCloud DB. --notify = the
+trd alloc report [--notify] [--json]  # the daily performance message (SB-1384, SB-1416), Telegram
+                                      # HTML: verdict on the day (GREAT/GOOD/FLAT/DOWN/BAD vs prior
+                                      # close; flat < 0.25%, big >= 1.5%) and the funds vs the S&P
+                                      # 500 today; worth + since funding (simple; XIRR after 30d);
+                                      # a scoreboard — You (all) on DEPOSITS, You (invested) on net
+                                      # cost bought, then SPY/QQQ/VT/AOR and the plan's own target
+                                      # mix, each bought with the SAME invested dollars on the SAME
+                                      # days (services/alloc_report.py; one same-days core in
+                                      # services/benchmark.py). Closes: stored bars, else provider,
+                                      # never stored; no price = '—'. Funds best since-bought first.
+                                      # 1W/1M only in --json, once the account is that old.
+                                      # --json = {message, sent, view, report}. READ-ONLY connection
+                                      # and no quote snapshots — safe unattended on the iCloud DB.
+                                      # Terminal prints the message with tags stripped. --notify = the
                                       # PRIVATE alert chat, never the channel. launchd weekdays 16:25:
                                       # deploy/alloc-report.sh + io.silverbeer.trd.alloc-report.plist
 trd backup data.json                 # export user-owned facts (txns/accounts/plans/watch/indicators)

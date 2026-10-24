@@ -15,12 +15,16 @@ Sections whose data is absent are dropped rather than printed with dashes. An
 indicator exit has no trigger price, so it has no execution section, and a message
 padded with "—" reads as broken rather than as inapplicable.
 
-Plain text, no markup — see TelegramNotifier for why.
+Most messages are plain text, no markup — see TelegramNotifier for why. The two
+post-market reports a person reads on a phone, the live engine's and the
+allocation plan's, are Telegram HTML (`send(..., html=True)`): every piece of data
+in them goes through `_h`, and `strip_html` turns them back into plain text for a
+terminal.
 """
 
 import re
 from collections.abc import Callable
-from datetime import date, datetime, timedelta
+from datetime import datetime, timedelta
 from decimal import Decimal
 from html import escape, unescape
 from typing import Any
@@ -37,8 +41,9 @@ from trd.models import (
     Side,
     StrategyStat,
 )
-from trd.models.alloc import AllocView
+from trd.models.alloc import AllocReport, BenchmarkScore, FundScore
 from trd.notify.telegram import LIVE_LABEL
+from trd.services.benchmark import BENCHMARK
 from trd.services.daily_report import DailyReport, EngineDay, ExitEvent, TwinDivergence
 from trd.services.engine import ScanFill, ScanResult
 from trd.services.live_report import LivePosition, LiveReport
@@ -1156,12 +1161,22 @@ def review_message(result: ReviewResult, packs: list[EnginePack], judged: Any | 
 
 # ------------------------------------------------------------ allocation plan
 
-
-def _share_pct(part: Decimal | None, whole: Decimal | None) -> str:
-    if part is None or not whole:
-        return "—"
-    value = part / whole * 100
-    return f"{'+' if value >= 0 else '-'}{abs(value):.2f}%"
+# The day's verdict, as a share of what the account was worth at the prior
+# close. The account is mostly cash while a staged plan deploys, so these are
+# deliberately the live engine's thresholds rather than a market's.
+ALLOC_FLAT_PCT = Decimal("0.25")
+ALLOC_BIG_PCT = Decimal("1.5")
+# Within this many percentage points of the S&P 500 today is "in line": a tenth
+# of a point is a rounding difference between two ways of pricing the close.
+ALLOC_IN_LINE_PP = Decimal("0.1")
+# Above this share in cash, the whole-account return is mostly the cash, and the
+# scoreboard says so.
+ALLOC_CASH_NOTE_PCT = Decimal(20)
+# Under a dollar apart is level, not ahead.
+ALLOC_LEVEL_USD = Decimal(1)
+# The scoreboard is a <pre> block read on a phone: about 32 characters fit.
+SCOREBOARD_NAME_WIDTH = 14
+SCOREBOARD_COL_WIDTH = 7
 
 
 def _usd(value: Decimal | None, cents: bool = False) -> str:
@@ -1170,105 +1185,199 @@ def _usd(value: Decimal | None, cents: bool = False) -> str:
     return f"${value:,.2f}" if cents else f"${value:,.0f}"
 
 
-def _usd_signed(value: Decimal | None) -> str:
+def _apc(value: Decimal | None) -> str:
+    """'+0.24%' — two places: an IRA's day is often a fraction of a percent."""
     if value is None:
         return "—"
-    return f"{'+' if value >= 0 else '-'}${abs(value):,.2f}"
+    rounded = round(float(value), 2)  # so a -0.001% reads +0.00%, not -0.00%
+    return f"{'+' if rounded >= 0 else '-'}{abs(rounded):.2f}%"
 
 
-def alloc_report_message(view: AllocView, today: date) -> str:
-    """The daily performance message for an allocation plan (SB-1384, SB-1390).
+def _alloc_verdict(report: AllocReport) -> tuple[list[str], bool]:
+    """The day in one line, then the funds against the S&P 500 today. The second
+    value says whether 'pts' was used, so the glossary defines it only then."""
+    change, pct = report.view.day_change, report.account.today_pct
+    if change is None or pct is None:
+        return ["⚠️ <b>Can't score today</b> — a holding has no previous close."], False
+    money = f"{_lusd(change)} ({_apc(pct)})"
+    if pct <= -ALLOC_BIG_PCT:
+        head = f"🩸 <b>BAD DAY  {money}</b>"
+    elif pct <= -ALLOC_FLAT_PCT:
+        head = f"🔴 <b>DOWN DAY  {money}</b>"
+    elif pct < ALLOC_FLAT_PCT:
+        head = f"⚪ <b>FLAT DAY  {money}</b>"
+    elif pct < ALLOC_BIG_PCT:
+        head = f"🟢 <b>GOOD DAY  {money}</b>"
+    else:
+        head = f"🚀 <b>GREAT DAY  {money}</b> 🚀"
+    spy = _spy(report)
+    mine = report.invested.today_pct
+    theirs = spy.invested.today_pct if spy is not None else None
+    if mine is None or theirs is None:
+        return [head], False
+    gap = mine - theirs
+    if abs(gap) < ALLOC_IN_LINE_PP:
+        return [head, f"Your funds were in line with the S&P 500 today ({_apc(theirs)})."], False
+    word = "beat" if gap > 0 else "trailed"
+    return [
+        head,
+        f"Your funds {word} the S&P 500 by {abs(float(gap)):.1f} pts today "
+        f"({_apc(mine)} vs {_apc(theirs)}).",
+    ], True
 
-    Four blocks, each led by one emoji so it can be found on a phone without
-    reading: the money, what is invested, the cash, and what the plan wants next.
-    Whole dollars except the headline worth and the day's moves, where cents are
-    the signal. Every return is named for what it is — 'simple' is gain over
-    deposits, not annualised and not time-weighted. A value that cannot be
-    computed says so instead of printing a number built on a missing price.
+
+def _spy(report: AllocReport) -> BenchmarkScore | None:
+    return next((b for b in report.benchmarks if b.symbol == BENCHMARK), None)
+
+
+def _scoreboard(report: AllocReport) -> list[str]:
+    """You and each benchmark, Today and Since funding, monospace. 1W/1M would
+    take it past a phone's width, so they stay in --json."""
+    rows = [
+        ("You (all)", report.account.today_pct, report.account.return_pct),
+        ("You (invested)", report.invested.today_pct, report.invested.return_pct),
+    ] + [(b.short, b.invested.today_pct, b.invested.return_pct) for b in report.benchmarks]
+    n, w = SCOREBOARD_NAME_WIDTH, SCOREBOARD_COL_WIDTH
+    body = [f"{'':<{n}} {'Today':>{w}} {'Since':>{w}}"]
+    body += [f"{name:<{n}} {_apc(today):>{w}} {_apc(since):>{w}}" for name, today, since in rows]
+    return ["<pre>" + _h("\n".join(body)) + "</pre>"]
+
+
+def _ahead(diff: Decimal, whom: str) -> str:
+    if abs(diff) < ALLOC_LEVEL_USD:
+        return f"level with {whom}"
+    return f"{'ahead of' if diff > 0 else 'behind'} {whom} by {_usd(abs(diff))}"
+
+
+def _fund_line(f: FundScore) -> str:
+    icon = "🚀" if f.paced else _dot(f.gain)
+    if f.value is None:
+        return f"{icon} <b>{_h(f.symbol)}</b> no price"
+    weight = ""
+    if f.weight_pct is not None:
+        weight = " (&lt;1%)" if 0 < f.weight_pct < 1 else f" ({float(f.weight_pct):.0f}%)"
+    return (
+        f"{icon} <b>{_h(f.symbol)}</b> {_apc(f.gain_pct)} · today {_apc(f.today_pct)} · "
+        f"{_usd(f.value)}{weight}"
+    )
+
+
+def alloc_report_message(report: AllocReport) -> str:
+    """The daily performance message for an allocation plan, as Telegram HTML
+    (SB-1384, SB-1390, SB-1416).
+
+    Read on a phone by someone who wants to know, at a glance, whether the money
+    is all right: warnings first, then the day's verdict, what it is worth, how
+    it compares with the market, which funds are doing best, and what the plan
+    wants next. Every comparison is the same dollars on the same days, and says
+    which base — the whole account (cash and all) or the money in funds. A value
+    built on a missing price is never printed; it says it is unknown instead.
     """
+    view, today = report.view, report.today
     plan = view.plan
-    lines = [f"📈 {plan.name}", f"{today:%A, %b %-d}", ""]
+    lines = [f"📈 <b>{_h(plan.name)}</b> · {today:%a %b %-d}", ""]
+    glossary: list[str] = []
+
+    if view.unpriced:
+        lines.append(f"⚠️ no price for {_h(', '.join(view.unpriced))} — worth unknown")
+    if view.stale:
+        lines.append(f"⚠️ stale prices: {_h(', '.join(view.stale))} — last known, not live")
+    if view.unpriced or view.stale:
+        lines.append("")
+
+    verdict, used_pts = _alloc_verdict(report)
+    lines += verdict
+    if used_pts:
+        glossary.append("pts = percentage points")
 
     # --- the money
-    if view.total_value is None:
-        lines.append(f"💰 Worth: unknown — no price for {', '.join(view.unpriced)}")
-    else:
-        lines.append(f"💰 {_usd(view.total_value, cents=True)}")
-        if view.day_change is not None:
-            prior = view.total_value - view.day_change
-            lines.append(
-                f"   Today: {_usd_signed(view.day_change)} ({_share_pct(view.day_change, prior)})"
-            )
-        if view.gain is not None:
-            lines.append(
-                f"   Since funding: {_usd_signed(view.gain)} "
-                f"({_share_pct(view.gain, view.cash.net_deposits)}, simple)"
-            )
-        if view.xirr is not None:
-            lines.append(f"   Annualised (XIRR): {view.xirr * 100:+.2f}%")
-        if view.benchmark_value is not None:
-            lines.append(
-                f"   vs same money in SPY: {_usd_signed(view.total_value - view.benchmark_value)}"
-            )
+    lines.append("")
     total = view.total_value
-
-    # --- invested
-    funds = [
-        r
-        for r in view.rows
-        if r.value is not None and r.quantity != 0 and r.invested_pct is not None
-    ]
-    if view.holdings_value or funds or view.paced:
-        share = (
-            f" ({view.holdings_value / total * 100:.0f}%)" if total and view.holdings_value else ""
+    if total is None:
+        lines.append("💰 Worth unknown")
+    elif view.gain is not None:
+        lines.append(
+            f"💰 Worth <b>{_usd(total, cents=True)}</b> — "
+            f"{'up' if view.gain >= 0 else 'down'} {_usd(abs(view.gain), cents=True)} "
+            f"({_apc(view.simple_return_pct)}) since funding on "
+            f"{_usd(view.cash.net_deposits)} deposited (simple)"
         )
-        lines += ["", f"📊 Invested {_usd(view.holdings_value)}{share}"]
-        for r in funds:
-            gain = (
-                f" · {r.gain / r.cost_basis * 100:+.1f}%"
-                if r.gain is not None and r.cost_basis
-                else ""
-            )
-            lines.append(f"   {r.symbol} {_usd(r.value)} · {r.invested_pct:.0f}% of funds{gain}")
-        for p in view.paced:
-            if p.quantity and p.value is not None:
-                gain = (
-                    f" · {p.gain / p.cost_basis * 100:+.1f}%"
-                    if p.gain is not None and p.cost_basis
-                    else ""
-                )
-                lines.append(f"   🚀 {p.symbol} {_usd(p.value)}{gain}")
+        glossary.append("simple = gain ÷ money put in, not annualised")
+    else:
+        lines.append(f"💰 Worth <b>{_usd(total, cents=True)}</b>")
+    if view.xirr is not None:
+        lines.append(f"📐 Annualised (XIRR): {view.xirr * 100:+.2f}%")
+        glossary.append("XIRR = the yearly rate that turns your deposits into today's worth")
 
-    # --- cash
+    # --- vs the market
+    if total is not None and report.benchmarks:
+        lines += ["", "📏 <b>vs the market</b>"]
+        lines += _scoreboard(report)
+        lines.append("<i>Index rows: your invested dollars, bought on the days you bought.</i>")
+        spy = _spy(report)
+        if spy is not None:
+            mine, theirs = report.invested.value, spy.invested.value
+            if mine is not None and theirs is not None and report.invested.base:
+                lines.append(
+                    f"Your funds are {_ahead(mine - theirs, 'the S&P 500')} since funding."
+                )
+            all_in = spy.deposits.value if spy.deposits is not None else None
+            if all_in is not None:
+                whom = "every deposit put in the S&P 500"
+                lines.append(f"Whole account is {_ahead(total - all_in, whom)}.")
+        cash_pct = report.cash_pct
+        if cash_pct is not None and cash_pct > ALLOC_CASH_NOTE_PCT:
+            lines.append(
+                f"<i>{float(cash_pct):.0f}% is cash by plan — the whole account lags in up "
+                "markets and cushions in down ones.</i>"
+            )
+
+    # --- the funds
+    if report.funds:
+        held = view.holdings_value
+        share = f" ({float(held / total * 100):.0f}%)" if held and total else ""
+        lines += ["", f"📊 <b>Funds</b> · {_usd(held)} invested{share}"]
+        lines += [_fund_line(f) for f in report.funds]
+        movers = [f for f in report.funds if f.today_pct is not None]
+        if len(movers) >= 2:
+            best = max(movers, key=lambda f: f.today_pct or 0)
+            worst = min(movers, key=lambda f: f.today_pct or 0)
+            lines.append(
+                f"🏆 {_h(best.symbol)} {_apc(best.today_pct)} today   "
+                f"😬 {_h(worst.symbol)} {_apc(worst.today_pct)}"
+            )
+
+    # --- cash and the plan
     cash = view.cash.cash
-    share = f" ({cash / total * 100:.0f}%)" if total else ""
+    share = f" ({float(cash / total * 100):.0f}%)" if total else ""
     lines += ["", f"💵 Cash {_usd(cash)}{share}"]
     if view.reserved_cash:
         names = ", ".join(p.symbol for p in view.paced)
-        lines.append(f"   {_usd(view.reserved_cash)} set aside for {names}")
-
-    # --- the plan
-    lines.append("")
+        lines[-1] += f" · {_usd(view.reserved_cash)} set aside for {_h(names)}"
     off = [r for r in view.rows if r.action in ("underweight", "overweight")]
     if off:
         lines.append(
             f"⚠️ Off target (±{plan.drift_threshold.normalize():f} pts): "
-            + ", ".join(f"{r.symbol} {r.drift_pp:+.1f} ({r.action})" for r in off)
+            + ", ".join(f"{_h(r.symbol)} {r.drift_pp:+.1f} ({r.action})" for r in off)
         )
+        if "pts = percentage points" not in glossary:
+            glossary.insert(0, "pts = percentage points")
     elif any(r.drift_pp is not None for r in view.rows):
         lines.append(f"✅ On target (all within ±{plan.drift_threshold.normalize():f} pts)")
+        if "pts = percentage points" not in glossary:
+            glossary.insert(0, "pts = percentage points")
     for p in view.paced:
         done = min(p.months, int((p.invested + Decimal(1)) / p.instalment)) if p.instalment else 0
         progress = f"{done} of {p.months} buys done"
         if p.behind:
-            lines.append(f"🚀 {p.symbol}: {progress} · buy {_usd(p.behind, cents=True)} now")
+            lines.append(f"🚀 {_h(p.symbol)}: {progress} · buy {_usd(p.behind, cents=True)} now")
         elif p.next_date:
             lines.append(
-                f"🚀 {p.symbol}: {progress} · next {_usd(p.instalment, cents=True)} "
+                f"🚀 {_h(p.symbol)}: {progress} · next {_usd(p.instalment, cents=True)} "
                 f"on {p.next_date:%b %-d}"
             )
         else:
-            lines.append(f"🚀 {p.symbol}: {progress}")
+            lines.append(f"🚀 {_h(p.symbol)}: {progress}")
     pending = [
         p for p in view.progress if p.state in ("overdue", "partial", "planned", "postponed")
     ]
@@ -1280,7 +1389,7 @@ def alloc_report_message(view: AllocView, today: date) -> str:
         # Past its date is overdue whatever else is true: a tranche half bought
         # and a week late is late.
         if days < 0:
-            when = f"OVERDUE by {-days} day(s)"
+            when = f"<b>OVERDUE</b> by {-days} day(s)"
         elif days == 0:
             when = "due today"
         else:
@@ -1289,9 +1398,12 @@ def alloc_report_message(view: AllocView, today: date) -> str:
         if nxt.state == "partial":
             lines.append(f"   {_usd(nxt.invested_toward)} of {_usd(nxt.fund_target)} bought so far")
         if days <= 7:
-            lines.append("   trd alloc propose → a split to review; you place it at Fidelity")
+            lines.append(
+                "   <i>trd alloc propose → a split to review; you place it at Fidelity</i>"
+            )
     elif view.progress:
         lines.append("🗓 Every scheduled purchase is done")
-    if view.stale:
-        lines.append(f"\n(stale prices: {', '.join(view.stale)})")
+
+    if glossary:
+        lines += ["", "<i>" + _h(". ".join(glossary)) + ".</i>"]
     return "\n".join(lines)

@@ -155,6 +155,7 @@ class TargetRow(BaseModel):
     price_stale: bool = False
     value: Decimal | None = None  # None = held but unpriced, never zero
     cost_basis: Decimal = Decimal(0)
+    day_change_pct: Decimal | None = None  # vs previous close; None without one
     # Weight among what has been INVESTED, against the target renormalised to the
     # invested targets. While a staged plan is still deploying, most of the
     # account is cash waiting by design; measuring against the whole account
@@ -195,6 +196,7 @@ class PacedRow(BaseModel):
     quantity: Decimal = Decimal(0)
     value: Decimal | None = None
     cost_basis: Decimal = Decimal(0)
+    day_change_pct: Decimal | None = None
 
     @computed_field  # type: ignore[prop-decorator]
     @property
@@ -273,6 +275,110 @@ class AllocView(BaseModel):
         """Still to go into funds: the schedule less the CASH target's share
         (which stays cash) less what has been bought."""
         return max(Decimal(0), self.plan.scheduled * self.plan.fund_fraction - self.deployed)
+
+
+# ------------------------------------------------------------- the report (SB-1416)
+
+
+class Score(BaseModel):
+    """Dollars put in on one base, and what they are worth now.
+
+    The base is either the account's net DEPOSITS (the whole account, cash and
+    all) or the net dollars INVESTED (buys less sales). A benchmark scored on a
+    base is the same dollars bought into it on the same days, so the two rows
+    differ only in what the money was put into. Returns are simple — gain over
+    the base, not annualised and not time-weighted. `periods` maps "1W"/"1M" to
+    a return over that window, present only once the account is that old.
+    """
+
+    base: Decimal
+    value: Decimal | None  # None = a price is missing, never zero
+    today_pct: Decimal | None = None
+    periods: dict[str, Decimal | None] = {}
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def gain(self) -> Decimal | None:
+        if self.value is None:
+            return None
+        return self.value - self.base
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def return_pct(self) -> Decimal | None:
+        if self.gain is None or self.base == 0:
+            return None
+        return self.gain / self.base * 100
+
+
+class BenchmarkScore(BaseModel):
+    """A market index the account is measured against, on both bases.
+
+    `deposits`: every deposit bought into it on its day — what the whole account
+    is compared with. `invested`: every dollar actually invested, on the day it
+    was invested — what the money in funds is compared with. The target mix has
+    no deposits score: it is a mix of the funds, not a place to park cash.
+    """
+
+    key: str
+    label: str
+    short: str  # the scoreboard's row name
+    symbol: str | None = None  # None for the target mix
+    deposits: Score | None = None
+    invested: Score
+
+
+class FundScore(BaseModel):
+    """One holding on the leaderboard."""
+
+    symbol: str
+    label: str | None = None
+    paced: bool = False
+    quantity: Decimal
+    value: Decimal | None
+    cost_basis: Decimal
+    today_pct: Decimal | None = None
+    weight_pct: Decimal | None = None  # share of everything invested
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def gain(self) -> Decimal | None:
+        if self.value is None:
+            return None
+        return self.value - self.cost_basis
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def gain_pct(self) -> Decimal | None:
+        if self.gain is None or self.cost_basis == 0:
+            return None
+        return self.gain / self.cost_basis * 100
+
+
+class AllocReport(BaseModel):
+    """`trd alloc report`: the view, scored against the market (SB-1416).
+
+    `account` is the whole account on net deposits; `invested` is the holdings
+    on the net cost of what was bought (price return: income is in `account`,
+    not here, as the benchmarks are priced on closes without dividends).
+    """
+
+    view: AllocView
+    today: date
+    funded_on: date | None = None  # first deposit
+    periods: list[str] = []  # "1W" / "1M" the account is old enough for
+    account: Score
+    invested: Score
+    benchmarks: list[BenchmarkScore] = []
+    funds: list[FundScore] = []  # best since bought first
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def cash_pct(self) -> Decimal | None:
+        total = self.view.total_value
+        if not total:
+            return None
+        return self.view.cash.cash / total * 100
 
 
 class ProposalLeg(BaseModel):

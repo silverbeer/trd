@@ -52,7 +52,7 @@ from trd.providers.base import MarketDataProvider
 from trd.repos import AccountRepo, PriceRepo, TransactionRepo
 from trd.repos.alloc import AllocRepo, CashFlowRepo
 from trd.repos.income import IncomeRepo
-from trd.services.benchmark import BENCHMARK
+from trd.services.benchmark import BENCHMARK, same_dates_shares
 from trd.services.portfolio import PortfolioService
 from trd.services.xirr import xirr
 
@@ -384,14 +384,12 @@ class AllocService:
         instrument = self.portfolio.instruments.get_by_symbol(BENCHMARK)
         if instrument is None or not flows:
             return None
-        shares = Decimal(0)
-        for flow in flows:
-            close = self.prices.close_on_or_after(instrument.id, flow.occurred_at.date())
-            if close is None or close == 0:
-                return None
-            shares += flow.signed / close
+        shares = same_dates_shares(
+            [(f.occurred_at.date(), f.signed) for f in flows],
+            lambda on: self.prices.close_on_or_after(instrument.id, on),
+        )
         latest = self.prices.latest_close(instrument.id)
-        return shares * latest if latest is not None else None
+        return shares * latest if shares is not None and latest is not None else None
 
     def proposal(
         self,
@@ -594,6 +592,7 @@ def drift_rows(
                 price_stale=p.price_stale if p else False,
                 value=(p.market_value if p else Decimal(0)) if t.symbol != CASH else None,
                 cost_basis=p.cost_basis if p else Decimal(0),
+                day_change_pct=p.day_change_pct if p else None,
                 invested_target_pct=weights.get(t.symbol),
             )
         )
@@ -607,6 +606,7 @@ def drift_rows(
             price_stale=p.price_stale,
             value=p.market_value,
             cost_basis=p.cost_basis,
+            day_change_pct=p.day_change_pct,
         )
         for s, p in sorted(by_symbol.items())
     ]
@@ -671,6 +671,7 @@ def paced_rows(
                 quantity=p.quantity if p else Decimal(0),
                 value=p.market_value if p else None,
                 cost_basis=p.cost_basis if p else Decimal(0),
+                day_change_pct=p.day_change_pct if p else None,
             )
         )
     return out
