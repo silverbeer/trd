@@ -6,7 +6,7 @@
 
 set -eu
 
-export TRD_HOME="${TRD_HOME:-$HOME/Library/Mobile Documents/com~apple~CloudDocs/trd}"
+export TRD_HOME="${TRD_HOME:-$HOME/.trd-portfolio}"
 export PATH="$HOME/.local/bin:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin"
 
 # Log locally (launchd can't write iCloud without Full Disk Access).
