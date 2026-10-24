@@ -91,6 +91,16 @@ class Milestone(BaseModel):
     note: str | None = None
 
 
+class CashYield(BaseModel):
+    """What the plan's uninvested cash earns while it waits (SB-1417): the core
+    money-market fund it sits in and that fund's yield, as read on `as_of`. A
+    stated rate, never a measurement — interest actually paid is income."""
+
+    fund: str
+    yield_pct: Decimal  # annual, percent
+    as_of: date
+
+
 class AllocPlan(BaseModel):
     id: int
     account: str
@@ -104,6 +114,7 @@ class AllocPlan(BaseModel):
     note: str | None = None
     targets: list[AllocTarget] = []
     milestones: list[Milestone] = []
+    cash_yield: CashYield | None = None
 
     @computed_field  # type: ignore[prop-decorator]
     @property
@@ -238,6 +249,20 @@ class AllocView(BaseModel):
     xirr: float | None = None
     day_change: Decimal | None = None  # today's move on what is held; None if unknown
     paced: list[PacedRow] = []
+    # Interest the account has actually been paid on its cash: recorded income of
+    # kind interest or cash_sweep. Not derived from the stated yield.
+    cash_interest_earned: Decimal = Decimal(0)
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def cash_monthly_interest(self) -> Decimal | None:
+        """What the cash earns a month at the stated yield: cash x yield / 12.
+        All of it, reserved included — it all sits in the core position. None
+        without a stated yield; an estimate, since a money-market rate moves."""
+        cy = self.plan.cash_yield
+        if cy is None:
+            return None
+        return max(Decimal(0), self.cash.cash) * cy.yield_pct / 100 / 12
 
     @computed_field  # type: ignore[prop-decorator]
     @property
@@ -322,7 +347,7 @@ class BenchmarkScore(BaseModel):
 
     key: str
     label: str
-    short: str  # the scoreboard's row name
+    short: str  # the message's name for it
     symbol: str | None = None  # None for the target mix
     deposits: Score | None = None
     invested: Score

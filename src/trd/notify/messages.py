@@ -1174,7 +1174,11 @@ ALLOC_IN_LINE_PP = Decimal("0.1")
 ALLOC_CASH_NOTE_PCT = Decimal(20)
 # Under a dollar apart is level, not ahead.
 ALLOC_LEVEL_USD = Decimal(1)
-# The scoreboard is a <pre> block read on a phone: about 32 characters fit.
+# A stated cash yield older than this is said to be stale: a money-market rate
+# moves with the Fed, and a month-old figure quoted as current would mislead.
+ALLOC_YIELD_STALE_DAYS = 35
+# "In line" / "level": a heavy minus sign, named so it is not read as a hyphen.
+ALLOC_LEVEL_ICON = "\N{HEAVY MINUS SIGN}"
 
 
 def _usd(value: Decimal | None, cents: bool = False) -> str:
@@ -1191,62 +1195,77 @@ def _apc(value: Decimal | None) -> str:
     return f"{'+' if rounded >= 0 else '-'}{abs(rounded):.2f}%"
 
 
-def _alloc_verdict(report: AllocReport) -> tuple[list[str], bool]:
-    """The day in one line, then the funds against the S&P 500 today. The second
-    value says whether 'pts' was used, so the glossary defines it only then."""
+def _alloc_verdict(report: AllocReport) -> str:
+    """The day in one line. How it compares with the S&P 500 is the next
+    section's job, so it is said once."""
     change, pct = report.view.day_change, report.account.today_pct
     if change is None or pct is None:
-        return ["⚠️ <b>Can't score today</b> — a holding has no previous close."], False
+        return "⚠️ <b>Can't score today</b> — a holding has no previous close."
     money = f"{_lusd(change)} ({_apc(pct)})"
     if pct <= -ALLOC_BIG_PCT:
-        head = f"🩸 <b>BAD DAY  {money}</b>"
-    elif pct <= -ALLOC_FLAT_PCT:
-        head = f"🔴 <b>DOWN DAY  {money}</b>"
-    elif pct < ALLOC_FLAT_PCT:
-        head = f"⚪ <b>FLAT DAY  {money}</b>"
-    elif pct < ALLOC_BIG_PCT:
-        head = f"🟢 <b>GOOD DAY  {money}</b>"
-    else:
-        head = f"🚀 <b>GREAT DAY  {money}</b> 🚀"
-    spy = _spy(report)
-    mine = report.invested.today_pct
-    theirs = spy.invested.today_pct if spy is not None else None
-    if mine is None or theirs is None:
-        return [head], False
-    gap = mine - theirs
-    if abs(gap) < ALLOC_IN_LINE_PP:
-        return [head, f"Your funds were in line with the S&P 500 today ({_apc(theirs)})."], False
-    word = "beat" if gap > 0 else "trailed"
-    return [
-        head,
-        f"Your funds {word} the S&P 500 by {abs(float(gap)):.1f} pts today "
-        f"({_apc(mine)} vs {_apc(theirs)}).",
-    ], True
+        return f"🩸 <b>BAD DAY  {money}</b>"
+    if pct <= -ALLOC_FLAT_PCT:
+        return f"🔴 <b>DOWN DAY  {money}</b>"
+    if pct < ALLOC_FLAT_PCT:
+        return f"⚪ <b>FLAT DAY  {money}</b>"
+    if pct < ALLOC_BIG_PCT:
+        return f"🟢 <b>GOOD DAY  {money}</b>"
+    return f"🚀 <b>GREAT DAY  {money}</b> 🚀"
 
 
 def _spy(report: AllocReport) -> BenchmarkScore | None:
     return next((b for b in report.benchmarks if b.symbol == BENCHMARK), None)
 
 
-def _scoreboard(report: AllocReport) -> list[str]:
-    """You and each benchmark, Today / Since funding, one plain line each.
-
-    Not a <pre> table: Telegram draws one as a code block with a "copy" bar,
-    which reads as a program listing in the middle of a money message. A
-    proportional font cannot align columns, so each line carries its own pair
-    of numbers in the order the heading names them. 1W/1M stay in --json.
-    """
-    rows = [
-        ("<b>Your funds</b>", report.invested.today_pct, report.invested.return_pct),
-        ("Whole account", report.account.today_pct, report.account.return_pct),
-    ] + [(_h(b.short), b.invested.today_pct, b.invested.return_pct) for b in report.benchmarks]
-    return [f"{name}  {_apc(today)} · {_apc(since)}" for name, today, since in rows]
-
-
-def _ahead(diff: Decimal, whom: str) -> str:
-    if abs(diff) < ALLOC_LEVEL_USD:
-        return f"level with {whom}"
-    return f"{'ahead of' if diff > 0 else 'behind'} {whom} by {_usd(abs(diff))}"
+def _compare(report: AllocReport) -> tuple[list[str], bool]:
+    """How the money in funds compares with the same dollars in the S&P 500,
+    today and since the first deposit, then the other markets today. Each line
+    needs every number it states: a missing one drops the line, never prints a
+    half-comparison. The second value says whether 'pts' was used."""
+    spy = _spy(report)
+    groups: list[list[str]] = []
+    used_pts = False
+    if spy is not None:
+        sp = _h(spy.short)
+        mine, theirs = report.invested.today_pct, spy.invested.today_pct
+        if mine is not None and theirs is not None:
+            # From the two figures as printed, so the line's subtraction checks
+            # out on the phone (-0.26 vs -0.52 is 0.26 better, not 0.27).
+            gap = round(mine, 2) - round(theirs, 2)
+            if abs(gap) < ALLOC_IN_LINE_PP:
+                verdict = f"{ALLOC_LEVEL_ICON} in line with the S&amp;P"
+            else:
+                word = "better" if gap > 0 else "worse"
+                verdict = f"{'✅' if gap > 0 else '⚠️'} {abs(gap):.2f} pts {word} than the S&amp;P"
+                used_pts = True
+            groups.append([f"Today: your funds {_apc(mine)} vs {sp} {_apc(theirs)}", verdict])
+        mine, theirs = report.invested.return_pct, spy.invested.return_pct
+        if mine is not None and theirs is not None:
+            when = f" ({report.funded_on:%b %-d})" if report.funded_on else ""
+            group = [f"Since you started{when}: your funds {_apc(mine)} vs {sp} {_apc(theirs)}"]
+            ours, same = report.invested.value, spy.invested.value
+            if ours is not None and same is not None and report.invested.base:
+                diff = ours - same
+                whom = "the same money in the S&amp;P"
+                if abs(diff) < ALLOC_LEVEL_USD:
+                    group.append(f"{ALLOC_LEVEL_ICON} level with {whom}")
+                elif diff > 0:
+                    group.append(f"✅ {_usd(diff)} ahead of {whom}")
+                else:
+                    group.append(f"⚠️ {_usd(-diff)} behind {whom}")
+            groups.append(group)
+    others = [b for b in report.benchmarks if b.symbol not in (None, BENCHMARK)]
+    if any(b.invested.today_pct is not None for b in others):
+        groups.append(
+            [
+                "Other markets today: "
+                + " · ".join(f"{_h(b.short)} {_apc(b.invested.today_pct)}" for b in others)
+            ]
+        )
+    lines: list[str] = []
+    for group in groups:
+        lines += ([""] if lines else []) + group
+    return lines, used_pts
 
 
 def _fund_line(f: FundScore) -> str:
@@ -1285,10 +1304,7 @@ def alloc_report_message(report: AllocReport) -> str:
     if view.unpriced or view.stale:
         lines.append("")
 
-    verdict, used_pts = _alloc_verdict(report)
-    lines += verdict
-    if used_pts:
-        glossary.append("pts = percentage points")
+    lines.append(_alloc_verdict(report))
 
     # --- the money
     lines.append("")
@@ -1309,35 +1325,22 @@ def alloc_report_message(report: AllocReport) -> str:
         lines.append(f"📐 Annualised (XIRR): {view.xirr * 100:+.2f}%")
         glossary.append("XIRR = the yearly rate that turns your deposits into today's worth")
 
-    # --- vs the market
+    # --- how you compare
+    cy = plan.cash_yield
     if total is not None and report.benchmarks:
-        lines += ["", "📏 <b>vs the market</b> · <i>today · since funding</i>"]
-        lines += _scoreboard(report)
-        spy = _spy(report)
-        if spy is not None:
-            mine, theirs = report.invested.value, spy.invested.value
-            if mine is not None and theirs is not None and report.invested.base:
-                diff = mine - theirs
-                icon = "✅" if diff >= 0 else "⚠️"
-                lines.append(
-                    f"{icon} Your funds are {_ahead(diff, 'the S&amp;P 500')} since funding"
-                )
-            all_in = spy.deposits.value if spy.deposits is not None else None
-            if all_in is not None:
-                diff = total - all_in
-                more = "more" if diff < 0 else "less"
-                lines.append(
-                    f"<i>Had every dollar gone into the S&amp;P 500 on the days you deposited, "
-                    f"you'd have {_usd(abs(diff))} {more} than you do.</i>"
-                    if abs(diff) >= ALLOC_LEVEL_USD
-                    else "<i>Level with putting every deposit into the S&amp;P 500.</i>"
-                )
-        lines.append("<i>Indexes are priced as your same dollars, bought on your same days.</i>")
+        compare, used_pts = _compare(report)
+        if compare:
+            lines += ["", "📏 <b>How you compare</b>", *compare]
+        if used_pts:
+            glossary.insert(0, "pts = percentage points")
         cash_pct = report.cash_pct
         if cash_pct is not None and cash_pct > ALLOC_CASH_NOTE_PCT:
             lines.append(
-                f"<i>{float(cash_pct):.0f}% is cash by plan — the whole account lags in up "
-                "markets and cushions in down ones.</i>"
+                f"<i>{float(cash_pct):.0f}% is cash by plan, earning {cy.yield_pct:.2f}% in "
+                f"{_h(cy.fund)} while it waits.</i>"
+                if cy is not None
+                else f"<i>{float(cash_pct):.0f}% is cash by plan — the whole account lags in "
+                "up markets and cushions in down ones.</i>"
             )
 
     # --- the funds
@@ -1359,8 +1362,20 @@ def alloc_report_message(report: AllocReport) -> str:
     cash = view.cash.cash
     share = f" ({float(cash / total * 100):.0f}%)" if total else ""
     lines += ["", f"💵 Cash {_usd(cash)}{share}"]
-    if view.reserved_cash:
-        names = ", ".join(p.symbol for p in view.paced)
+    names = ", ".join(p.symbol for p in view.paced)
+    if cy is not None:
+        # Phone-short lines: the yield takes the header, the rest go under it.
+        lines[-1] += (
+            f" — working in <b>{_h(cy.fund)}</b> at {cy.yield_pct:.2f}% ≈ "
+            f"<b>+{_usd(view.cash_monthly_interest)}/mo</b>"
+        )
+        if view.reserved_cash:
+            lines.append(f"   {_usd(view.reserved_cash)} set aside for {_h(names)}")
+        if view.cash_interest_earned:
+            lines.append(f"   earned so far {_lusd(view.cash_interest_earned)}")
+        if (today - cy.as_of).days > ALLOC_YIELD_STALE_DAYS:
+            lines.append(f"   rate as of {cy.as_of:%b %-d} — update: trd alloc edit --cash-yield N")
+    elif view.reserved_cash:
         lines[-1] += f" · {_usd(view.reserved_cash)} set aside for {_h(names)}"
     off = [r for r in view.rows if r.action in ("underweight", "overweight")]
     if off:

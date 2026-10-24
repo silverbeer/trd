@@ -74,6 +74,12 @@ trd alloc set --account fidelity-ira --capital 250930 --name ... [--kind "Rollov
                                       # cash, never added to it); out of the tranche fund share,
                                       # milestone progress and the drift sleeve. propose lists an
                                       # instalment due as 'buy alongside'; show/report track it
+                                      # --cash-fund SPAXX --cash-yield 3.51 [--cash-yield-as-of ISO]
+                                      # (set or edit; as-of defaults to today; edit --cash-yield N
+                                      # alone re-rates the same fund; --no-cash-yield clears it,
+                                      # migration 031): what the uninvested cash earns. show/report
+                                      # print cash x yield / 12 a month and 'earned so far' = income
+                                      # of kind interest|cash_sweep; a rate over 35 days old says so
 trd alloc schedule --start ISO --initial 150930 --amount 25000 --every 3 --count 4 [--replace]
 trd alloc show [--json]               # staged allocation plan (SB-1383): worth = holdings + cash,
                                       # gain vs net deposits (simple, not annualised; XIRR after 30

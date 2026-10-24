@@ -3145,6 +3145,13 @@ def alloc_view_renderables(view: AllocView) -> list[RenderableType]:
                 else ""
             )
         )
+        cy = view.plan.cash_yield
+        if cy is not None:
+            head.append(
+                f"cash {fmt_money(view.cash.cash)} in {cy.fund} at {cy.yield_pct:.2f}% "
+                f"(as of {cy.as_of}) ≈ {fmt_signed(view.cash_monthly_interest)}/mo"
+                f" · earned so far {fmt_money(view.cash_interest_earned)}"
+            )
         if view.gain is not None:
             head.append(
                 f"gain {fmt_signed(view.gain)} ({fmt_signed_pct(view.simple_return_pct)} of net "
