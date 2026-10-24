@@ -18,9 +18,11 @@ padded with "—" reads as broken rather than as inapplicable.
 Plain text, no markup — see TelegramNotifier for why.
 """
 
+import re
 from collections.abc import Callable
 from datetime import date, datetime, timedelta
 from decimal import Decimal
+from html import escape, unescape
 from typing import Any
 
 from trd.engine import EXIT_REGISTRY
@@ -812,34 +814,105 @@ def _trades_section(live: list[EngineDay], budget: int) -> list[str]:
 
 
 # ------------------------------------------------------------ live report
+#
+# Real money, read on a phone, once a day. Sent with Telegram's HTML parse mode
+# (the only message that is): bold for the verdict and the symbols, italics for
+# the detail, and every piece of text that came from data goes through
+# `escape` — an unescaped `<` rejects the whole message, which is the reason
+# every other message is plain text.
+
+# How the day is called, as a percentage of what the account was worth at the
+# previous close. Below FLAT either way is noise on a $100 book; a stop taken
+# today makes the day BAD whatever the total says, because a stop is the one
+# outcome the plan exists to keep rare.
+LIVE_FLAT_PCT = Decimal("0.25")
+LIVE_BIG_PCT = Decimal("1.5")
+
+
+def _h(value: object) -> str:
+    return escape(str(value), quote=False)
+
+
+def _lusd(value: Decimal | None, signed: bool = True) -> str:
+    """'+$1.23' / '-$0.17'."""
+    if value is None:
+        return "—"
+    if not signed:
+        return f"${float(value):,.2f}"
+    sign = "+" if value >= 0 else "-"
+    return f"{sign}${abs(float(value)):,.2f}"
+
+
+def _lpc(value: Decimal | None) -> str:
+    if value is None:
+        return "—"
+    sign = "+" if value >= 0 else "-"
+    return f"{sign}{abs(float(value)):.1f}%"
+
+
+def _dot(value: Decimal | None) -> str:
+    if value is None:
+        return "⚪"
+    return "🟢" if value > 0 else "🔴" if value < 0 else "⚪"
+
+
+def _verdict(report: LiveReport) -> list[str]:
+    """The first thing read: was today good or bad, in one line that cannot be
+    misread, then the line that says why."""
+    change, pct = report.today_change, report.today_change_pct
+    stopped = [c for c in report.closed_today if c.trade.rule == "stop"]
+    if change is None or pct is None:
+        return ["⚠️ <b>Can't score today</b> — prices aren't today's yet."]
+    money = f"{_lusd(change)} ({_lpc(pct)})"
+    movers = [p for p in report.positions if p.day_change is not None]
+    green = sum(1 for p in movers if p.day_change and p.day_change > 0)
+    breadth = (
+        f"{green} of {len(movers)} positions finished green."
+        if movers
+        else "No open positions — today was the trades that closed."
+    )
+    if stopped or pct <= -LIVE_BIG_PCT:
+        head = f"🩸 <b>BAD DAY  {money}</b>"
+        why = (
+            "Stopped out of " + ", ".join(f"<b>{_h(c.trade.symbol)}</b>" for c in stopped) + "."
+            if stopped
+            else breadth
+        )
+    elif pct <= -LIVE_FLAT_PCT:
+        head = f"🔴 <b>DOWN DAY  {money}</b>"
+        why = breadth
+    elif pct < LIVE_FLAT_PCT:
+        head = f"⚪ <b>FLAT DAY  {money}</b>"
+        why = "Basically unchanged — nothing to see, which is fine."
+    elif pct < LIVE_BIG_PCT:
+        head = f"🟢 <b>GOOD DAY  {money}</b>"
+        why = f"{breadth} Nice. 💪"
+    else:
+        head = f"🚀 <b>GREAT DAY  {money}</b> 🚀"
+        why = f"{breadth} The book is working. 🔥"
+    return [head, why]
 
 
 def _live_position_lines(p: LivePosition) -> list[str]:
-    """One open position in three short lines, so it reads on a phone without
-    wrapping: the result, the price path, and where it gets out."""
-    held = "opened today" if p.opened_today else f"{p.sessions_held}d held"
+    """Two lines a position: how it did, then where it gets out."""
+    held = "new today" if p.opened_today else f"day {p.sessions_held + 1}"
+    today = _lpc(p.day_change_pct) if p.day_change is not None else "—"
     head = (
-        f"{p.symbol} {_signed(p.unrealized)} ({_pct(p.unrealized_pct)}, {_r(p.r_now)})"
-        f" · {held} · {_strategy_name(p.strategy)}"
+        f"{_dot(p.unrealized)} <b>{_h(p.symbol)}</b>  {today} today · "
+        f"{_lusd(p.unrealized)} ({_r(p.r_now)})"
     )
-    today = (
-        f"today {_signed(p.day_change)} ({_pct(p.day_change_pct)})"
-        if p.day_change is not None
-        else "today —"
+    stop = f"{_money(p.stop_in_force)}{'↑' if p.trailing else ''}"
+    detail = (
+        f"     <i>{_money(p.entry_price)} → {_money(p.mark)} · stop {stop} "
+        f"({_distance(p.stop_distance_pct, 'away', 'THROUGH by')}) · "
+        f"target {_money(p.target)} · {held}</i>"
     )
-    path = f"  {_shares(p.quantity)} sh @ {_money(p.entry_price)} → {_money(p.mark)} · {today}"
-    stop = f"↑{_money(p.stop_in_force)}" if p.trailing else _money(p.stop_in_force)
-    exits = (
-        f"  stop {stop} ({_distance(p.stop_distance_pct, 'below', 'THROUGH by')}) · "
-        f"target {_money(p.target)} ({_distance(p.target_distance_pct, 'above', 'past by')}) · "
-        f"at risk {_money(p.risk_at_stop)}"
-    )
-    return [head, path, exits]
+    return [head, detail]
 
 
 def _distance(value: Decimal | None, ahead: str, crossed: str) -> str:
     """How far the mark is from a level, in words that cannot be misread: "7.3%
-    below" for a stop still ahead, "THROUGH by 0.4%" for one already crossed
+    away" for a stop still ahead, "THROUGH by 0.4%" for one already crossed
     between scans — a signed percentage leaves the reader to work out which."""
     if value is None:
         return "—"
@@ -849,74 +922,90 @@ def _distance(value: Decimal | None, ahead: str, crossed: str) -> str:
 
 
 def live_report_message(report: LiveReport, label: str | None = None) -> str:
-    """The live engine's post-market message: the account, then every position.
+    """The live engine's post-market message, as Telegram HTML.
 
-    Warnings come first for the same reason as the daily report — a stale mark
-    or a halt makes every number below it read differently — then the money,
-    then the book position by position, then what the session did.
+    Warnings first — a stale mark or a halt makes every number below it read
+    differently — then the verdict on the day, the account, every position best
+    first, and what the session did.
     """
     day = report.day
-    tag = "" if label in (None, LIVE_LABEL) else f" [{label}]"
-    lines = [f"💵 trd live{tag} — {report.on:%a %b %-d}"]
+    tag = "" if label in (None, LIVE_LABEL) else f" [{_h(label)}]"
+    lines = [f"💵 <b>trd LIVE{tag}</b> · {report.on:%a %b %-d}", ""]
 
+    if day.halted:
+        lines.append(f"⛔ <b>HALTED</b> — {_h(day.halt_reason or 'kill switch on')}; no new buys")
     if day.marks_are_stale:
         marked = f"{day.marked_at:%b %-d}" if day.marked_at else "an older session"
-        lines.append(f"⚠ marks are stale — priced at {marked}, not today")
+        lines.append(f"⚠️ marks are stale — priced at {marked}, not today")
     if not report.market_open:
-        lines.append("⚠ no session stored for this date — the market may not have opened")
-    if day.halted:
-        lines.append(f"⛔ HALTED — {day.halt_reason or 'kill switch on'}; no new buys")
+        lines.append("⚠️ no session stored for this date — the market may not have opened")
+        return "\n".join(lines)
 
-    rows: list[tuple[str, str, str]] = [
-        ("capital", _money(day.capital), "real money this engine trades"),
-        ("worth now", _money(day.live_worth), ""),
-        ("return", _signed(day.net), _pct(day.live_return_pct)),
-        ("  cash booked", _signed(day.realized_all), "out of trades that are done"),
-        ("  still open", _signed(day.unrealized), "not sold yet"),
-        (
-            "today",
-            _signed(report.today_change),
-            f"{_pct(report.today_change_pct)} since the last close",
-        ),
-        (
-            "cash",
-            f"{_money(day.cash_settled)} settled",
-            f"{_money(day.cash_unsettled)} unsettled (T+1)",
-        ),
-        ("orders", f"{day.open_intents} open", f"{day.awaiting_approval} awaiting approval"),
+    lines += _verdict(report)
+
+    lines += [
+        "",
+        f"💰 Worth <b>{_lusd(day.live_worth, signed=False)}</b> · "
+        f"{_lusd(day.net)} ({_lpc(day.live_return_pct)}) since you put in "
+        f"{_lusd(day.capital, signed=False)}",
+        f"<i>booked {_lusd(day.realized_all)} · open {_lusd(day.unrealized)} · "
+        f"cash {_lusd(day.cash_settled, signed=False)}"
+        + (f" (+{_lusd(day.cash_unsettled, signed=False)} settling)" if day.cash_unsettled else "")
+        + "</i>",
     ]
-    lines += ["", "ACCOUNT (real money)", *_aligned(rows)]
+    if day.open_intents or day.awaiting_approval:
+        lines.append(
+            f"📨 {day.open_intents} order(s) open · "
+            f"{day.awaiting_approval} waiting on your approval"
+        )
 
-    lines += ["", f"OPEN — {len(report.positions)} position(s), best first"]
+    lines += ["", f"📊 <b>Positions</b> ({len(report.positions)})"]
     if not report.positions:
-        lines.append("  flat")
+        lines.append("Flat — all cash.")
     for position in report.positions:
         lines += _live_position_lines(position)
+    movers = [p for p in report.positions if p.day_change_pct is not None]
+    if len(movers) >= 2:
+        best = max(movers, key=lambda p: p.day_change_pct or 0)
+        worst = min(movers, key=lambda p: p.day_change_pct or 0)
+        lines.append(
+            f"🏆 {_h(best.symbol)} {_lpc(best.day_change_pct)}   "
+            f"😬 {_h(worst.symbol)} {_lpc(worst.day_change_pct)}"
+        )
     if report.positions:
-        lines.append(f"  at risk on the book: {_money(day.risk_at_stop)}")
+        lines.append(f"🛡 At risk if every stop hits: {_lusd(day.risk_at_stop, signed=False)}")
 
     activity: list[str] = []
-    for o in report.opened_today:
-        note = "" if o.still_open else " (closed again)"
-        activity.append(
-            f"  bought {o.symbol} {_shares(o.quantity)} sh @ {_money(o.entry_price)} · "
-            f"{_strategy_name(o.strategy)}{note}"
-        )
+    if report.opened_today:
+        spent = sum((o.quantity * o.entry_price for o in report.opened_today), Decimal(0))
+        names = ", ".join(_h(o.symbol) for o in report.opened_today)
+        activity.append(f"🛒 Bought {names} — {_lusd(spent, signed=False)} put to work")
     for c in report.closed_today:
-        activity.append("  sold " + _trade_line(c.trade, day.timeframe).lstrip())
-    for u in report.unfilled_today:
-        why = f" — {u.error}" if u.error else ""
+        t = c.trade
+        icon = "✅" if t.pnl > 0 else "❌"
         activity.append(
-            f"  {u.status.value} {u.side.value.upper()} {u.symbol} {_shares(u.quantity)} sh{why}"
+            f"{icon} Sold <b>{_h(t.symbol)}</b> {_lusd(t.pnl)} ({_r(t.r_multiple)}) · "
+            f"{_h(_rule_name(t.rule) or 'closed')}"
         )
-    lines += ["", "TODAY"]
-    lines += activity or ["  no fills, no exits"]
+    for u in report.unfilled_today:
+        why = f" — {_h(u.error)}" if u.error else ""
+        activity.append(
+            f"⚠️ {u.status.value} {u.side.value.upper()} {_h(u.symbol)} "
+            f"{_shares(u.quantity)} sh{why}"
+        )
+    lines += ["", "📝 <b>Today</b>"]
+    lines += activity or ["No fills, no exits."]
 
-    lines.append(
-        "R = the trade's result in units of what it risked at entry · "
-        "↑ = trailing stop in force · at risk = lost if the stop hits"
-    )
+    lines += [
+        "",
+        "<i>R = result in units of what the trade risked · ↑ = trailing stop</i>",
+    ]
     return "\n".join(lines)
+
+
+def strip_html(text: str) -> str:
+    """The same message for a terminal: tags dropped, entities restored."""
+    return unescape(re.sub(r"</?[a-z]+>", "", text))
 
 
 # ---------------------------------------------------------------- the review

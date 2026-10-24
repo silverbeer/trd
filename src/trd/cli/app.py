@@ -103,6 +103,7 @@ from trd.notify.messages import (
     halt_message,
     live_report_message,
     review_message,
+    strip_html,
 )
 from trd.notify.telegram import LIVE_LABEL, TelegramNotifier
 from trd.notify.telegram import from_env as notify_from_env
@@ -2723,7 +2724,7 @@ def engine_live_report(
             _fail(TrdError(refused[0] if refused else "No TELEGRAM_BOT_TOKEN set."))
             return
         try:
-            notifier.send(message)
+            notifier.send(message, html=True)
         except TrdError as exc:  # NotifyError: delivery failed, token never shown
             _fail(exc)
             return
@@ -2731,7 +2732,7 @@ def engine_live_report(
     if as_json:
         _emit_json({"message": message, "sent": sent, "report": report.model_dump(mode="json")})
         return
-    console.print(message, markup=False, highlight=False)
+    console.print(strip_html(message), markup=False, highlight=False)
     if notify and not report.market_open:
         console.print("[dim]No session stored for this date — nothing sent.[/dim]")
 
