@@ -23,6 +23,7 @@ this module to know which of the three it was serving.
 
 from collections.abc import Iterable, Sequence
 from datetime import date
+from decimal import Decimal
 
 from trd.models import Income, Transaction
 from trd.services.fifo import fifo_position
@@ -39,17 +40,28 @@ def trade_flows(
     window, where the opening holdings are already carried as a single outflow
     and a trade on the boundary date would otherwise be counted twice.
     """
-    flows: list[tuple[date, float]] = []
+    return [(on, -float(amount)) for on, amount in trade_amounts(txns, after, until)]
+
+
+def trade_amounts(
+    txns: Iterable[Transaction],
+    after: date | None = None,
+    until: date | None = None,
+) -> list[tuple[date, Decimal]]:
+    """Dollars put to work, in Decimal: a buy's cost plus fees is positive, a
+    sale's proceeds less fees negative. `trade_flows` is this from the pocket's
+    side, as floats for XIRR; a same-days benchmark prices exactly these amounts
+    (SB-1416), so the two can never disagree about what a trade cost."""
+    out: list[tuple[date, Decimal]] = []
     for txn in txns:
         on = txn.executed_at.date()
         if after is not None and on <= after:
             continue
         if until is not None and on > until:
             continue
-        amount = float(txn.quantity * txn.price)
-        fees = float(txn.fees)
-        flows.append((on, -(amount + fees) if txn.side == "buy" else amount - fees))
-    return flows
+        amount = txn.quantity * txn.price
+        out.append((on, amount + txn.fees if txn.side == "buy" else -(amount - txn.fees)))
+    return out
 
 
 def income_flows(

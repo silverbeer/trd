@@ -139,6 +139,7 @@ from trd.services.agenda import (
     agenda,
 )
 from trd.services.alloc import AllocService, CashService
+from trd.services.alloc_report import AllocReportService
 from trd.services.backtest import BacktestService, EntryFill, FillMode
 from trd.services.commands import CommandQueueService
 from trd.services.daily_report import (
@@ -4581,8 +4582,10 @@ def alloc_report(
     ] = False,
     as_json: JsonOpt = False,
 ) -> None:
-    """The daily performance message: worth, today's move, return since funding,
-    vs SPY, cash, drift past the threshold, and the next milestone.
+    """The daily performance message: a verdict on the day, worth and return
+    since funding, a scoreboard against the S&P 500, Nasdaq-100, world stocks, a
+    60/40 fund and your own target mix (the same dollars on the same days), the
+    funds best first, cash, drift past the threshold, and the next milestone.
 
     READ-ONLY: opens the database without write access and stores no quotes, so
     an unattended run (deploy/alloc-report.sh, launchd) can never become a second
@@ -4597,11 +4600,11 @@ def alloc_report(
         )
         name_ = account or service.default_account()
         with _spinner("Fetching quotes..."):
-            view = service.view(name_)
+            report = AllocReportService(service).report(name_)
     except TrdError as exc:
         _fail(exc)
         return
-    text = alloc_report_message(view, date.today())
+    text = alloc_report_message(report)
     if notify:
         refused: list[str] = []
         notifier = alert_notifier_from_env(error=refused.append)
@@ -4609,14 +4612,21 @@ def alloc_report(
             _fail(TrdError(refused[0] if refused else "No TELEGRAM_BOT_TOKEN set."))
             return
         try:
-            notifier.send(text)
+            notifier.send(text, html=True)
         except TrdError as exc:  # NotifyError: delivery failed, token never shown
             _fail(exc)
             return
     if as_json:
-        _emit_json({"message": text, "sent": notify, "view": view.model_dump(mode="json")})
+        _emit_json(
+            {
+                "message": text,
+                "sent": notify,
+                "view": report.view.model_dump(mode="json"),
+                "report": report.model_dump(mode="json", exclude={"view"}),
+            }
+        )
         return
-    console.print(text, markup=False, highlight=False)
+    console.print(strip_html(text), markup=False, highlight=False)
 
 
 @alloc_app.command("history")
