@@ -109,8 +109,8 @@ class CashCheck(BaseModel):
     Opt-in (`trd engine reconcile --compare-cash`) because it is only meaningful
     when the brokerage account's cash is the engine's and nothing else's. The
     account that funds a live engine routinely holds more than the engine's
-    capital — $300 deposited for a $100 engine — and comparing that balance with
-    a ledger that starts from $100 would report a $200 "mismatch" every day. Turn
+    capital, and comparing that balance with a ledger that starts from the
+    capital would report the surplus as a "mismatch" every day. Turn
     it on for an account dedicated to the engine; leave it off otherwise.
     """
 

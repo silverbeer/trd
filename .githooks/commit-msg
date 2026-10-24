@@ -1,0 +1,6 @@
+#!/bin/sh
+# A commit message is git metadata: it is public forever and survives any
+# scrub of the tree. No real figures, account numbers or brokerage names
+# (SB-1421, docs/privacy.md).
+root=$(git rev-parse --show-toplevel) || exit 1
+exec python3 "$root/scripts/privacy_scan.py" --message "$1"

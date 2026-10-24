@@ -194,7 +194,7 @@ def test_income_survives_a_backup_and_restore(home: FakeProvider, tmp_path) -> N
     account, not what a symbol has ever paid. Same argument as the transactions."""
     home.add_symbol("AAA", price="100", volume=1_000)
     runner.invoke(app, ["buy", "AAA", "10", "--price", "100"])
-    runner.invoke(app, ["income", "add", "1.98", "--symbol", "AAA", "--date", "2026-07-01"])
+    runner.invoke(app, ["income", "add", "2.50", "--symbol", "AAA", "--date", "2026-07-01"])
     runner.invoke(app, ["income", "add", "0.01", "--kind", "cash_sweep"])
 
     path = tmp_path / "backup.json"
@@ -207,7 +207,7 @@ def test_income_survives_a_backup_and_restore(home: FakeProvider, tmp_path) -> N
 
     rows = json.loads(listed.output)
     assert {r["symbol"] for r in rows} == {"AAA", None}
-    assert sum(Decimal(r["amount"]) for r in rows) == Decimal("1.99")
+    assert sum(Decimal(r["amount"]) for r in rows) == Decimal("2.51")
 
 
 def test_the_backup_version_refuses_to_be_read_by_older_code() -> None:

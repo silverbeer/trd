@@ -1441,7 +1441,7 @@ def plan_ls(
 
 @income_app.command("add")
 def income_add(
-    amount: Annotated[str, typer.Argument(help="Cash received, e.g. 1.98.")],
+    amount: Annotated[str, typer.Argument(help="Cash received, e.g. 2.50.")],
     symbol: Annotated[
         str | None,
         typer.Option("--symbol", "-s", help="The holding that paid it. Required for a dividend."),
@@ -1523,7 +1523,7 @@ def income_ls(
     if not rows:
         console.print(
             "No income recorded. A dividend your broker paid is cash trd cannot see "
-            "until you add it: [bold]trd income add 1.98 --symbol VOO[/bold]."
+            "until you add it: [bold]trd income add 2.50 --symbol VOO[/bold]."
         )
         return
     console.print(income_table(rows))
@@ -3611,8 +3611,8 @@ def engine_reconcile(
     --compare-cash also diffs the broker's settled cash (and unsettled, when the
     snapshot has it) against the engine's T+1 ledger, beyond $0.05 a CASH
     MISMATCH. Off by default: the account funding an engine usually holds more
-    than the engine's capital ($300 deposited for a $100 engine), and that
-    surplus is not a mismatch. Use it when the account's cash is dedicated.
+    than the engine's capital, and that surplus is not a mismatch. Use it when
+    the account's cash is dedicated.
 
     Exits non-zero when the two disagree, so a scheduled check can act on it.
     """
@@ -4476,7 +4476,7 @@ def _cash_move(
 
 @cash_app.command("deposit")
 def cash_deposit(
-    amount: Annotated[str, typer.Argument(help="Amount that arrived, e.g. 250930.")],
+    amount: Annotated[str, typer.Argument(help="Amount that arrived, e.g. 100000.")],
     account: Annotated[str, typer.Option("--account", "-a", help="Account it landed in.")],
     date_str: Annotated[
         str | None, typer.Option("--date", "-d", help="When it landed (YYYY-MM-DD). Default: now.")

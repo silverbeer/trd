@@ -5,6 +5,7 @@ import urllib.request
 from collections.abc import Callable
 
 from trd.errors import NotifyError
+from trd.notify.privacy import guard, redact_firms
 
 API_ROOT = "https://api.telegram.org"
 TIMEOUT_SECONDS = 10
@@ -36,6 +37,10 @@ class TelegramNotifier:
         # an unmatched character. A dropped alert is worse than a missing bold.
         # `html` is for a message built to escape every piece of data it carries
         # (the live report); nothing else opts in.
+        # Every message passes here, so this is where one that would say where
+        # money is held is refused (SB-1421) — before anything leaves the machine.
+        text = redact_firms(text)
+        guard(text)
         body: dict[str, object] = {
             "chat_id": self.chat_id,
             "text": text,

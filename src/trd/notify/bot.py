@@ -39,6 +39,7 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from trd.errors import NotifyError, ProviderError, SymbolNotFoundError, TrdError
+from trd.notify.privacy import guard, redact_firms
 from trd.services.commands import QUEUE_DIR, CommandKind, enqueue
 from trd.timeframes import SESSION_MINUTES, SESSION_OPEN_MINUTE
 
@@ -153,7 +154,10 @@ class TelegramTransport:
     def send(self, chat_id: str, text: str) -> None:
         # No parse_mode, for the reason TelegramNotifier documents: reasons carry
         # %, parentheses and em-dashes, and legacy Markdown rejects the whole
-        # message on one unmatched character.
+        # message on one unmatched character. Guarded like TelegramNotifier.send:
+        # a reply never says where money is held either (SB-1421).
+        text = redact_firms(text)
+        guard(text)
         self._call(
             "sendMessage",
             {"chat_id": chat_id, "text": text, "disable_web_page_preview": True},

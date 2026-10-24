@@ -128,17 +128,17 @@ spec:
             # an engine that simply had nothing to do (SB-1054).
             - name: swing-home
               hostPath:
-                path: /Users/tomdrake/.trd-engine
+                path: /Users/USERNAME/.trd-engine
                 type: Directory
             - name: day-home
               hostPath:
-                path: /Users/tomdrake/.trd-day
+                path: /Users/USERNAME/.trd-day
                 type: Directory
             - name: swing20-home
               hostPath:
-                path: /Users/tomdrake/.trd-swing20
+                path: /Users/USERNAME/.trd-swing20
                 type: Directory
             - name: live-home  # live-only
               hostPath:  # live-only
-                path: /Users/tomdrake/.trd-live  # live-only
+                path: /Users/USERNAME/.trd-live  # live-only
                 type: Directory  # live-only
