@@ -568,3 +568,29 @@ def test_require_current_exits_nonzero_when_a_symbol_is_left_behind(
     # the next 5-minute pass stamp the day instead of retrying forever.
     cli_env.bars["AAPL"] = series(today)
     assert runner.invoke(app, ["sync", "--require-current"]).exit_code == 0
+
+
+def test_require_settled_exits_nonzero_on_a_morning_bar(cli_env: FakeProvider) -> None:
+    """SB-1411: the close sync stamps on this. A current-but-morning bar passes
+    --require-current and must fail --require-settled until it is the close."""
+    from datetime import date
+    from decimal import Decimal
+
+    from trd.models import DailyBar
+
+    def bar(close: str) -> list[DailyBar]:
+        c = Decimal(close)
+        return [DailyBar(date=date.today(), open=c, high=c, low=c, close=c, volume=1)]
+
+    assert runner.invoke(app, ["init"]).exit_code == 0
+    assert runner.invoke(app, ["buy", "AAPL", "1", "--price", "100"]).exit_code == 0
+    quote = cli_env.get_quotes(["AAPL"])["AAPL"].price
+
+    cli_env.bars["AAPL"] = bar(str(quote * Decimal("0.93")))
+    assert runner.invoke(app, ["sync", "--require-current"]).exit_code == 0
+    unsettled = runner.invoke(app, ["sync", "--require-settled"])
+    assert unsettled.exit_code == 1
+    assert "not the close yet for AAPL" in unsettled.output
+
+    cli_env.bars["AAPL"] = bar(str(quote))
+    assert runner.invoke(app, ["sync", "--require-settled"]).exit_code == 0

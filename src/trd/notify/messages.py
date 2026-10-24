@@ -998,7 +998,8 @@ def live_report_message(report: LiveReport, label: str | None = None) -> str:
 
     lines += [
         "",
-        "<i>R = result in units of what the trade risked · ↑ = trailing stop</i>",
+        "<i>R: each trade risks 1R (entry to stop). +1R = made what it risked, "
+        "-1R = stop hit. ↑ = stop has moved up to lock in gains.</i>",
     ]
     return "\n".join(lines)
 

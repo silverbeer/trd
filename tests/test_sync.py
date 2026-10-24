@@ -210,3 +210,41 @@ def test_a_symbol_one_session_behind_is_still_stale(
     result = sync_service.sync()
     assert result.stale_symbols == ["NVDA"]
     assert result.dormant_symbols == []
+
+
+def _today_bar(close: str) -> list[DailyBar]:
+    c = Decimal(close)
+    return [DailyBar(date=date.today(), open=c, high=c, low=c, close=c, volume=1)]
+
+
+def test_a_morning_bar_is_not_settled_after_the_close(
+    portfolio: PortfolioService, sync_service: SyncService, provider
+) -> None:
+    """SB-1411: a bar for today that is not the close is UNSETTLED even though it
+    is current — the case --require-current waved through on 2026-10-23."""
+    portfolio.record_trade("main", "AAPL", Side.BUY, Decimal(1), Decimal(100))
+    provider.bars["AAPL"] = _today_bar("185.00")  # the morning; the quote says 200
+
+    result = sync_service.sync(settle=True)
+
+    assert result.stale_symbols == []
+    assert result.unsettled_symbols == ["AAPL"]
+
+
+def test_a_bar_matching_the_closing_quote_is_settled(
+    portfolio: PortfolioService, sync_service: SyncService, provider
+) -> None:
+    portfolio.record_trade("main", "AAPL", Side.BUY, Decimal(1), Decimal(100))
+    provider.bars["AAPL"] = _today_bar("200.10")  # inside the tolerance of 200.00
+
+    assert sync_service.sync(settle=True).unsettled_symbols == []
+
+
+def test_settled_is_only_checked_when_asked(
+    portfolio: PortfolioService, sync_service: SyncService, provider
+) -> None:
+    """Mid-session the quote moves away from the forming bar by design."""
+    portfolio.record_trade("main", "AAPL", Side.BUY, Decimal(1), Decimal(100))
+    provider.bars["AAPL"] = _today_bar("185.00")
+
+    assert sync_service.sync().unsettled_symbols == []
