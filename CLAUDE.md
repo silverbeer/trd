@@ -654,6 +654,12 @@ reads `both` for exactly two engines and `all` for more. It runs after the scan
 CronJob's entrypoint has stopped for the day (it refuses past 16:00), and off the
 ten-minute grid the queue drain uses, so it is not waiting on the writer lock.
 
+Every home's queue drain (`deploy/queue-entrypoint.sh`) also runs the **close sync**
+(SB-1411): once per weekday on the first tick past 16:05, `trd sync --require-current`,
+stamped in `TRD_HOME/.close-sync` only on success. The scan syncs once in the morning and
+stores no bar after it, so without this every evening report read the 09:3x bar as the
+close (PANW 355.01 reported, 380.55 actual, 2026-10-23).
+
 The nightly decision review is the third CronJob (`k3s/trd-engine/review-cronjob.yaml`,
 `./scripts/deploy-k3s.sh --review`): 16:31 ET weekdays, every home, `trd engine review
 --ai --snapshot --notify`. Same shape as the report and deployed once for the same reason.

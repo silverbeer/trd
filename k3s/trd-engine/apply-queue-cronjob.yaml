@@ -57,12 +57,14 @@ spec:
                 - secretRef:
                     name: trd-engine-telegram
                     optional: true
+              # Sized for the once-a-day close sync (SB-1411), the same
+              # `trd sync` the scan runs with these limits.
               resources:
                 requests:
-                  memory: "128Mi"
+                  memory: "256Mi"
                   cpu: "50m"
                 limits:
-                  memory: "512Mi"
+                  memory: "1Gi"
                   cpu: "500m"
               securityContext:
                 runAsNonRoot: true
