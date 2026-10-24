@@ -36,21 +36,34 @@ fi
 # only the evening, which is when anyone reads it.
 #
 # Once per weekday, on the first tick past 16:05 (16:10, ahead of the reports).
-# The stamp is written only when every symbol is current, so a name the provider
-# has not finalised yet is retried ten minutes later rather than left behind.
+# --require-settled, not --require-current: today's bar always EXISTS after the
+# morning sync, so "current" passed on 2026-10-23 while every history fetch had
+# come back empty and every bar was still the morning's. Settled means each
+# stored close matches the closing quote. Stamped only then; otherwise retried
+# every tick until CLOSE_SYNC_TRIES is spent (an hour), so a provider outage
+# cannot turn into a sync every ten minutes all night.
 dow=$(TZ=America/New_York date +%u)
 hour=$(TZ=America/New_York date +%-H)
 minute=$(TZ=America/New_York date +%-M)
 now=$((hour * 100 + minute))
 CLOSE_STAMP="${TRD_HOME}/.close-sync"
+CLOSE_TRIES="${TRD_HOME}/.close-sync-tries"
+CLOSE_SYNC_TRIES=6
 today=$(TZ=America/New_York date +%F)
 if [ "$dow" -le 5 ] && [ "$now" -gt 1605 ] \
     && [ "$(cat "$CLOSE_STAMP" 2>/dev/null || true)" != "$today" ]; then
-    if trd sync --require-current; then
+    tries=0
+    if [ "$(head -n1 "$CLOSE_TRIES" 2>/dev/null || true)" = "$today" ]; then
+        tries=$(sed -n 2p "$CLOSE_TRIES")
+    fi
+    if [ "$tries" -ge "$CLOSE_SYNC_TRIES" ]; then
+        echo "close sync gave up after $tries tries today — evening marks may be the morning's"
+    elif trd sync --require-settled; then
         echo "$today" > "$CLOSE_STAMP"
         echo "close sync done — today's bars are the close"
     else
-        echo "close sync incomplete (busy, unreachable, or a symbol not final) — retrying next tick"
+        printf '%s\n%s\n' "$today" $((tries + 1)) > "$CLOSE_TRIES"
+        echo "close sync not settled (try $((tries + 1))/$CLOSE_SYNC_TRIES) — retrying next tick"
     fi
 fi
 
