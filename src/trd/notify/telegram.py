@@ -30,17 +30,20 @@ class TelegramNotifier:
     def url(self) -> str:
         return f"{self.api_root}/bot{self.token}/sendMessage"
 
-    def send(self, text: str) -> None:
-        # No parse_mode: signal reasons carry %, em-dashes and parentheses, and
-        # Telegram's legacy Markdown rejects the whole message on an unmatched
-        # character. A dropped alert is worse than a missing bold.
-        payload = json.dumps(
-            {
-                "chat_id": self.chat_id,
-                "text": text,
-                "disable_web_page_preview": True,
-            }
-        ).encode()
+    def send(self, text: str, html: bool = False) -> None:
+        # No parse_mode by default: signal reasons carry %, em-dashes and
+        # parentheses, and Telegram's legacy Markdown rejects the whole message on
+        # an unmatched character. A dropped alert is worse than a missing bold.
+        # `html` is for a message built to escape every piece of data it carries
+        # (the live report); nothing else opts in.
+        body: dict[str, object] = {
+            "chat_id": self.chat_id,
+            "text": text,
+            "disable_web_page_preview": True,
+        }
+        if html:
+            body["parse_mode"] = "HTML"
+        payload = json.dumps(body).encode()
         request = urllib.request.Request(
             self.url, data=payload, headers={"Content-Type": "application/json"}
         )
