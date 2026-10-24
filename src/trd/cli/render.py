@@ -37,7 +37,15 @@ from trd.models import (
     TradeExplanation,
     TradeOutcome,
 )
-from trd.models.alloc import AllocView, CashBalance, CashFlow, Proposal
+from trd.models.alloc import (
+    CASH_FLOW_LABELS,
+    AllocView,
+    CashBalance,
+    CashFlow,
+    CashFlowKind,
+    Proposal,
+)
+from trd.models.fidelity_import import ImportPlan
 from trd.repos import PrepSnapshotRow
 from trd.services.backtest import BacktestResult as EngineBacktestResult
 from trd.services.dashboard import Dashboard, Holding
@@ -583,6 +591,8 @@ def dashboard_card(dash: Dashboard) -> Table:
     # column nobody has filled in.
     if dash.income:
         table.add_row("Dividends + interest", fmt_signed(dash.income))
+    if dash.fees:
+        table.add_row("Advisory fees (paid)", fmt_signed(-dash.fees))
     table.add_section()
     today = f"{fmt_signed(dash.today_change)} ({fmt_signed_pct(dash.today_change_pct)})"
     table.add_row("Today's change", today)
@@ -1693,6 +1703,107 @@ def sweep_renderables(result: SweepResult) -> list[RenderableType]:
     for row in result.rows:
         add(row)
     return [table, Text(result.caveat, style="dim")]
+
+
+def fidelity_import_renderables(plan: ImportPlan) -> list[RenderableType]:
+    """A Fidelity import: what it adds, the FEES (always, even when nothing is
+    new — they are the line a managed account most needs seen), then the
+    positions reconciliation."""
+    name = f"{plan.display_name} ({plan.account})" if plan.display_name else plan.account
+    mode = (
+        "[yellow]DRY RUN — nothing written[/yellow]" if plan.dry_run else "[green]imported[/green]"
+    )
+    span = f"{plan.first_date} → {plan.last_date}" if plan.first_date else "no rows"
+    out: list[RenderableType] = [
+        Text.from_markup(
+            f"[bold]Fidelity import → {name}[/bold]  {mode}"
+            + ("  [dim](new account)[/dim]" if plan.create_account else "")
+        ),
+        Text(
+            f"{plan.rows} rows, {span} · {plan.new_writes} new · "
+            f"{plan.already_imported} already imported"
+        ),
+    ]
+    if plan.counts:
+        counts = Table(title="New writes by kind", title_justify="left")
+        counts.add_column("Kind")
+        counts.add_column("Count", justify="right")
+        for kind, n in plan.counts.items():
+            counts.add_row(kind, str(n))
+        out.append(counts)
+
+    fees = Table(title="ADVISORY FEES in this file", title_justify="left")
+    fees.add_column("Date")
+    fees.add_column("Fee", justify="right")
+    fees.add_column("")
+    for fee in plan.fees:
+        fees.add_row(
+            f"{fee.on}",
+            f"[bold red]{fmt_money(fee.amount)}[/bold red]",
+            "already imported" if fee.already_imported else "new",
+        )
+    fees.add_section()
+    fees.add_row("Total", f"[bold red]{fmt_money(plan.fees_total)}[/bold red]", "")
+    out.append(fees if plan.fees else Text("No advisory fees in this file."))
+
+    opening = [w for w in plan.writes if w.line is None and not w.already_imported]
+    if opening:
+        table = Table(title="Opening balance (seeded the day before)", title_justify="left")
+        table.add_column("Kind")
+        table.add_column("Symbol")
+        table.add_column("Quantity", justify="right")
+        table.add_column("Price", justify="right")
+        table.add_column("Amount", justify="right")
+        for w in opening:
+            table.add_row(
+                w.kind,
+                w.symbol or "",
+                f"{w.quantity.normalize():f}" if w.quantity is not None else "",
+                fmt_money(w.price) if w.price is not None else "",
+                fmt_money(w.amount),
+            )
+        out.append(table)
+
+    check = plan.positions
+    if check is not None:
+        title = "Positions check" + (" (projected: DB + this plan)" if check.projected else "")
+        table = Table(title=title, title_justify="left")
+        table.add_column("Symbol")
+        table.add_column("trd", justify="right")
+        table.add_column("Fidelity", justify="right")
+        table.add_column("Diff", justify="right")
+        for r in check.rows:
+            bad = r.symbol in check.mismatched
+            diff = f"{r.diff.normalize():f}"
+            table.add_row(
+                r.symbol,
+                f"{r.trd.normalize():f}",
+                f"{r.fidelity.normalize():f}",
+                f"[red]{diff}[/red]" if bad else diff,
+            )
+        table.add_section()
+        cash = f"{fmt_money(check.cash_trd - check.cash_fidelity)}"
+        table.add_row(
+            "cash",
+            fmt_money(check.cash_trd),
+            fmt_money(check.cash_fidelity),
+            cash if check.cash_ok else f"[red]{cash}[/red]",
+        )
+        out.append(table)
+        out.append(
+            Text.from_markup(
+                "[green]positions match[/green]"
+                if check.ok
+                else "[red]positions DO NOT match — exit 1[/red]"
+            )
+        )
+        out.append(Text(check.note, style="dim"))
+    for warning in plan.warnings:
+        out.append(Text.from_markup(f"[yellow]warning:[/yellow] {warning}"))
+    if plan.refused:
+        out.append(Text("The real import would be REFUSED:", style="bold red"))
+        out.append(Text(plan.refused, style="red"))
+    return out
 
 
 def fidelity_renderables(result: FidelityResult) -> list[RenderableType]:
@@ -3109,10 +3220,18 @@ def cash_flows_table(flows: list[CashFlow], balance: CashBalance) -> RenderableT
     table.add_column("Amount", justify="right")
     table.add_column("Note")
     for f in flows:
-        table.add_row(f"{f.occurred_at:%Y-%m-%d}", f.kind.value, fmt_signed(f.signed), f.note or "")
+        label = CASH_FLOW_LABELS[f.kind]
+        if f.kind == CashFlowKind.FEE:
+            label = f"[bold red]{label}[/bold red]"
+        table.add_row(f"{f.occurred_at:%Y-%m-%d}", label, fmt_signed(f.signed), f.note or "")
     summary = Text.from_markup(
         f"deposits {fmt_money(balance.deposits)} · withdrawals {fmt_money(balance.withdrawals)}"
-        f" · bought {fmt_money(balance.bought)} · sold {fmt_money(balance.sold)}"
+        + (
+            f" · [bold red]advisory fees {fmt_money(balance.fees)}[/bold red]"
+            if balance.fees
+            else ""
+        )
+        + f" · bought {fmt_money(balance.bought)} · sold {fmt_money(balance.sold)}"
         f" · income {fmt_money(balance.income)}\n"
         f"[bold]cash {fmt_money(balance.cash)}[/bold]"
         + ("  [red]negative — a deposit is missing?[/red]" if balance.cash < 0 else "")

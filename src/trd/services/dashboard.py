@@ -11,7 +11,9 @@ import duckdb
 from pydantic import BaseModel
 
 from trd.models import AccountType, Income, Position
+from trd.models.alloc import CashFlow, CashFlowKind
 from trd.providers.base import MarketDataProvider
+from trd.repos.alloc import CashFlowRepo
 from trd.repos.income import IncomeRepo
 from trd.services.benchmark import BENCHMARK, same_dates_value
 from trd.services.cashflow import cash_flows
@@ -46,6 +48,9 @@ class Dashboard(BaseModel):
     # beside the price move rather than folded into it, because they are
     # different things — one you can still lose, the other is already banked.
     income: Decimal = Decimal(0)
+    # Advisory fees the accounts paid (SB-1418). Money out that is a cost of the
+    # account, so it comes off the total return — never left out of it.
+    fees: Decimal = Decimal(0)
 
     @property
     def price_return_pct(self) -> Decimal | None:
@@ -58,7 +63,7 @@ class Dashboard(BaseModel):
 
     @property
     def total_return_pct(self) -> Decimal | None:
-        """Price move plus the cash paid out — what the money actually earned.
+        """Price move plus the cash paid out, less fees — what the money earned.
 
         The distinction is small on a young book and large on an old one: on a
         dividend-paying core held for a decade, distributions are a substantial
@@ -67,7 +72,7 @@ class Dashboard(BaseModel):
         """
         if self.invested == 0:
             return None
-        return (self.gains + self.income) / self.invested * 100
+        return (self.gains + self.income - self.fees) / self.invested * 100
 
     @property
     def today_change_pct(self) -> Decimal | None:
@@ -123,6 +128,7 @@ class DashboardService:
         self.provider = provider
         self.portfolio = PortfolioService(conn, provider)
         self.income = IncomeRepo(conn)
+        self.cash_flows = CashFlowRepo(conn)
 
     def summary(self, include_simulation: bool = False) -> Dashboard:
         positions = self.portfolio.positions(include_simulation=include_simulation)
@@ -160,6 +166,7 @@ class DashboardService:
             benchmark_value=self._benchmark(include_simulation),
             spy_today_pct=self._spy_today(),
             income=self._income(include_simulation),
+            fees=sum((f.amount for f in self._scoped_fees(include_simulation)), Decimal(0)),
         )
 
     def _holdings(self, positions: list[Position], total_value: Decimal) -> list[Holding]:
@@ -187,6 +194,19 @@ class DashboardService:
         }
         return [i for i in self.income.list_all() if i.account_id in ids]
 
+    def _scoped_fees(self, include_simulation: bool) -> list[CashFlow]:
+        """Fees charged to the accounts this view covers, and no others."""
+        ids = {
+            a.id
+            for a in self.portfolio.accounts.list_all()
+            if include_simulation or a.type != AccountType.SIMULATION
+        }
+        return [
+            f
+            for f in self.cash_flows.list_all()
+            if f.account_id in ids and f.kind == CashFlowKind.FEE
+        ]
+
     def _income(self, include_simulation: bool) -> Decimal:
         return sum((i.amount for i in self._scoped_income(include_simulation)), Decimal(0))
 
@@ -202,7 +222,11 @@ class DashboardService:
             for txns in self.portfolio._scope_txns(None, include_simulation).values()
             for txn in txns
         ]
-        flows = cash_flows(txns, self._scoped_income(include_simulation))
+        flows = cash_flows(
+            txns,
+            self._scoped_income(include_simulation),
+            fees=self._scoped_fees(include_simulation),
+        )
         if not flows:
             return None
         flows.append((date.today(), float(value)))

@@ -107,6 +107,9 @@ class IncomeKind(StrEnum):
     DIVIDEND = "dividend"  # paid by a holding
     INTEREST = "interest"  # paid on cash
     CASH_SWEEP = "cash_sweep"  # a broker sweeping idle cash into a yield account
+    # A fund's realized-gain distribution (long- or short-term; the note says
+    # which). Cash paid by a holding like a dividend, and taxed differently.
+    CAPITAL_GAIN = "capital_gain"
 
 
 class Income(BaseModel):

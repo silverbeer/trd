@@ -18,7 +18,9 @@ from pydantic import BaseModel
 
 from trd.errors import TrdError, UnknownAccountError
 from trd.models import AccountType, Income, Transaction
+from trd.models.alloc import CashFlow
 from trd.repos import AccountRepo, InstrumentRepo, PriceRepo, TransactionRepo
+from trd.repos.alloc import CashFlowRepo
 from trd.repos.income import IncomeRepo
 from trd.services.cashflow import cash_flows
 from trd.services.fifo import fifo_position
@@ -76,6 +78,7 @@ class EquityCurveService:
         self.txns = TransactionRepo(conn)
         self.prices = PriceRepo(conn)
         self.income = IncomeRepo(conn)
+        self.cash_flows = CashFlowRepo(conn)
 
     def _scope(
         self, account_name: str | None, include_simulation: bool
@@ -233,6 +236,12 @@ class EquityCurveService:
                 start_value,
                 today,
                 end_value,
+                [
+                    f
+                    for f in self.cash_flows.list_all()
+                    if f.account_id not in skip
+                    and (account_id is None or f.account_id == account_id)
+                ],
             ),
             unpriced=sorted(set(unpriced)),
         )
@@ -245,6 +254,7 @@ class EquityCurveService:
         start_value: Decimal,
         end: date,
         end_value: Decimal,
+        fees: list[CashFlow] | None = None,
     ) -> float | None:
         """Money-weighted return over the window: opening holdings are an initial
         outflow, in-window trades and dividends are flows, closing value is the
@@ -254,10 +264,13 @@ class EquityCurveService:
         return. The curve's `value` line is still holdings at their close — cash
         paid out has left the positions — so the two answer different questions
         on purpose.
+
+        A fee (SB-1418) is money the owner paid: the curve's value never held
+        the cash it came out of, so it enters here as an outflow or not at all.
         """
         flows: list[tuple[date, float]] = []
         if start_value > 0:
             flows.append((window_start, -float(start_value)))
-        flows += cash_flows(sorted_txns, income, after=window_start, until=end)
+        flows += cash_flows(sorted_txns, income, after=window_start, until=end, fees=fees or ())
         flows.append((end, float(end_value)))
         return xirr(flows)

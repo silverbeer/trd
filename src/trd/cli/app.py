@@ -13,6 +13,7 @@ from pydantic import ValidationError
 from rich.console import Console
 from rich.live import Live
 from rich.table import Table
+from typer.core import TyperGroup
 
 from trd.build import build_version
 from trd.cli.render import (
@@ -49,6 +50,7 @@ from trd.cli.render import (
     equity_daily_table,
     exit_table,
     exit_whatif_renderables,
+    fidelity_import_renderables,
     fidelity_renderables,
     fill_ingest_renderables,
     fmt_money,
@@ -161,6 +163,7 @@ from trd.services.engine import (
 )
 from trd.services.exit_whatif import ExitWhatIfService, parse_variants
 from trd.services.fidelity import FidelityService, window_start
+from trd.services.fidelity_import import FidelityImportService
 from trd.services.indicators import seed_defaults
 from trd.services.live_report import live_report
 from trd.services.outcomes import OutcomeService
@@ -1451,7 +1454,7 @@ def income_add(
     ] = None,
     kind: Annotated[
         str,
-        typer.Option("--kind", "-k", help="dividend | interest | cash_sweep."),
+        typer.Option("--kind", "-k", help="dividend | interest | cash_sweep | capital_gain."),
     ] = "dividend",
     note: Annotated[str | None, typer.Option("--note", help="Anything worth remembering.")] = None,
 ) -> None:
@@ -1877,7 +1880,25 @@ def restore(
     )
 
 
-@app.command(name="import")
+class _ImportGroup(TyperGroup):
+    """`trd import FILE.csv` predates the broker importers: a first argument that
+    is not a subcommand is the generic CSV, so that spelling keeps working."""
+
+    def resolve_command(self, ctx, args):  # type: ignore[override]
+        if args and args[0] not in self.commands and not args[0].startswith("-"):
+            args = ["csv", *args]
+        return super().resolve_command(ctx, args)
+
+
+import_app = typer.Typer(
+    cls=_ImportGroup,
+    help="Bulk-load: a trd CSV of transactions (trd import FILE.csv), or a broker's export.",
+    no_args_is_help=True,
+)
+app.add_typer(import_app, name="import")
+
+
+@import_app.command("csv")
 def import_csv(
     path: Annotated[Path, typer.Argument(exists=True, readable=True, help="CSV of transactions.")],
 ) -> None:
@@ -1889,6 +1910,105 @@ def import_csv(
         _fail(exc)
         return
     console.print(f"Imported [bold]{count}[/bold] transactions from {path}.")
+
+
+@import_app.command("fidelity")
+def import_fidelity(
+    activity: Annotated[
+        Path,
+        typer.Argument(exists=True, readable=True, help="Fidelity 'Activity History' CSV export."),
+    ],
+    account: Annotated[
+        str,
+        typer.Option(
+            "--account",
+            "-a",
+            help="trd account it belongs to. Required: the export names no account.",
+        ),
+    ],
+    positions: Annotated[
+        Path | None,
+        typer.Option(
+            "--positions",
+            exists=True,
+            readable=True,
+            help="Fidelity 'Positions' CSV: reconcile every quantity and the cash against it.",
+        ),
+    ] = None,
+    create: Annotated[
+        str | None,
+        typer.Option(
+            "--create",
+            help="Create the (real) account if missing, with this display name, "
+            'e.g. "Managed IRA".',
+        ),
+    ] = None,
+    opening_from_positions: Annotated[
+        bool,
+        typer.Option(
+            "--opening-from-positions",
+            help="First import only: seed what was held before the first row "
+            "(Positions minus the activity) and the cash then, as of the day before.",
+        ),
+    ] = False,
+    opening_price: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--opening-price",
+            help="SYMBOL=PRICE for an opening lot the provider has no close for. Repeatable.",
+        ),
+    ] = None,
+    fidelity_account: Annotated[
+        str | None,
+        typer.Option(
+            "--fidelity-account",
+            help="Account Number or Name to read from a Positions file holding several.",
+        ),
+    ] = None,
+    dry_run: Annotated[
+        bool, typer.Option("--dry-run", help="Print the plan; write nothing.")
+    ] = False,
+    as_json: JsonOpt = False,
+) -> None:
+    """Import a Fidelity Activity History export (Fidelity has no retail API).
+
+    Buys/sells/reinvestments become trades, dividends and capital-gain
+    distributions income, core money-market dividends cash interest, and every
+    ADVISORY FEE a fee — money out that lowers the return, listed on every run.
+    Idempotent: re-importing the same or an overlapping file writes nothing twice.
+    Unknown actions refuse the whole file. Exit 1 when --positions disagrees.
+    """
+    _use_json(as_json)
+    prices: dict[str, Decimal] = {}
+    for spec in opening_price or []:
+        symbol, sep, value = spec.partition("=")
+        if not sep:
+            _fail(TrdError(f"--opening-price wants SYMBOL=PRICE, got {spec!r}"))
+        prices[symbol.strip().upper()] = _parse_decimal(value, f"opening price for {symbol}")
+    service = FidelityImportService(connect(get_settings().db_path), YFinanceProvider())
+    try:
+        plan = service.run(
+            activity,
+            account,
+            positions=positions,
+            create=create,
+            dry_run=dry_run,
+            opening_from_positions=opening_from_positions,
+            opening_prices=prices,
+            fidelity_account=fidelity_account,
+        )
+    except TrdError as exc:
+        _fail(exc)
+        return
+    finally:
+        service.conn.close()
+    if as_json:
+        _emit_json(plan)
+    else:
+        for renderable in fidelity_import_renderables(plan):
+            console.print(renderable)
+    if plan.refused or (plan.positions is not None and not plan.positions.ok):
+        raise typer.Exit(code=1)
 
 
 @engine_app.command("init")
@@ -4226,7 +4346,7 @@ def bot_check() -> None:
 # ------------------------------------------------------------- cash and alloc
 
 cash_app = typer.Typer(
-    help="Money moved into or out of an account: deposits and withdrawals.",
+    help="Money moved into or out of an account: deposits, withdrawals, advisory fees.",
     no_args_is_help=True,
 )
 app.add_typer(cash_app, name="cash")
@@ -4390,8 +4510,8 @@ def cash_ls(
     account: Annotated[str, typer.Option("--account", "-a", help="Account.")],
     as_json: JsonOpt = False,
 ) -> None:
-    """Every deposit and withdrawal, and the cash balance they imply:
-    deposits - withdrawals - buys + sells + income."""
+    """Every deposit, withdrawal and advisory fee, and the cash balance they
+    imply: deposits - withdrawals - fees - buys + sells + income."""
     _use_json(as_json)
     service = _cash_service()
     try:
