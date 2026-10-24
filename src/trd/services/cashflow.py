@@ -162,8 +162,8 @@ def plan_income_flows(
     """A plan's share of the income its holdings paid.
 
     A dividend lands on a *holding*, and an account's holding of a symbol is
-    rarely all the plan's. The sofi account holds SPY from two 2025 one-off buys
-    and from one plan contribution; crediting the plan with the whole SPY
+    rarely all the plan's. An account can hold SPY from earlier one-off buys and
+    from a plan contribution; crediting the plan with the whole SPY
     dividend would flatter it, and crediting none of it would understate it.
 
     So each payment is split by the plan's share of that symbol on the day it

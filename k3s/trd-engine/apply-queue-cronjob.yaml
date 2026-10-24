@@ -80,5 +80,5 @@ spec:
             # EDIT for the machine you deploy to — deploy-k3s.sh rewrites it.
             - name: trd-home
               hostPath:
-                path: /Users/tomdrake/.trd-engine
+                path: /Users/USERNAME/.trd-engine
                 type: Directory
