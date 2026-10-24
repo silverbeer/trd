@@ -18,7 +18,7 @@ from typer.testing import CliRunner
 from tests.conftest import FakeProvider
 from trd.cli.app import app
 from trd.errors import TrdError
-from trd.models import AccountType, Side
+from trd.models import AccountType, DailyBar, InstrumentInfo, Side
 from trd.models.alloc import CASH, AllocTarget, CashFlowKind, Milestone, MilestoneStatus
 from trd.repos import AccountRepo
 from trd.services.alloc import (
@@ -29,6 +29,7 @@ from trd.services.alloc import (
     progress,
     validate_plan,
 )
+from trd.services.alloc_report import AllocReportService
 from trd.services.backup import export_data, restore_data
 from trd.services.portfolio import PortfolioService
 
@@ -405,36 +406,277 @@ def test_cli_end_to_end(cli_env: FakeProvider) -> None:
 # ------------------------------------------------------------------ report
 
 
-def test_the_report_leads_with_money_and_names_its_returns(conn, provider, ira) -> None:
+def bars(*closes: tuple[date, str]) -> list[DailyBar]:
+    return [
+        DailyBar(date=on, open=D(c), high=D(c), low=D(c), close=D(c), adj_close=D(c))
+        for on, c in closes
+    ]
+
+
+def report_text(ira: AllocService, today: date) -> str:
     from trd.notify.messages import alloc_report_message
 
+    return alloc_report_message(AllocReportService(ira).report(IRA, today=today))
+
+
+def small_account(conn, provider, ira, ivv_price: str = "606") -> None:
+    """$10,000 deposited, $6,000 of it in IVV at 600, the rest cash."""
+    CashService(conn).record(IRA, CashFlowKind.DEPOSIT, D("10000"), datetime(2026, 10, 24))
+    provider.add_symbol("IVV", price=ivv_price, prev_close="600")
+    provider.add_bars("IVV", bars((START, "600"), (date(2026, 10, 27), ivv_price)))
+    buy(conn, provider, "IVV", "10", "600")
+
+
+def test_the_report_leads_with_the_day_and_names_its_returns(conn, provider, ira) -> None:
     CashService(conn).record(IRA, CashFlowKind.DEPOSIT, D("250930"), datetime(2026, 10, 24))
     ira.schedule(IRA, START, D(150930), D(25000), 3, 4)
     provider.add_symbol("IVV", price="606", prev_close="600")
+    provider.add_bars("IVV", bars((START, "600"), (date(2026, 10, 27), "606")))
     buy(conn, provider, "IVV", "100", "600")
-    view = ira.view(IRA, today=date(2026, 10, 27))
-    text = alloc_report_message(view, date(2026, 10, 27))
+    text = report_text(ira, date(2026, 10, 27))
     lines = text.splitlines()
-    assert lines[:2] == ["📈 Fidelity Rollover IRA Growth Plan", "Tuesday, Oct 27"]
-    assert lines[3] == "💰 $251,530.00"
-    assert lines[4] == "   Today: +$600.00 (+0.24%)"
-    assert lines[5] == "   Since funding: +$600.00 (+0.24%, simple)"
-    assert "   IVV $60,600 · 100% of funds · +1.0%" in lines
+    assert lines[0] == "📈 <b>Fidelity Rollover IRA Growth Plan</b> · Tue Oct 27"
+    assert lines[2] == "⚪ <b>FLAT DAY  +$600.00 (+0.24%)</b>"
+    assert (
+        "💰 Worth <b>$251,530.00</b> — up $600.00 (+0.24%) since funding on "
+        "$250,930 deposited (simple)"
+    ) in lines
+    assert "🟢 <b>IVV</b> +1.00% · today +1.00% · $60,600 (100%)" in lines
     assert "⚠️ Off target (±5 pts): IVV +52.6 (overweight)" in text
-    assert "🗓 Initial purchase: $150,930 OVERDUE by 1 day(s)" in text
+    assert "🗓 Initial purchase: $150,930 <b>OVERDUE</b> by 1 day(s)" in text
     assert "   $60,000 of $143,384 bought so far" in text
     assert "trd alloc propose" in text
+    assert "simple = gain ÷ money put in" in lines[-1]
+
+
+@pytest.mark.parametrize(
+    ("price", "head"),
+    [
+        ("615", "🚀 <b>GREAT DAY  +$150.00 (+1.50%)</b> 🚀"),
+        ("603", "🟢 <b>GOOD DAY  +$30.00 (+0.30%)</b>"),
+        ("600.1", "⚪ <b>FLAT DAY  +$1.00 (+0.01%)</b>"),
+        ("597.6", "⚪ <b>FLAT DAY  -$24.00 (-0.24%)</b>"),
+        ("597", "🔴 <b>DOWN DAY  -$30.00 (-0.30%)</b>"),
+        ("585", "🩸 <b>BAD DAY  -$150.00 (-1.50%)</b>"),
+    ],
+)
+def test_the_verdict_is_the_day_as_a_share_of_the_prior_close(
+    conn, provider, ira, price, head
+) -> None:
+    small_account(conn, provider, ira, ivv_price=price)  # prior-day worth is exactly $10,000
+    assert report_text(ira, date(2026, 10, 27)).splitlines()[2] == head
+
+
+@pytest.mark.parametrize(
+    ("spy", "line"),
+    [
+        ("100.2", "Your funds beat the S&P 500 by 0.3 pts today (+0.50% vs +0.20%)."),
+        ("100.45", "Your funds were in line with the S&P 500 today (+0.45%)."),
+        ("101", "Your funds trailed the S&P 500 by 0.5 pts today (+0.50% vs +1.00%)."),
+    ],
+)
+def test_the_funds_are_put_beside_the_s_and_p_today(conn, provider, ira, spy, line) -> None:
+    small_account(conn, provider, ira, ivv_price="603")  # the funds: +0.50% today
+    provider.add_symbol("SPY", price=spy, prev_close="100")
+    provider.add_bars("SPY", bars((START, "100"), (date(2026, 10, 27), spy)))
+    text = report_text(ira, date(2026, 10, 27))
+    assert text.splitlines()[3] == line
+
+
+def test_a_benchmark_buys_the_same_dollars_on_the_same_days(conn, provider, ira) -> None:
+    from trd.notify.messages import alloc_report_message, strip_html
+
+    small_account(conn, provider, ira)
+    provider.add_symbol("SPY", price="510", prev_close="500")
+    # The deposit lands on a Saturday: it buys at the next close, Monday's.
+    provider.add_bars("SPY", bars((START, "500"), (date(2026, 10, 27), "510")))
+    report = AllocReportService(ira).report(IRA, today=date(2026, 10, 27))
+    spy = next(b for b in report.benchmarks if b.symbol == "SPY")
+    assert spy.deposits is not None
+    assert (spy.deposits.base, spy.deposits.value) == (D(10000), D(10200))  # 20 sh x 510
+    assert (spy.invested.base, spy.invested.value) == (D(6000), D(6120))  # 12 sh x 510
+    assert spy.invested.return_pct == 2 and spy.invested.today_pct == 2
+    assert report.view.benchmark_value == D(10200)
+    text = strip_html(alloc_report_message(report))
+    assert f"{'S&P 500':<14} {'+2.00%':>7} {'+2.00%':>7}" in text
+    assert "Your funds are behind the S&P 500 by $60 since funding." in text  # 6,060 vs 6,120
+    assert "Whole account is behind every deposit put in the S&P 500 by $140." in text
+    assert "40% is cash by plan" in text
+
+
+def test_stored_bars_price_a_benchmark_without_the_provider(conn, provider, ira) -> None:
+    from trd.models import InstrumentType
+    from trd.repos import InstrumentRepo, PriceRepo
+
+    small_account(conn, provider, ira)
+    provider.add_symbol("SPY", price="510", prev_close="500")  # a quote, and no bars at all
+    spy = InstrumentRepo(conn).insert(
+        InstrumentInfo(symbol="SPY", name="SPY", type=InstrumentType.ETF)
+    )
+    PriceRepo(conn).upsert_daily(spy.id, bars((START, "500"), (date(2026, 10, 27), "510")))
+    report = AllocReportService(ira).report(IRA, today=date(2026, 10, 27))
+    assert report.benchmarks[0].invested.value == D(6120)
+
+
+def test_the_target_mix_buys_the_plan_s_own_weights(conn, provider, ira) -> None:
+    small_account(conn, provider, ira)
+    # Invested targets renormalised without CASH: 45/95, 20/95, 25/95, 5/95.
+    for symbol, then, now in [("IVV", "600", "606"), ("IXUS", "80", "80"), ("QQQM", "250", "250")]:
+        provider.add_symbol(symbol, price=now, prev_close=then)
+        provider.add_bars(symbol, bars((START, then)))
+    provider.add_symbol("SMH", price="300", prev_close="300")
+    provider.add_bars("SMH", bars((START, "300")))
+    report = AllocReportService(ira).report(IRA, today=date(2026, 10, 27))
+    mix = next(b for b in report.benchmarks if b.key == "target_mix")
+    assert mix.deposits is None
+    # 6,000 x 45/95 in IVV gained 1%; the other legs flat.
+    assert mix.invested.value is not None
+    assert abs(mix.invested.value - (D(6000) + D(6000) * 45 / 95 / 100)) < D("0.0001")
+
+
+def test_invested_money_is_scored_apart_from_the_cash(conn, provider, ira) -> None:
+    small_account(conn, provider, ira)
+    report = AllocReportService(ira).report(IRA, today=date(2026, 10, 27))
+    assert (report.invested.base, report.invested.value) == (D(6000), D(6060))
+    assert report.invested.return_pct == 1
+    assert (report.account.base, report.account.value) == (D(10000), D(10060))
+    assert report.account.return_pct == D("0.6")
+
+
+def test_the_leaderboard_is_best_since_bought_first(conn, provider, ira) -> None:
+    CashService(conn).record(IRA, CashFlowKind.DEPOSIT, D("10000"), datetime(2026, 10, 24))
+    provider.add_symbol("IVV", price="606", prev_close="606")
+    provider.add_symbol("QQQM", price="240", prev_close="250")
+    provider.add_symbol("SMH", price="330", prev_close="300")
+    for symbol, then, now in [("IVV", "606", "606"), ("QQQM", "250", "240"), ("SMH", "300", "330")]:
+        provider.add_bars(symbol, bars((START, then), (date(2026, 10, 27), now)))
+    buy(conn, provider, "IVV", "1", "600")
+    buy(conn, provider, "QQQM", "1", "250")
+    buy(conn, provider, "SMH", "1", "300")
+    report = AllocReportService(ira).report(IRA, today=date(2026, 10, 27))
+    assert [f.symbol for f in report.funds] == ["SMH", "IVV", "QQQM"]
+    text = report_text(ira, date(2026, 10, 27))
+    order = [
+        line.split("<b>")[1].split("</b>")[0] for line in text.splitlines() if " · today " in line
+    ]
+    assert order == ["SMH", "IVV", "QQQM"]
+    assert "🏆 SMH +10.00% today   😬 QQQM -4.00%" in text
+
+
+def test_a_benchmark_without_a_price_is_a_dash_not_a_zero(conn, provider, ira) -> None:
+    from trd.notify.messages import strip_html
+
+    small_account(conn, provider, ira)  # no SPY, QQQ, VT or AOR anywhere
+    report = AllocReportService(ira).report(IRA, today=date(2026, 10, 27))
+    assert all(b.invested.value is None for b in report.benchmarks)
+    text = strip_html(report_text(ira, date(2026, 10, 27)))
+    assert f"{'S&P 500':<14} {'—':>7} {'—':>7}" in text
+    assert "ahead of the S&P 500" not in text and "behind the S&P 500" not in text
+
+
+def test_the_report_escapes_what_it_did_not_write(conn, provider, ira) -> None:
+    from trd.notify.messages import strip_html
+
+    small_account(conn, provider, ira)
+    ira.edit(IRA, name="Growth & <Moonshot>")
+    text = report_text(ira, date(2026, 10, 27))
+    assert text.startswith("📈 <b>Growth &amp; &lt;Moonshot&gt;</b>")
+    assert "S&amp;P 500" in text and "S&P 500 " not in text.split("<pre>")[1].split("</pre>")[0]
+    assert strip_html(text).startswith("📈 Growth & <Moonshot> · Tue Oct 27")
+
+
+def test_week_and_month_appear_only_once_the_account_is_that_old() -> None:
+    from trd.services.alloc_report import period_starts
+
+    today = date(2026, 10, 27)
+    assert period_starts(None, today) == {}
+    assert period_starts(date(2026, 10, 24), today) == {}
+    assert period_starts(date(2026, 10, 20), today) == {"1W": date(2026, 10, 20)}
+    assert period_starts(date(2026, 9, 27), today) == {
+        "1W": date(2026, 10, 20),
+        "1M": date(2026, 9, 27),
+    }
+
+
+def test_a_young_account_reports_no_week(conn, provider, ira) -> None:
+    small_account(conn, provider, ira)
+    report = AllocReportService(ira).report(IRA, today=date(2026, 10, 27))
+    assert report.funded_on == date(2026, 10, 24)
+    assert report.periods == [] and report.account.periods == {}
+
+
+def test_a_week_old_account_scores_the_week(conn, provider, ira) -> None:
+    CashService(conn).record(IRA, CashFlowKind.DEPOSIT, D("10000"), datetime(2026, 10, 1))
+    provider.add_symbol("IVV", price="606", prev_close="606")
+    provider.add_bars("IVV", bars((date(2026, 10, 1), "590"), (date(2026, 10, 20), "600")))
+    provider.add_symbol("SPY", price="510", prev_close="510")
+    provider.add_bars("SPY", bars((date(2026, 10, 1), "490"), (date(2026, 10, 20), "500")))
+    buy(conn, provider, "IVV", "10", "590", on=date(2026, 10, 1))
+    report = AllocReportService(ira).report(IRA, today=date(2026, 10, 27))
+    assert report.periods == ["1W"]
+    assert report.invested.periods["1W"] == 1  # 6,000 at the 10/20 close → 6,060
+    # 5,900 bought, 4,100 cash: 10,100 at the 10/20 close → 10,160
+    assert report.account.periods["1W"] == D(60) / D(10100) * 100
+    spy_week = report.benchmarks[0].invested.periods["1W"]
+    assert spy_week is not None and round(spy_week, 9) == 2  # SPY 500 → 510
+
+
+def test_today_is_measured_from_the_previous_session_close_not_the_quote(
+    conn, provider, ira
+) -> None:
+    """yfinance's prev_close is not always the previous session's close: AOR's
+    read 69.00 on 2026-10-23 against a real 68.36, and the report showed -1.25%
+    for a -0.32% day. The stored bar wins, for the funds and the benchmarks alike."""
+    from trd.models import InstrumentType
+    from trd.repos import InstrumentRepo, PriceRepo
+
+    CashService(conn).record(IRA, CashFlowKind.DEPOSIT, D("10000"), datetime(2026, 10, 24))
+    provider.add_symbol("IVV", price="606", prev_close="610")  # the quote says -0.66%
+    provider.add_symbol("SPY", price="510", prev_close="520")  # the quote says -1.92%
+    buy(conn, provider, "IVV", "10", "600")
+    repo, prices = InstrumentRepo(conn), PriceRepo(conn)
+    spy = repo.insert(InstrumentInfo(symbol="SPY", name="SPY", type=InstrumentType.ETF))
+    ivv = repo.get_by_symbol("IVV")
+    assert ivv is not None
+    tue = date(2026, 10, 27)
+    prices.upsert_daily(ivv.id, bars((START, "600"), (tue, "606")))
+    prices.upsert_daily(spy.id, bars((START, "500"), (tue, "510")))
+    report = AllocReportService(ira).report(IRA, today=tue)
+    assert report.view.day_change == D(60)  # 10 x (606 - 600), not 10 x (606 - 610)
+    assert report.funds[0].today_pct == 1
+    assert report.invested.today_pct == 1
+    assert report.benchmarks[0].invested.today_pct == 2
+
+
+def test_an_unknown_previous_close_is_unknown_not_the_quote_s(conn, provider, ira) -> None:
+    CashService(conn).record(IRA, CashFlowKind.DEPOSIT, D("10000"), datetime(2026, 10, 24))
+    provider.add_symbol("IVV", price="606", prev_close="600")  # a quote, and no bars
+    buy(conn, provider, "IVV", "10", "600")
+    report = AllocReportService(ira).report(IRA, today=date(2026, 10, 27))
+    assert report.view.day_change is None and report.account.today_pct is None
+    assert report.funds[0].today_pct is None
+    text = report_text(ira, date(2026, 10, 27))
+    assert "Can't score today" in text and "· today — ·" in text
+
+
+def test_a_weekend_report_reads_friday_against_thursday() -> None:
+    from trd.services.alloc_report import Closes
+
+    series = Closes({date(2026, 10, 22): D("68.36"), date(2026, 10, 23): D("68.14")})
+    assert series.previous_session_close(date(2026, 10, 24)) == D("68.36")  # Saturday
+    assert series.previous_session_close(date(2026, 10, 23)) == D("68.36")
+    # Bars that stop a week back are stale: no "previous session" from them.
+    assert series.previous_session_close(date(2026, 11, 2)) is None
 
 
 def test_the_report_will_not_print_a_value_built_on_a_missing_price(conn, provider, ira) -> None:
-    from trd.notify.messages import alloc_report_message
-
     CashService(conn).record(IRA, CashFlowKind.DEPOSIT, D("10000"), datetime(2026, 10, 24))
     buy(conn, provider, "IVV", "1", "600")
     del provider.quotes["IVV"]
-    text = alloc_report_message(ira.view(IRA), date(2026, 10, 27))
-    assert "💰 Worth: unknown — no price for IVV" in text
-    assert "Since funding" not in text
+    text = report_text(ira, date(2026, 10, 27))
+    assert "⚠️ no price for IVV — worth unknown" in text
+    assert "💰 Worth unknown" in text
+    assert "since funding" not in text and "vs the market" not in text
 
 
 def test_the_report_reads_without_writing(cli_env: FakeProvider, monkeypatch) -> None:
@@ -467,7 +709,8 @@ def test_the_report_reads_without_writing(cli_env: FakeProvider, monkeypatch) ->
     sent: list[str] = []
 
     class Fake:
-        def send(self, text: str) -> None:
+        def send(self, text: str, html: bool = False) -> None:
+            assert html  # the message is Telegram HTML
             sent.append(text)
 
     monkeypatch.setattr(cli, "alert_notifier_from_env", lambda **_: Fake())
@@ -475,11 +718,14 @@ def test_the_report_reads_without_writing(cli_env: FakeProvider, monkeypatch) ->
     assert result.exit_code == 0, result.output
     payload = json.loads(result.output)
     assert payload["sent"] is True and sent == [payload["message"]]
+    assert {"view", "report"} <= payload.keys() and "benchmarks" in payload["report"]
     assert snapshots() == before
 
     monkeypatch.setattr(cli, "alert_notifier_from_env", lambda **_: None)
     refused = runner.invoke(app, ["alloc", "report", "--notify"])
     assert refused.exit_code == 1
+    plain = runner.invoke(app, ["alloc", "report"])
+    assert plain.exit_code == 0 and "<b>" not in plain.output and "vs the market" in plain.output
 
 
 # ------------------------------------------------------------------ paced (SB-1388)
@@ -563,9 +809,10 @@ def test_the_report_shows_the_moonshot_and_reserved_cash(conn, provider, moonsho
     from trd.notify.messages import alloc_report_message
 
     buy(conn, provider, "SPCX", "2", "150")
-    text = alloc_report_message(moonshot.view(IRA, today=START), START)
-    assert "   $7,228 set aside for SPCX" in text
-    assert "   🚀 SPCX $300 · +0.0%" in text
+    provider.add_bars("SPCX", bars((date(2026, 10, 23), "150"), (START, "150")))
+    text = alloc_report_message(AllocReportService(moonshot).report(IRA, today=START))
+    assert " · $7,228 set aside for SPCX" in text
+    assert "🚀 <b>SPCX</b> +0.00% · today +0.00% · $300 (100%)" in text
     assert "🚀 SPCX: 0 of 24 buys done · buy $13.66 now" in text
 
 
@@ -573,9 +820,9 @@ def test_a_few_cents_short_of_an_instalment_is_on_schedule(conn, provider, moons
     from trd.notify.messages import alloc_report_message
 
     buy(conn, provider, "SPCX", "2.0910", "150")  # 313.65 of a 313.66 instalment
-    view = moonshot.view(IRA, today=START)
-    assert view.paced[0].behind == 0
-    text = alloc_report_message(view, START)
+    report = AllocReportService(moonshot).report(IRA, today=START)
+    assert report.view.paced[0].behind == 0
+    text = alloc_report_message(report)
     assert "🚀 SPCX: 1 of 24 buys done · next $313.66 on Nov 26" in text
 
 
