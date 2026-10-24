@@ -13,7 +13,7 @@
 # private chat, never the channel.
 set -u
 ENV_FILE="${RH_ENV_FILE:-$HOME/.config/trd/live.env}"
-export TRD_HOME="${TRD_HOME:-$HOME/iCloud/trd}"
+export TRD_HOME="${TRD_HOME:-$HOME/.trd-portfolio}"
 # The pinned build (deploy/live-runner.sh install), so the report changes when
 # you re-install, not when the checkout moves.
 TRD="${TRD_BIN:-$HOME/.trd-runner/venv/bin/trd}"

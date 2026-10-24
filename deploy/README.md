@@ -1,3 +1,7 @@
+> **2026-10-24: real account data stays on the Mac mini.** The portfolio DB lives in
+> `~/.trd-portfolio`, not iCloud; the engine publisher is off by default. Sections
+> below that describe iCloud are historical.
+
 # Scheduled jobs (mac mini)
 
 Three launchd agents live here:
