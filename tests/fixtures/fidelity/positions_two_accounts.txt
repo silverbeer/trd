@@ -1,0 +1,10 @@
+﻿Account Number,Account Name,Symbol,Description,Quantity,Last Price,Last Price Change,Current Value,Today's Gain/Loss Dollar,Today's Gain/Loss Percent,Total Gain/Loss Dollar,Total Gain/Loss Percent,Percent Of Account,Cost Basis Total,Average Cost Basis,Type
+TEST-ACCT-1,MANAGED IRA,SPAXX**,HELD IN MONEY MARKET,,,,$2279.45,,,,,22.00%,,,Cash,
+TEST-ACCT-1,MANAGED IRA,FXAIX,FIDELITY 500 INDEX FUND,20.2,$270.00,,$5454.00,,,,,52.00%,,,Cash,
+TEST-ACCT-1,MANAGED IRA,FXNAX,FIDELITY US BOND INDEX FUND,400.9,$10.10,,$4049.09,,,,,26.00%,,,Cash,
+TEST-ACCT-2,OTHER IRA,FXAIX,FIDELITY 500 INDEX FUND,3,$270.00,,$810.00,,,,,90.00%,,,Cash,
+TEST-ACCT-2,OTHER IRA,FZFXX**,HELD IN MONEY MARKET,,,,$90.00,,,,,10.00%,,,Cash,
+
+"SYNTHETIC TEST FIXTURE in the documented layout of a Fidelity Positions export."
+
+"Date downloaded 09/03/2025 10:05 AM ET"

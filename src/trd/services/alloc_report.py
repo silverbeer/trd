@@ -33,7 +33,7 @@ from trd.models import Quote, Transaction
 from trd.models.alloc import AllocReport, AllocView, BenchmarkScore, FundScore, Score
 from trd.services.alloc import AllocService, _invested_targets, add_months
 from trd.services.benchmark import same_dates_shares
-from trd.services.cashflow import trade_amounts
+from trd.services.cashflow import external_flows, trade_amounts
 from trd.services.fifo import fifo_position
 
 # (symbol, label, short name in the message). Broad enough to answer "compared with
@@ -278,9 +278,9 @@ class AllocReportService:
         today = today or date.today()
         view = self.alloc.view(account_name, today)
         plan = view.plan
-        deposits: Flows = [
-            (f.occurred_at.date(), f.signed) for f in self.alloc.cash.flows_for(account_name)
-        ]
+        # The owner's money only: a fee lowered the account's worth and must stay
+        # inside the return, not be handed back as if withdrawn.
+        deposits: Flows = external_flows(self.alloc.cash.flows_for(account_name))
         txns = self.alloc.cash.txns.list_chronological(plan.account_id)
         invested_flows = trade_amounts(txns)
         funded_on = min((on for on, _ in deposits), default=None)

@@ -54,6 +54,7 @@ from trd.repos import AccountRepo, PriceRepo, TransactionRepo
 from trd.repos.alloc import AllocRepo, CashFlowRepo
 from trd.repos.income import IncomeRepo
 from trd.services.benchmark import BENCHMARK, same_dates_shares
+from trd.services.cashflow import external_flows
 from trd.services.portfolio import PortfolioService
 from trd.services.xirr import xirr
 
@@ -71,7 +72,7 @@ CASH_INTEREST_KINDS = (IncomeKind.INTEREST, IncomeKind.CASH_SWEEP)
 
 
 class CashService:
-    """Deposits and withdrawals, and the cash balance they imply."""
+    """Deposits, withdrawals and fees, and the cash balance they imply."""
 
     def __init__(self, conn: duckdb.DuckDBPyConnection) -> None:
         self.conn = conn
@@ -94,7 +95,7 @@ class CashService:
         occurred_at: datetime,
         note: str | None = None,
     ) -> CashFlow:
-        """One deposit or withdrawal. The amount is positive; the kind says which
+        """One deposit, withdrawal or fee. The amount is positive; the kind says which
         way it moved — a negative deposit would read as a withdrawal and quietly
         flip every return computed from it."""
         if amount <= 0:
@@ -124,6 +125,7 @@ class CashService:
             bought=bought,
             sold=sold,
             income=self.income.total(account_id),
+            fees=sum((f.amount for f in flows if f.kind == CashFlowKind.FEE), Decimal(0)),
         )
 
 
@@ -391,9 +393,12 @@ class AllocService:
                 Decimal(0),
             ),
         )
-        if view.total_value is not None and flows:
+        external = external_flows(flows)
+        if view.total_value is not None and external:
+            # Owner's flows only: a fee has already lowered total_value, and
+            # counting it again as money handed back would excuse it.
             view.xirr = xirr(
-                [(f.occurred_at.date(), -float(f.signed)) for f in flows]
+                [(on, -float(amount)) for on, amount in external]
                 + [(today, float(view.total_value))]
             )
         return view
@@ -418,12 +423,14 @@ class AllocService:
 
     def _benchmark(self, flows: list[CashFlow]) -> Decimal | None:
         """What the same deposits would be worth had each bought SPY on its day.
-        Withdrawals sell SPY at that day's close. None when a close is missing."""
+        Withdrawals sell SPY at that day's close; a fee does not (SPY charges
+        none). None when a close is missing."""
         instrument = self.portfolio.instruments.get_by_symbol(BENCHMARK)
-        if instrument is None or not flows:
+        external = external_flows(flows)
+        if instrument is None or not external:
             return None
         shares = same_dates_shares(
-            [(f.occurred_at.date(), f.signed) for f in flows],
+            external,
             lambda on: self.prices.close_on_or_after(instrument.id, on),
         )
         latest = self.prices.latest_close(instrument.id)

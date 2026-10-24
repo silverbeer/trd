@@ -21,6 +21,20 @@ PACED_TOLERANCE = Decimal(1)
 class CashFlowKind(StrEnum):
     DEPOSIT = "deposit"
     WITHDRAWAL = "withdrawal"
+    # An advisory/management fee the account paid (SB-1418). Money out, like a
+    # withdrawal, but NOT the owner's money moving: it is a cost of the account,
+    # so it lowers the return. A withdrawal is excused from performance (the
+    # owner took it); a fee must never be.
+    FEE = "fee"
+
+
+# What `trd cash ls` calls each kind. A fee is spelled out: it is the line the
+# owner most needs to see and least expects.
+CASH_FLOW_LABELS = {
+    CashFlowKind.DEPOSIT: "deposit",
+    CashFlowKind.WITHDRAWAL: "withdrawal",
+    CashFlowKind.FEE: "advisory fee",
+}
 
 
 class CashFlow(BaseModel):
@@ -35,7 +49,15 @@ class CashFlow(BaseModel):
 
     @property
     def signed(self) -> Decimal:
+        """The change in the account's CASH: a deposit adds, a withdrawal and a
+        fee take away. Not a performance flow — see `cashflow.external_flows`."""
         return self.amount if self.kind == CashFlowKind.DEPOSIT else -self.amount
+
+    @property
+    def external(self) -> bool:
+        """Whether the owner moved this money. Deposits and withdrawals are; a fee
+        is not, which is what keeps it inside the return."""
+        return self.kind in (CashFlowKind.DEPOSIT, CashFlowKind.WITHDRAWAL)
 
 
 class CashBalance(BaseModel):
@@ -47,6 +69,7 @@ class CashBalance(BaseModel):
     bought: Decimal  # cost + fees of every buy
     sold: Decimal  # proceeds - fees of every sell
     income: Decimal
+    fees: Decimal = Decimal(0)  # advisory fees charged to the account (money out)
 
     @computed_field  # type: ignore[prop-decorator]
     @property
@@ -56,7 +79,7 @@ class CashBalance(BaseModel):
     @computed_field  # type: ignore[prop-decorator]
     @property
     def cash(self) -> Decimal:
-        return self.deposits - self.withdrawals - self.bought + self.sold + self.income
+        return self.deposits - self.withdrawals - self.fees - self.bought + self.sold + self.income
 
 
 class MilestoneStatus(StrEnum):

@@ -15,6 +15,16 @@ money arriving is positive, and a dividend is money arriving — the same sign a
 a sale, without the share count changing. That is the whole of it, and it is why
 a price-only return understates the truth rather than merely differing from it.
 
+**What a fee does to a return.** An advisory fee is money the ACCOUNT paid, not
+money the owner took out. A withdrawal is excused from performance — the owner
+has the cash — so it is an inflow in an XIRR series and is added back before a
+gain is measured. A fee booked the same way would be excused too, and the
+managed account would look exactly as good as an unmanaged one charging
+nothing. So a fee is never an external flow: in a cash-based return the
+terminal value is simply lower by it (`external_flows` leaves it out), and in a
+trade-based return, where account cash is not part of the value, it is money
+the owner paid (`fee_flows`, negative, like a buy that bought nothing).
+
 The terminal value is NOT added here. Each caller closes its own series: the
 dashboard with the portfolio's market value today, the equity curve with the end
 of its window, a plan with what the plan is worth. Folding that in would need
@@ -26,6 +36,7 @@ from datetime import date
 from decimal import Decimal
 
 from trd.models import Income, Transaction
+from trd.models.alloc import CashFlow, CashFlowKind
 from trd.services.fifo import fifo_position
 
 
@@ -85,18 +96,60 @@ def income_flows(
     return flows
 
 
+def fee_flows(
+    flows: Iterable[CashFlow],
+    after: date | None = None,
+    until: date | None = None,
+) -> list[tuple[date, float]]:
+    """Fees the account paid, as money out of the owner's pocket — negative.
+
+    For the TRADE-based returns (dashboard, equity curve), whose value is the
+    holdings alone: the fee left the account's cash, which those views never
+    see, so without this line it would vanish from the return altogether.
+    Deposits and withdrawals in the same iterable are ignored.
+    """
+    out: list[tuple[date, float]] = []
+    for flow in flows:
+        if flow.kind != CashFlowKind.FEE:
+            continue
+        on = flow.occurred_at.date()
+        if after is not None and on <= after:
+            continue
+        if until is not None and on > until:
+            continue
+        out.append((on, -float(flow.amount)))
+    return out
+
+
+def external_flows(flows: Iterable[CashFlow]) -> list[tuple[date, Decimal]]:
+    """Money the OWNER moved: a deposit positive, a withdrawal negative, oldest
+    first as given. Fees are left out on purpose — see the module docstring.
+
+    For the CASH-based returns (an allocation plan's XIRR, its same-deposits
+    benchmark, the daily report), whose value is holdings plus cash: the fee has
+    already lowered the cash, so leaving it out of the flows is exactly what
+    makes it lower the return.
+    """
+    return [(f.occurred_at.date(), f.signed) for f in flows if f.external]
+
+
 def cash_flows(
     txns: Iterable[Transaction],
     income: Iterable[Income] = (),
     after: date | None = None,
     until: date | None = None,
+    fees: Iterable[CashFlow] = (),
 ) -> list[tuple[date, float]]:
     """Both sides of the ledger, oldest first.
 
     Sorted because XIRR is solved over a series and a caller appending its
     terminal value should not have to think about ordering.
     """
-    flows = trade_flows(txns, after, until) + income_flows(income, after, until)
+    flows = (
+        trade_flows(txns, after, until)
+        + income_flows(income, after, until)
+        + fee_flows(fees, after, until)
+    )
     flows.sort(key=lambda f: f[0])
     return flows
 
