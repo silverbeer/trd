@@ -30,7 +30,7 @@ from decimal import ROUND_DOWN, ROUND_HALF_UP, Decimal
 import duckdb
 
 from trd.errors import TrdError, UnknownAccountError
-from trd.models import Position, Side
+from trd.models import IncomeKind, Position, Side
 from trd.models.alloc import (
     CASH,
     AllocEvent,
@@ -40,6 +40,7 @@ from trd.models.alloc import (
     CashBalance,
     CashFlow,
     CashFlowKind,
+    CashYield,
     Milestone,
     MilestoneProgress,
     MilestoneStatus,
@@ -63,6 +64,10 @@ CENT = Decimal("0.01")
 # "partial" for ever.
 COMPLETE_TOLERANCE = Decimal("0.005")
 DEFAULT_DRIFT_THRESHOLD = Decimal(5)
+# A stated cash yield above this is a typo (35 for 3.5), not a money-market rate.
+MAX_CASH_YIELD_PCT = Decimal(20)
+# Income of these kinds is interest paid on the cash, not on a holding.
+CASH_INTEREST_KINDS = (IncomeKind.INTEREST, IncomeKind.CASH_SWEEP)
 
 
 class CashService:
@@ -166,6 +171,7 @@ class AllocService:
             note=row[7],
             targets=self.repo.targets(row[0]),
             milestones=self.repo.milestones(row[0]),
+            cash_yield=self.repo.cash_yield(row[0]),
         )
 
     def default_account(self) -> str:
@@ -188,17 +194,27 @@ class AllocService:
         drift_threshold: Decimal = DEFAULT_DRIFT_THRESHOLD,
         note: str | None = None,
         now: datetime | None = None,
+        cash_yield: CashYield | None = None,
     ) -> AllocPlan:
         account_id = self._account_id(account_name)
         if self.repo.plan_row(account_id) is not None:
             raise TrdError(f"'{account_name}' already has a plan. Change it with 'trd alloc edit'.")
         validate_plan(capital, targets, drift_threshold)
+        if cash_yield is not None:
+            validate_cash_yield(cash_yield)
         at = now or datetime.now()
         plan_id = self.repo.create_plan(
             account_id, name, capital, account_kind, brokerage, drift_threshold, at, note
         )
         self.repo.replace_targets(plan_id, targets)
-        self.repo.log(plan_id, at, f"created: capital {capital}, targets {_targets_text(targets)}")
+        if cash_yield is not None:
+            self.repo.set_cash_yield(plan_id, cash_yield)
+        self.repo.log(
+            plan_id,
+            at,
+            f"created: capital {capital}, targets {_targets_text(targets)}"
+            + (f", cash {_cash_yield_text(cash_yield)}" if cash_yield else ""),
+        )
         return self.get(account_name)
 
     def edit(
@@ -210,8 +226,14 @@ class AllocService:
         name: str | None = None,
         note: str | None = None,
         now: datetime | None = None,
+        cash_yield: CashYield | None = None,
+        clear_cash_yield: bool = False,
     ) -> AllocPlan:
         plan = self.get(account_name)
+        if cash_yield is not None and clear_cash_yield:
+            raise TrdError("Pass a cash yield or --no-cash-yield, not both.")
+        if cash_yield is not None:
+            validate_cash_yield(cash_yield)
         new_targets = targets if targets is not None else plan.targets
         validate_plan(
             capital if capital is not None else plan.capital,
@@ -229,9 +251,17 @@ class AllocService:
             changes.append(f"drift threshold {plan.drift_threshold} → {drift_threshold}")
         if name is not None and name != plan.name:
             changes.append(f"name → {name}")
+        old_yield = _cash_yield_text(plan.cash_yield) if plan.cash_yield else "none"
+        if cash_yield is not None and cash_yield != plan.cash_yield:
+            self.repo.set_cash_yield(plan.id, cash_yield)
+            changes.append(f"cash yield {old_yield} → {_cash_yield_text(cash_yield)}")
+        if clear_cash_yield and plan.cash_yield is not None:
+            self.repo.clear_cash_yield(plan.id)
+            changes.append(f"cash yield {old_yield} → none")
         if not changes and note is None:
             raise TrdError(
-                "Nothing to change — pass --target, --capital, --drift, --name or --note."
+                "Nothing to change — pass --target, --capital, --drift, --name, --note "
+                "or a cash yield."
             )
         self.repo.update_plan(
             plan.id, capital=capital, drift_threshold=drift_threshold, name=name, note=note
@@ -352,6 +382,14 @@ class AllocService:
             benchmark_value=self._benchmark(flows),
             day_change=_day_change(positions),
             paced=paced,
+            cash_interest_earned=sum(
+                (
+                    i.amount
+                    for i in self.cash.income.list_all(plan.account_id)
+                    if i.kind in CASH_INTEREST_KINDS
+                ),
+                Decimal(0),
+            ),
         )
         if view.total_value is not None and flows:
             view.xirr = xirr(
@@ -454,6 +492,41 @@ def validate_plan(capital: Decimal, targets: list[AllocTarget], drift: Decimal) 
         )
     if not 0 < drift < 100:
         raise TrdError(f"--drift is in percentage points and must be 0-100, got {drift}.")
+
+
+def validate_cash_yield(cash_yield: CashYield) -> None:
+    if not cash_yield.fund.strip():
+        raise TrdError("--cash-fund needs a ticker, e.g. SPAXX.")
+    if not 0 <= cash_yield.yield_pct <= MAX_CASH_YIELD_PCT:
+        raise TrdError(
+            f"--cash-yield is an annual percent and must be 0-{MAX_CASH_YIELD_PCT}, "
+            f"got {cash_yield.yield_pct}."
+        )
+
+
+def resolve_cash_yield(
+    current: CashYield | None,
+    fund: str | None,
+    yield_pct: Decimal | None,
+    as_of: date | None,
+    today: date,
+) -> CashYield | None:
+    """The cash yield a set/edit asks for, filling what was not passed from the
+    one already stated. A new rate is dated today unless told otherwise — the
+    date is what the report reads to call a rate stale. None = nothing asked."""
+    if fund is None and yield_pct is None and as_of is None:
+        return None
+    fund = fund if fund is not None else current.fund if current else None
+    pct = yield_pct if yield_pct is not None else current.yield_pct if current else None
+    if fund is None or pct is None:
+        raise TrdError("A cash yield needs both --cash-fund TICKER and --cash-yield PCT.")
+    if as_of is None:
+        as_of = current.as_of if current is not None and yield_pct is None else today
+    return CashYield(fund=fund.strip().upper(), yield_pct=pct, as_of=as_of)
+
+
+def _cash_yield_text(cash_yield: CashYield) -> str:
+    return f"{cash_yield.fund} at {cash_yield.yield_pct.normalize():f}% (as of {cash_yield.as_of})"
 
 
 def _targets_text(targets: list[AllocTarget]) -> str:

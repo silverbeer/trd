@@ -18,8 +18,15 @@ from typer.testing import CliRunner
 from tests.conftest import FakeProvider
 from trd.cli.app import app
 from trd.errors import TrdError
-from trd.models import AccountType, DailyBar, InstrumentInfo, Side
-from trd.models.alloc import CASH, AllocTarget, CashFlowKind, Milestone, MilestoneStatus
+from trd.models import AccountType, DailyBar, IncomeKind, InstrumentInfo, Side
+from trd.models.alloc import (
+    CASH,
+    AllocTarget,
+    CashFlowKind,
+    CashYield,
+    Milestone,
+    MilestoneStatus,
+)
 from trd.repos import AccountRepo
 from trd.services.alloc import (
     AllocService,
@@ -27,6 +34,7 @@ from trd.services.alloc import (
     add_months,
     milestone_dates,
     progress,
+    resolve_cash_yield,
     validate_plan,
 )
 from trd.services.alloc_report import AllocReportService
@@ -37,6 +45,7 @@ runner = CliRunner()
 D = Decimal
 IRA = "***REMOVED***"
 START = date(2026, 10, 26)
+TODAY = date(2026, 10, 27)
 TARGETS = [
     AllocTarget(symbol="IVV", weight=D(45)),
     AllocTarget(symbol="IXUS", weight=D(20)),
@@ -308,7 +317,7 @@ def test_deposits_and_the_plan_survive_backup_and_restore(conn, provider, ira, t
     ira.schedule(IRA, START, D(150930), D(25000), 3, 4)
     ira.cancel(IRA, 4)
     data = json.loads(json.dumps(export_data(conn)))
-    assert data["version"] == 9
+    assert data["version"] == 10
 
     from trd.db.connection import connect
 
@@ -468,19 +477,61 @@ def test_the_verdict_is_the_day_as_a_share_of_the_prior_close(
 
 
 @pytest.mark.parametrize(
-    ("spy", "line"),
+    ("spy", "today", "verdict"),
     [
-        ("100.2", "Your funds beat the S&P 500 by 0.3 pts today (+0.50% vs +0.20%)."),
-        ("100.45", "Your funds were in line with the S&P 500 today (+0.45%)."),
-        ("101", "Your funds trailed the S&P 500 by 0.5 pts today (+0.50% vs +1.00%)."),
+        ("100.2", "+0.20%", "✅ 0.30 pts better than the S&amp;P"),
+        ("100.45", "+0.45%", "\N{HEAVY MINUS SIGN} in line with the S&amp;P"),
+        ("101", "+1.00%", "⚠️ 0.50 pts worse than the S&amp;P"),
     ],
 )
-def test_the_funds_are_put_beside_the_s_and_p_today(conn, provider, ira, spy, line) -> None:
+def test_the_funds_are_put_beside_the_s_and_p_today(
+    conn, provider, ira, spy, today, verdict
+) -> None:
     small_account(conn, provider, ira, ivv_price="603")  # the funds: +0.50% today
     provider.add_symbol("SPY", price=spy, prev_close="100")
     provider.add_bars("SPY", bars((START, "100"), (date(2026, 10, 27), spy)))
-    text = report_text(ira, date(2026, 10, 27))
-    assert text.splitlines()[3] == line
+    lines = report_text(ira, date(2026, 10, 27)).splitlines()
+    head = lines.index("📏 <b>How you compare</b>")
+    assert lines[head + 1 : head + 3] == [
+        f"Today: your funds +0.50% vs S&amp;P 500 {today}",
+        verdict,
+    ]
+    # Said once: the verdict at the top no longer repeats the comparison.
+    assert lines[3] == ""
+    assert not any("Your funds beat" in line or "trailed" in line for line in lines)
+
+
+def test_how_you_compare_since_the_first_deposit_and_other_markets(conn, provider, ira) -> None:
+    small_account(conn, provider, ira, ivv_price="603")  # 6,000 → 6,030
+    for symbol, now in [("SPY", "100.5"), ("QQQ", "99"), ("VT", "100")]:
+        provider.add_symbol(symbol, price=now, prev_close="100")
+        provider.add_bars(symbol, bars((START, "100"), (date(2026, 10, 27), now)))
+    lines = report_text(ira, date(2026, 10, 27)).splitlines()
+    head = lines.index("📏 <b>How you compare</b>")
+    assert lines[head + 1 : head + 9] == [
+        "Today: your funds +0.50% vs S&amp;P 500 +0.50%",
+        "\N{HEAVY MINUS SIGN} in line with the S&amp;P",
+        "",
+        "Since you started (Oct 24): your funds +0.50% vs S&amp;P 500 +0.50%",
+        "\N{HEAVY MINUS SIGN} level with the same money in the S&amp;P",
+        "",
+        "Other markets today: Nasdaq -1.00% · World +0.00% · Stocks+bonds —",
+        "<i>40% is cash by plan — the whole account lags in up markets and cushions in "
+        "down ones.</i>",
+    ]
+    text = "\n".join(lines)
+    assert "Whole account" not in text and "Target mix" not in text
+    assert "pts = percentage points" in text  # the drift line still uses pts
+
+
+def test_ahead_and_behind_the_same_money_in_the_s_and_p(conn, provider, ira) -> None:
+    small_account(conn, provider, ira, ivv_price="606")  # 6,000 → 6,060
+    provider.add_symbol("SPY", price="102", prev_close="100")
+    provider.add_bars("SPY", bars((START, "100"), (date(2026, 10, 27), "102")))  # → 6,120
+    assert "⚠️ $60 behind the same money in the S&amp;P" in report_text(ira, date(2026, 10, 27))
+    provider.add_symbol("SPY", price="100.5", prev_close="100")
+    provider.add_bars("SPY", bars((START, "100"), (date(2026, 10, 27), "100.5")))  # → 6,030
+    assert "✅ $30 ahead of the same money in the S&amp;P" in report_text(ira, date(2026, 10, 27))
 
 
 def test_a_benchmark_buys_the_same_dollars_on_the_same_days(conn, provider, ira) -> None:
@@ -498,9 +549,8 @@ def test_a_benchmark_buys_the_same_dollars_on_the_same_days(conn, provider, ira)
     assert spy.invested.return_pct == 2 and spy.invested.today_pct == 2
     assert report.view.benchmark_value == D(10200)
     text = strip_html(alloc_report_message(report))
-    assert "S&P 500  +2.00% · +2.00%" in text
-    assert "⚠️ Your funds are behind the S&P 500 by $60 since funding" in text  # 6,060 vs 6,120
-    assert "you'd have $140 more than you do" in text
+    assert "your funds +1.00% vs S&P 500 +2.00%" in text
+    assert "⚠️ $60 behind the same money in the S&P" in text  # 6,060 vs 6,120
     assert "copy" not in text and "<pre>" not in alloc_report_message(report)
     assert "40% is cash by plan" in text
 
@@ -571,18 +621,23 @@ def test_a_benchmark_without_a_price_is_a_dash_not_a_zero(conn, provider, ira) -
     report = AllocReportService(ira).report(IRA, today=date(2026, 10, 27))
     assert all(b.invested.value is None for b in report.benchmarks)
     text = strip_html(report_text(ira, date(2026, 10, 27)))
-    assert "S&P 500  — · —" in text
-    assert "ahead of the S&P 500" not in text and "behind the S&P 500" not in text
+    # No half-numbers: every comparison line needs both sides, so none prints.
+    assert "How you compare" not in text and "vs S&P" not in text
+    assert "ahead of" not in text and "behind" not in text and "Other markets" not in text
 
 
 def test_the_report_escapes_what_it_did_not_write(conn, provider, ira) -> None:
     from trd.notify.messages import strip_html
 
     small_account(conn, provider, ira)
+    provider.add_symbol("SPY", price="100", prev_close="100")
+    provider.add_bars("SPY", bars((START, "100"), (date(2026, 10, 27), "100")))
     ira.edit(IRA, name="Growth & <Moonshot>")
+    ira.edit(IRA, cash_yield=CashYield(fund="S&<P>", yield_pct=D("3.51"), as_of=TODAY))
     text = report_text(ira, date(2026, 10, 27))
     assert text.startswith("📈 <b>Growth &amp; &lt;Moonshot&gt;</b>")
     assert "S&amp;P 500" in text and "S&P 500" not in text
+    assert "working in <b>S&amp;&lt;P&gt;</b>" in text and "<P>" not in text
     assert strip_html(text).startswith("📈 Growth & <Moonshot> · Tue Oct 27")
 
 
@@ -677,7 +732,7 @@ def test_the_report_will_not_print_a_value_built_on_a_missing_price(conn, provid
     text = report_text(ira, date(2026, 10, 27))
     assert "⚠️ no price for IVV — worth unknown" in text
     assert "💰 Worth unknown" in text
-    assert "since funding" not in text and "vs the market" not in text
+    assert "since funding" not in text and "How you compare" not in text
 
 
 def test_the_report_reads_without_writing(cli_env: FakeProvider, monkeypatch) -> None:
@@ -726,7 +781,7 @@ def test_the_report_reads_without_writing(cli_env: FakeProvider, monkeypatch) ->
     refused = runner.invoke(app, ["alloc", "report", "--notify"])
     assert refused.exit_code == 1
     plain = runner.invoke(app, ["alloc", "report"])
-    assert plain.exit_code == 0 and "<b>" not in plain.output and "vs the market" in plain.output
+    assert plain.exit_code == 0 and "<b>" not in plain.output and "💰 Worth" in plain.output
 
 
 # ------------------------------------------------------------------ paced (SB-1388)
@@ -852,3 +907,173 @@ def test_cli_pace_re_paces_existing_targets(cli_env: FakeProvider) -> None:
     assert "SPCX=3 (over 24 months from 2026-10-26)" in r.output
     r = runner.invoke(app, ["alloc", "edit", "--pace", "IVV=x"])
     assert r.exit_code != 0
+
+
+# ------------------------------------------------------------ cash yield (SB-1417)
+
+SPAXX = CashYield(fund="SPAXX", yield_pct=D("3.51"), as_of=date(2026, 10, 21))
+
+
+def test_the_cash_yield_round_trips_and_clears(conn, provider, ira) -> None:
+    assert ira.get(IRA).cash_yield is None
+    assert ira.edit(IRA, cash_yield=SPAXX).cash_yield == SPAXX
+    newer = SPAXX.model_copy(update={"yield_pct": D("3.4"), "as_of": TODAY})
+    assert ira.edit(IRA, cash_yield=newer).cash_yield == newer
+    assert ira.edit(IRA, clear_cash_yield=True).cash_yield is None
+    history = " | ".join(e.what for e in ira.history(IRA))
+    assert "cash yield none → SPAXX at 3.51% (as of 2026-10-21)" in history
+    assert "→ none" in history
+
+
+@pytest.mark.parametrize(
+    ("fund", "pct", "error"),
+    [("SPAXX", "-0.1", "0-20"), ("SPAXX", "20.5", "0-20"), ("  ", "3.5", "ticker")],
+)
+def test_a_cash_yield_out_of_range_is_refused(ira, fund, pct, error) -> None:
+    with pytest.raises(TrdError, match=error):
+        ira.edit(IRA, cash_yield=CashYield(fund=fund, yield_pct=D(pct), as_of=TODAY))
+    assert ira.get(IRA).cash_yield is None
+
+
+def test_a_new_rate_keeps_the_fund_and_is_dated_today() -> None:
+    assert resolve_cash_yield(None, None, None, None, TODAY) is None
+    rate = resolve_cash_yield(SPAXX, None, D("3.4"), None, TODAY)
+    assert rate == CashYield(fund="SPAXX", yield_pct=D("3.4"), as_of=TODAY)
+    assert resolve_cash_yield(None, "spaxx", D("3.51"), None, TODAY) == CashYield(
+        fund="SPAXX", yield_pct=D("3.51"), as_of=TODAY
+    )
+    with pytest.raises(TrdError, match="both"):
+        resolve_cash_yield(None, None, D("3.51"), None, TODAY)
+
+
+def test_monthly_interest_is_all_the_cash_at_the_yield(conn, provider, ira) -> None:
+    CashService(conn).record(IRA, CashFlowKind.DEPOSIT, D("111804.67"), datetime(2026, 10, 24))
+    ira.edit(IRA, cash_yield=SPAXX)
+    view = ira.view(IRA, TODAY)
+    assert view.cash_monthly_interest == D("111804.67") * D("3.51") / 100 / 12
+    assert round(view.cash_monthly_interest, 2) == D("327.03")
+    assert view.cash_interest_earned == 0
+
+
+def test_earned_so_far_is_interest_and_sweeps_not_dividends(conn, provider, ira) -> None:
+    from trd.repos.income import IncomeRepo
+
+    small_account(conn, provider, ira)
+    account_id = ira.get(IRA).account_id
+    income = IncomeRepo(conn)
+    income.add(account_id, D("12.40"), datetime(2026, 10, 25), IncomeKind.CASH_SWEEP)
+    income.add(account_id, D("1.10"), datetime(2026, 10, 26), IncomeKind.INTEREST)
+    income.add(account_id, D("5"), datetime(2026, 10, 26), IncomeKind.DIVIDEND)
+    ira.edit(IRA, cash_yield=SPAXX.model_copy(update={"as_of": TODAY}))
+    assert ira.view(IRA, TODAY).cash_interest_earned == D("13.50")
+    text = report_text(ira, TODAY)
+    assert "   earned so far +$13.50" in text.splitlines()
+
+
+def test_the_report_says_the_cash_is_working(conn, provider, ira) -> None:
+    small_account(conn, provider, ira)  # 4,000 cash of 10,060 = 40%
+    ira.edit(IRA, cash_yield=SPAXX.model_copy(update={"as_of": TODAY}))
+    lines = report_text(ira, TODAY).splitlines()
+    assert "💵 Cash $4,000 (40%) — working in <b>SPAXX</b> at 3.51% ≈ <b>+$12/mo</b>" in lines
+    assert "<i>40% is cash by plan, earning 3.51% in SPAXX while it waits.</i>" in lines
+    text = "\n".join(lines)
+    assert "earned so far" not in text and "rate as of" not in text and "lags in up" not in text
+
+
+def test_a_stale_rate_asks_to_be_updated(conn, provider, ira) -> None:
+    small_account(conn, provider, ira)
+    ira.edit(IRA, cash_yield=SPAXX.model_copy(update={"as_of": date(2026, 9, 22)}))  # 35 days
+    assert "rate as of" not in report_text(ira, TODAY)
+    ira.edit(IRA, cash_yield=SPAXX.model_copy(update={"as_of": date(2026, 9, 1)}))
+    assert (
+        "   rate as of Sep 1 — update: trd alloc edit --cash-yield N"
+        in report_text(ira, TODAY).splitlines()
+    )
+
+
+def test_no_yield_leaves_the_cash_line_as_it_was(conn, provider, ira) -> None:
+    small_account(conn, provider, ira)
+    lines = report_text(ira, TODAY).splitlines()
+    assert "💵 Cash $4,000 (40%)" in lines
+    assert any("lags in up markets" in line for line in lines)
+    assert not any("working in" in line or "earned so far" in line for line in lines)
+
+
+def test_the_yield_moves_reserved_cash_under_the_header(conn, provider, moonshot) -> None:
+    from trd.notify.messages import alloc_report_message
+
+    buy(conn, provider, "SPCX", "2", "150")
+    provider.add_bars("SPCX", bars((date(2026, 10, 23), "150"), (START, "150")))
+    moonshot.edit(IRA, cash_yield=SPAXX)
+    lines = alloc_report_message(AllocReportService(moonshot).report(IRA, today=START)).splitlines()
+    head = next(i for i, line in enumerate(lines) if line.startswith("💵 Cash"))
+    assert "working in <b>SPAXX</b>" in lines[head] and "set aside" not in lines[head]
+    assert lines[head + 1] == "   $7,228 set aside for SPCX"
+
+
+def test_the_cash_yield_survives_backup_and_restore(conn, provider, ira, tmp_path) -> None:
+    from trd.db.connection import connect
+
+    ira.edit(IRA, cash_yield=SPAXX)
+    data = json.loads(json.dumps(export_data(conn)))
+    assert data["alloc_plans"][0]["cash_yield"] == {
+        "fund": "SPAXX",
+        "yield_pct": "3.5100",
+        "as_of": "2026-10-21",
+    }
+    fresh = connect(tmp_path / "restored.duckdb")
+    restore_data(fresh, data)
+    assert AllocService(fresh, provider).get(IRA).cash_yield == SPAXX
+    # A v9 file has no cash_yield: it restores with none stated.
+    del data["alloc_plans"][0]["cash_yield"]
+    data["version"] = 9
+    older = connect(tmp_path / "v9.duckdb")
+    restore_data(older, data)
+    assert AllocService(older, provider).get(IRA).cash_yield is None
+
+
+def test_cli_cash_yield_set_edit_show_and_clear(cli_env: FakeProvider) -> None:
+    for symbol, price in [("IVV", "600"), ("IXUS", "80"), ("QQQM", "250"), ("SMH", "300")]:
+        cli_env.add_symbol(symbol, price=price, prev_close=price)
+    for args in (
+        ["init"],
+        ["account", "add", IRA],
+        ["cash", "deposit", "111804.67", "-a", IRA, "-d", "2026-10-24"],
+    ):
+        assert runner.invoke(app, args).exit_code == 0, args
+    plan = ["alloc", "set", "-a", IRA, "--capital", "1000", "-t", "IVV=95", "-t", "CASH=5"]
+    half = runner.invoke(app, [*plan, "--cash-yield", "3.51"])
+    assert half.exit_code == 1 and "both" in half.output
+    r = runner.invoke(
+        app,
+        [*plan, "--cash-fund", "spaxx", "--cash-yield", "3.51", "--cash-yield-as-of", "2026-10-21"],
+    )
+    assert r.exit_code == 0, r.output
+    r = runner.invoke(app, ["alloc", "show"])
+    assert r.exit_code == 0, r.output
+    assert (
+        "cash 111,804.67 in SPAXX at 3.51% (as of 2026-10-21) ≈ +327.03/mo · earned so far 0.00"
+        in " ".join(r.output.split())  # Rich wraps at the test terminal's width
+    )
+    view = json.loads(runner.invoke(app, ["alloc", "show", "--json"]).output)
+    assert view["plan"]["cash_yield"] == {
+        "fund": "SPAXX",
+        "yield_pct": "3.5100",
+        "as_of": "2026-10-21",
+    }
+    assert round(D(view["cash_monthly_interest"]), 2) == D("327.03")
+    assert D(view["cash_interest_earned"]) == 0
+
+    bad = runner.invoke(app, ["alloc", "edit", "--cash-yield", "35"])
+    assert bad.exit_code == 1 and "0-20" in bad.output
+    r = runner.invoke(app, ["alloc", "edit", "--cash-yield", "3.4"])
+    assert r.exit_code == 0, r.output
+    view = json.loads(runner.invoke(app, ["alloc", "show", "--json"]).output)
+    assert view["plan"]["cash_yield"]["fund"] == "SPAXX"
+    assert D(view["plan"]["cash_yield"]["yield_pct"]) == D("3.4")
+    assert view["plan"]["cash_yield"]["as_of"] == date.today().isoformat()
+
+    r = runner.invoke(app, ["alloc", "edit", "--no-cash-yield"])
+    assert r.exit_code == 0, r.output
+    view = json.loads(runner.invoke(app, ["alloc", "show", "--json"]).output)
+    assert view["plan"]["cash_yield"] is None and view["cash_monthly_interest"] is None

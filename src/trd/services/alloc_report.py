@@ -36,13 +36,13 @@ from trd.services.benchmark import same_dates_shares
 from trd.services.cashflow import trade_amounts
 from trd.services.fifo import fifo_position
 
-# (symbol, label, scoreboard row name). Broad enough to answer "compared with
+# (symbol, label, short name in the message). Broad enough to answer "compared with
 # what": US large caps, US tech, the whole world, and a balanced fund.
 BENCHMARKS: list[tuple[str, str, str]] = [
     ("SPY", "S&P 500", "S&P 500"),
-    ("QQQ", "Nasdaq-100", "Nasdaq-100"),
+    ("QQQ", "Nasdaq-100", "Nasdaq"),
     ("VT", "World stocks", "World"),
-    ("AOR", "60/40 balanced", "60/40"),
+    ("AOR", "60/40 balanced", "Stocks+bonds"),
 ]
 TARGET_MIX = "target_mix"
 # A close counts for a date within this many days of it (weekend/holiday-safe),

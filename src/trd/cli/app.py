@@ -86,7 +86,7 @@ from trd.models import (
     Side,
     SizingMode,
 )
-from trd.models.alloc import AllocTarget, CashFlowKind
+from trd.models.alloc import AllocTarget, CashFlowKind, CashYield
 from trd.notify import alert_notifier_from_env, label_from_env, scan_alert_messages, scan_messages
 from trd.notify.bot import (
     POLL_TIMEOUT,
@@ -138,7 +138,7 @@ from trd.services.agenda import (
     DEFAULT_WINDOW_SESSIONS,
     agenda,
 )
-from trd.services.alloc import AllocService, CashService
+from trd.services.alloc import AllocService, CashService, resolve_cash_yield
 from trd.services.alloc_report import AllocReportService
 from trd.services.backtest import BacktestService, EntryFill, FillMode
 from trd.services.commands import CommandQueueService
@@ -4264,6 +4264,33 @@ PaceStartOpt = Annotated[
         "--pace-start", help="First instalment date (default: the schedule's start, else today)."
     ),
 ]
+CashFundOpt = Annotated[
+    str | None,
+    typer.Option(
+        "--cash-fund", help="Core money-market fund the uninvested cash sits in, e.g. SPAXX."
+    ),
+]
+CashYieldOpt = Annotated[
+    str | None,
+    typer.Option("--cash-yield", help="That fund's yield, annual percent (e.g. 3.51 = 3.51%)."),
+]
+CashYieldAsOfOpt = Annotated[
+    str | None,
+    typer.Option("--cash-yield-as-of", help="Date the yield was read (default: today)."),
+]
+
+
+def _cash_yield_args(
+    current: CashYield | None, fund: str | None, pct: str | None, as_of: str | None
+) -> CashYield | None:
+    when = _parse_date(as_of)
+    return resolve_cash_yield(
+        current,
+        fund,
+        _parse_decimal(pct, "cash yield") if pct is not None else None,
+        when.date() if when else None,
+        date.today(),
+    )
 
 
 def _cash_service() -> CashService:
@@ -4399,11 +4426,15 @@ def alloc_set(
         str, typer.Option("--drift", help="Drift alert threshold, percentage points.")
     ] = "5",
     note: Annotated[str | None, typer.Option("--note", help="Strategy, in your words.")] = None,
+    cash_fund: CashFundOpt = None,
+    cash_yield: CashYieldOpt = None,
+    cash_yield_as_of: CashYieldAsOfOpt = None,
 ) -> None:
     """Create the allocation plan for an account: capital and target weights.
 
     A plan, never an order: trd records what you buy at the broker and measures
-    the account against these targets.
+    the account against these targets. --cash-fund/--cash-yield state what the
+    uninvested cash earns while it waits.
     """
     targets = _parse_targets(target)
     if not targets:
@@ -4421,6 +4452,7 @@ def alloc_set(
             brokerage=brokerage,
             drift_threshold=_parse_decimal(drift, "drift"),
             note=note,
+            cash_yield=_cash_yield_args(None, cash_fund, cash_yield, cash_yield_as_of),
         )
     except TrdError as exc:
         _fail(exc)
@@ -4439,12 +4471,19 @@ def alloc_edit(
     drift: Annotated[str | None, typer.Option("--drift")] = None,
     name: Annotated[str | None, typer.Option("--name")] = None,
     note: Annotated[str | None, typer.Option("--note")] = None,
+    cash_fund: CashFundOpt = None,
+    cash_yield: CashYieldOpt = None,
+    cash_yield_as_of: CashYieldAsOfOpt = None,
+    no_cash_yield: Annotated[
+        bool, typer.Option("--no-cash-yield", help="Forget the stated cash yield.")
+    ] = False,
 ) -> None:
     """Change the targets (all of them, summing to 100), pace, capital, drift
-    threshold or name. Every change is kept in 'trd alloc history'.
+    threshold, name or cash yield. Every change is kept in 'trd alloc history'.
 
     --target replaces every target, so restate --pace with it; --pace alone
-    re-paces the targets the plan already has."""
+    re-paces the targets the plan already has. --cash-yield alone updates the
+    rate on the fund already stated, dated today unless --cash-yield-as-of."""
     service = _alloc_service()
     try:
         name_ = account or service.default_account()
@@ -4455,6 +4494,11 @@ def alloc_edit(
             first = min((m.due_date for m in current.milestones if m.seq == 0), default=None)
             start = started.date() if started else first or date.today()
             targets = _apply_pace(targets or current.targets, pace, start)
+        new_yield = None
+        if cash_fund is not None or cash_yield is not None or cash_yield_as_of is not None:
+            new_yield = _cash_yield_args(
+                service.get(name_).cash_yield, cash_fund, cash_yield, cash_yield_as_of
+            )
         plan = service.edit(
             name_,
             targets=targets,
@@ -4462,6 +4506,8 @@ def alloc_edit(
             drift_threshold=_parse_decimal(drift, "drift") if drift else None,
             name=name,
             note=note,
+            cash_yield=new_yield,
+            clear_cash_yield=no_cash_yield,
         )
     except TrdError as exc:
         _fail(exc)
@@ -4583,9 +4629,11 @@ def alloc_report(
     as_json: JsonOpt = False,
 ) -> None:
     """The daily performance message: a verdict on the day, worth and return
-    since funding, a scoreboard against the S&P 500, Nasdaq-100, world stocks, a
-    60/40 fund and your own target mix (the same dollars on the same days), the
-    funds best first, cash, drift past the threshold, and the next milestone.
+    since funding, how your funds compare with the S&P 500 today and since you
+    started (the same dollars on the same days), the Nasdaq, world stocks and a
+    stocks+bonds fund today, the funds best first, cash and what it earns, drift
+    past the threshold, and the next milestone. --json also carries the whole
+    account and your target mix scored the same way.
 
     READ-ONLY: opens the database without write access and stores no quotes, so
     an unattended run (deploy/alloc-report.sh, launchd) can never become a second

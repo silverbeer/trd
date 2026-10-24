@@ -8,6 +8,7 @@ from trd.models.alloc import (
     AllocTarget,
     CashFlow,
     CashFlowKind,
+    CashYield,
     Milestone,
     MilestoneStatus,
 )
@@ -121,6 +122,22 @@ class AllocRepo:
                    VALUES (?, ?, ?, ?, ?, ?)""",
                 [plan_id, t.symbol, t.weight, t.label, t.pace_months, t.pace_start],
             )
+
+    def cash_yield(self, plan_id: int) -> CashYield | None:
+        row = self.conn.execute(
+            "SELECT fund, yield_pct, as_of FROM alloc_cash_yield WHERE plan_id = ?", [plan_id]
+        ).fetchone()
+        return CashYield(fund=row[0], yield_pct=row[1], as_of=row[2]) if row else None
+
+    def set_cash_yield(self, plan_id: int, cash_yield: CashYield) -> None:
+        self.clear_cash_yield(plan_id)
+        self.conn.execute(
+            "INSERT INTO alloc_cash_yield (plan_id, fund, yield_pct, as_of) VALUES (?, ?, ?, ?)",
+            [plan_id, cash_yield.fund, cash_yield.yield_pct, cash_yield.as_of],
+        )
+
+    def clear_cash_yield(self, plan_id: int) -> None:
+        self.conn.execute("DELETE FROM alloc_cash_yield WHERE plan_id = ?", [plan_id])
 
     def milestones(self, plan_id: int) -> list[Milestone]:
         return [
