@@ -9,7 +9,7 @@
 set -eu
 
 # --- edit these for your machine --------------------------------------------
-export TRD_HOME="${TRD_HOME:-$HOME/Library/Mobile Documents/com~apple~CloudDocs/trd}"
+export TRD_HOME="${TRD_HOME:-$HOME/.trd-portfolio}"
 # uv tool install puts the trd binary on ~/.local/bin
 export PATH="$HOME/.local/bin:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin"
 # ----------------------------------------------------------------------------
