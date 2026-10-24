@@ -14,12 +14,13 @@ from trd.cli.app import app
 from trd.config import get_settings
 from trd.db.connection import connect
 from trd.errors import TrdError
-from trd.models import IntentStatus, PositionRow, Side
+from trd.models import EngineMode, IntentStatus, PositionRow, Side
 from trd.notify.messages import live_report_message
 from trd.repos import InstrumentRepo, OrderIntentRepo, PriceRepo
 from trd.repos.engine import EnginePositionRepo
 from trd.services import EngineService
-from trd.services.live_report import live_report
+from trd.services.daily_report import EngineDay, ExitEvent
+from trd.services.live_report import ClosedToday, LiveReport, live_report
 
 from .conftest import FakeProvider
 from .test_engine import make_bars, seed, uptrend
@@ -145,9 +146,9 @@ def test_position_fields_day_change_distance_and_trailing(engine, conn, provider
     assert report.today_change == p.day_change
 
     text = live_report_message(report)
-    assert text.startswith("💵 trd live — Mon Sep 16")
-    assert "stop ↑185.00" in text
-    assert "% below" in text
+    assert text.startswith("💵 <b>trd LIVE</b> · Mon Sep 16")
+    assert "stop 185.00↑" in text
+    assert "% away" in text
 
 
 def _inst(conn):
@@ -161,7 +162,7 @@ def test_an_untrailed_stop_carries_no_arrow(engine, conn, provider):
     _open(engine, conn, "AAA", datetime(2024, 9, 10, 10, 0), D("190"), D("180"), D("230"))
     [p] = live_report(engine, "live", SESSION).positions
     assert not p.trailing
-    assert "stop 180.00" in live_report_message(live_report(engine, "live", SESSION))
+    assert "stop 180.00 (" in live_report_message(live_report(engine, "live", SESSION))
 
 
 def test_a_position_opened_today_measures_its_day_from_the_entry(engine, conn, provider):
@@ -180,8 +181,8 @@ def test_a_position_opened_today_measures_its_day_from_the_entry(engine, conn, p
     assert p.day_change == D("2") * D("0.1")
     assert [o.symbol for o in report.opened_today] == ["BBB"]
     text = live_report_message(report)
-    assert "opened today" in text
-    assert "bought BBB" in text
+    assert "new today" in text
+    assert "Bought BBB" in text
 
 
 def test_positions_are_listed_best_first(engine, conn, provider):
@@ -214,8 +215,9 @@ def test_a_trade_closed_today_is_in_today(engine, conn, provider):
     assert closed.day_change == (D("215") - prev) * D("0.1")
     assert report.today_change == closed.day_change
     text = live_report_message(report)
-    assert "sold AAA +2.50" in text
-    assert "flat" in text
+    assert "Sold <b>AAA</b> +$2.50" in text
+    assert "Flat — all cash." in text
+    assert "0 of 0" not in text
 
 
 def test_an_order_that_expired_today_is_reported(engine, conn, provider):
@@ -276,8 +278,8 @@ def test_stale_marks_are_flagged_and_leave_the_day_unknown(engine, conn, provide
     assert p.day_change is None
     assert report.today_change is None
     text = live_report_message(report)
-    assert text.splitlines()[1] == "⚠ marks are stale — priced at Sep 15, not today"
-    assert "today —" in text
+    assert text.splitlines()[2] == "⚠️ marks are stale — priced at Sep 15, not today"
+    assert "— today" in text
 
 
 # ------------------------------------------------------------------------- CLI
@@ -358,3 +360,45 @@ def test_cli_refuses_a_paper_engine(cli_env):
     result = runner.invoke(app, ["engine", "live-report", "--json"])
     assert result.exit_code != 0
     assert "paper engine" in json.loads(result.output)["message"]
+
+
+@pytest.mark.parametrize(
+    ("pct", "stop_hit", "verdict"),
+    [
+        ("3", False, "🚀 <b>GREAT DAY"),
+        ("0.8", False, "🟢 <b>GOOD DAY"),
+        ("0.1", False, "⚪ <b>FLAT DAY"),
+        ("-0.1", False, "⚪ <b>FLAT DAY"),
+        ("-0.8", False, "🔴 <b>DOWN DAY"),
+        ("-3", False, "🩸 <b>BAD DAY"),
+        # A stop taken is a bad day whatever the total says.
+        ("0.8", True, "🩸 <b>BAD DAY"),
+    ],
+)
+def test_the_day_is_called_plainly(monkeypatch, pct: str, stop_hit: bool, verdict: str) -> None:
+    Model = LiveReport
+    monkeypatch.setattr(Model, "today_change", property(lambda self: D(pct)))
+    monkeypatch.setattr(Model, "today_change_pct", property(lambda self: D(pct)))
+
+    trade = ExitEvent(
+        symbol="AAA", strategy="pullback", rule="stop" if stop_hit else "target", pnl=D(pct)
+    )
+    day = EngineDay(engine="live", last_session=SESSION, capital=D("100"), mode=EngineMode.LIVE)
+    report = Model(on=SESSION, day=day, closed_today=[ClosedToday(trade=trade)])
+    lines = live_report_message(report).splitlines()
+    assert lines[2].startswith(verdict)
+    if stop_hit:
+        assert "Stopped out of <b>AAA</b>" in lines[3]
+
+
+def test_data_is_html_escaped() -> None:
+    day = EngineDay(
+        engine="live",
+        last_session=SESSION,
+        capital=D("100"),
+        mode=EngineMode.LIVE,
+        halted=True,
+        halt_reason="loss <stop> & more",
+    )
+    text = live_report_message(LiveReport(on=SESSION, day=day))
+    assert "loss &lt;stop&gt; &amp; more" in text
