@@ -1175,8 +1175,6 @@ ALLOC_CASH_NOTE_PCT = Decimal(20)
 # Under a dollar apart is level, not ahead.
 ALLOC_LEVEL_USD = Decimal(1)
 # The scoreboard is a <pre> block read on a phone: about 32 characters fit.
-SCOREBOARD_NAME_WIDTH = 14
-SCOREBOARD_COL_WIDTH = 7
 
 
 def _usd(value: Decimal | None, cents: bool = False) -> str:
@@ -1231,16 +1229,18 @@ def _spy(report: AllocReport) -> BenchmarkScore | None:
 
 
 def _scoreboard(report: AllocReport) -> list[str]:
-    """You and each benchmark, Today and Since funding, monospace. 1W/1M would
-    take it past a phone's width, so they stay in --json."""
+    """You and each benchmark, Today / Since funding, one plain line each.
+
+    Not a <pre> table: Telegram draws one as a code block with a "copy" bar,
+    which reads as a program listing in the middle of a money message. A
+    proportional font cannot align columns, so each line carries its own pair
+    of numbers in the order the heading names them. 1W/1M stay in --json.
+    """
     rows = [
-        ("You (all)", report.account.today_pct, report.account.return_pct),
-        ("You (invested)", report.invested.today_pct, report.invested.return_pct),
-    ] + [(b.short, b.invested.today_pct, b.invested.return_pct) for b in report.benchmarks]
-    n, w = SCOREBOARD_NAME_WIDTH, SCOREBOARD_COL_WIDTH
-    body = [f"{'':<{n}} {'Today':>{w}} {'Since':>{w}}"]
-    body += [f"{name:<{n}} {_apc(today):>{w}} {_apc(since):>{w}}" for name, today, since in rows]
-    return ["<pre>" + _h("\n".join(body)) + "</pre>"]
+        ("<b>Your funds</b>", report.invested.today_pct, report.invested.return_pct),
+        ("Whole account", report.account.today_pct, report.account.return_pct),
+    ] + [(_h(b.short), b.invested.today_pct, b.invested.return_pct) for b in report.benchmarks]
+    return [f"{name}  {_apc(today)} · {_apc(since)}" for name, today, since in rows]
 
 
 def _ahead(diff: Decimal, whom: str) -> str:
@@ -1311,20 +1311,28 @@ def alloc_report_message(report: AllocReport) -> str:
 
     # --- vs the market
     if total is not None and report.benchmarks:
-        lines += ["", "📏 <b>vs the market</b>"]
+        lines += ["", "📏 <b>vs the market</b> · <i>today · since funding</i>"]
         lines += _scoreboard(report)
-        lines.append("<i>Index rows: your invested dollars, bought on the days you bought.</i>")
         spy = _spy(report)
         if spy is not None:
             mine, theirs = report.invested.value, spy.invested.value
             if mine is not None and theirs is not None and report.invested.base:
+                diff = mine - theirs
+                icon = "✅" if diff >= 0 else "⚠️"
                 lines.append(
-                    f"Your funds are {_ahead(mine - theirs, 'the S&P 500')} since funding."
+                    f"{icon} Your funds are {_ahead(diff, 'the S&amp;P 500')} since funding"
                 )
             all_in = spy.deposits.value if spy.deposits is not None else None
             if all_in is not None:
-                whom = "every deposit put in the S&P 500"
-                lines.append(f"Whole account is {_ahead(total - all_in, whom)}.")
+                diff = total - all_in
+                more = "more" if diff < 0 else "less"
+                lines.append(
+                    f"<i>Had every dollar gone into the S&amp;P 500 on the days you deposited, "
+                    f"you'd have {_usd(abs(diff))} {more} than you do.</i>"
+                    if abs(diff) >= ALLOC_LEVEL_USD
+                    else "<i>Level with putting every deposit into the S&amp;P 500.</i>"
+                )
+        lines.append("<i>Indexes are priced as your same dollars, bought on your same days.</i>")
         cash_pct = report.cash_pct
         if cash_pct is not None and cash_pct > ALLOC_CASH_NOTE_PCT:
             lines.append(

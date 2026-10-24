@@ -498,9 +498,10 @@ def test_a_benchmark_buys_the_same_dollars_on_the_same_days(conn, provider, ira)
     assert spy.invested.return_pct == 2 and spy.invested.today_pct == 2
     assert report.view.benchmark_value == D(10200)
     text = strip_html(alloc_report_message(report))
-    assert f"{'S&P 500':<14} {'+2.00%':>7} {'+2.00%':>7}" in text
-    assert "Your funds are behind the S&P 500 by $60 since funding." in text  # 6,060 vs 6,120
-    assert "Whole account is behind every deposit put in the S&P 500 by $140." in text
+    assert "S&P 500  +2.00% · +2.00%" in text
+    assert "⚠️ Your funds are behind the S&P 500 by $60 since funding" in text  # 6,060 vs 6,120
+    assert "you'd have $140 more than you do" in text
+    assert "copy" not in text and "<pre>" not in alloc_report_message(report)
     assert "40% is cash by plan" in text
 
 
@@ -570,7 +571,7 @@ def test_a_benchmark_without_a_price_is_a_dash_not_a_zero(conn, provider, ira) -
     report = AllocReportService(ira).report(IRA, today=date(2026, 10, 27))
     assert all(b.invested.value is None for b in report.benchmarks)
     text = strip_html(report_text(ira, date(2026, 10, 27)))
-    assert f"{'S&P 500':<14} {'—':>7} {'—':>7}" in text
+    assert "S&P 500  — · —" in text
     assert "ahead of the S&P 500" not in text and "behind the S&P 500" not in text
 
 
@@ -581,7 +582,7 @@ def test_the_report_escapes_what_it_did_not_write(conn, provider, ira) -> None:
     ira.edit(IRA, name="Growth & <Moonshot>")
     text = report_text(ira, date(2026, 10, 27))
     assert text.startswith("📈 <b>Growth &amp; &lt;Moonshot&gt;</b>")
-    assert "S&amp;P 500" in text and "S&P 500 " not in text.split("<pre>")[1].split("</pre>")[0]
+    assert "S&amp;P 500" in text and "S&P 500" not in text
     assert strip_html(text).startswith("📈 Growth & <Moonshot> · Tue Oct 27")
 
 
