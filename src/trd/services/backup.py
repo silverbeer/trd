@@ -28,7 +28,7 @@ from trd.errors import TrdError
 from trd.models import EngineMode, SizingMode
 from trd.repos.engine import DEFAULT_EARNINGS_BLACKOUT_DAYS
 
-BACKUP_VERSION = 10
+BACKUP_VERSION = 11
 # v1 predates exit triggers and the engine; v2 keyed engine signals by bar date and
 # dropped the engine config fields added after it; v3 predates the point-in-time
 # earnings archive; v4 predates recorded income; v5 predates live-engine order
@@ -48,8 +48,10 @@ BACKUP_VERSION = 10
 # an account with negative cash and a return measured from the wrong day. v9: a
 # target's pace (SB-1388) — old code would restore a paced moonshot as an ordinary
 # fund the tranches try to fill. v10: the plan's stated cash yield (SB-1417) — old
-# code would restore the plan with its cash reported as idle.
-SUPPORTED_VERSIONS = (1, 2, 3, 4, 5, 6, 7, 8, 9, 10)
+# code would restore the plan with its cash reported as idle. v11: the broker
+# import ledger (SB-1418) — a restore that dropped it would let the next import of
+# the same export write every row a second time.
+SUPPORTED_VERSIONS = (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11)
 
 
 class BackupStats(BaseModel):
@@ -67,6 +69,7 @@ class BackupStats(BaseModel):
     order_intents: int = 0
     cash_flows: int = 0
     alloc_plans: int = 0
+    import_rows: int = 0
 
 
 def _iso(value: date | datetime | None) -> str | None:
@@ -513,9 +516,34 @@ def export_data(conn: duckdb.DuckDBPyConnection) -> dict:
             }
         )
 
+    # v11: which broker-export rows are already in (SB-1418), and the accounts
+    # an export feeds.
+    import_rows = [
+        {"account": r[0], "source": r[1], "row_key": r[2], "imported_at": r[3].isoformat()}
+        for r in rows(
+            """
+            SELECT a.name, i.source, i.row_key, i.imported_at
+            FROM import_row i JOIN account a ON a.id = i.account_id
+            ORDER BY a.name, i.source, i.row_key
+            """
+        )
+    ]
+    import_accounts = [
+        {"account": r[0], "source": r[1], "display_name": r[2], "created_at": r[3].isoformat()}
+        for r in rows(
+            """
+            SELECT a.name, i.source, i.display_name, i.created_at
+            FROM import_account i JOIN account a ON a.id = i.account_id
+            ORDER BY a.name
+            """
+        )
+    ]
+
     return {
         "version": BACKUP_VERSION,
         "cash_flows": cash_flows,
+        "import_rows": import_rows,
+        "import_accounts": import_accounts,
         "alloc_plans": alloc_plans,
         "instruments": instruments,
         "accounts": accounts,
@@ -693,6 +721,29 @@ def restore_data(conn: duckdb.DuckDBPyConnection, data: dict) -> BackupStats:
                 _dec(flow["amount"]),
                 datetime.fromisoformat(flow["occurred_at"]),
                 flow.get("note"),
+            ],
+        )
+    # v11: the broker import ledger. Absent from older files = nothing imported.
+    import_rows = data.get("import_rows", [])
+    for entry in import_rows:
+        conn.execute(
+            "INSERT INTO import_row (account_id, source, row_key, imported_at) VALUES (?, ?, ?, ?)",
+            [
+                account_id[entry["account"]],
+                entry["source"],
+                entry["row_key"],
+                datetime.fromisoformat(entry["imported_at"]),
+            ],
+        )
+    for entry in data.get("import_accounts", []):
+        conn.execute(
+            "INSERT INTO import_account (account_id, source, display_name, created_at) "
+            "VALUES (?, ?, ?, ?)",
+            [
+                account_id[entry["account"]],
+                entry["source"],
+                entry.get("display_name"),
+                datetime.fromisoformat(entry["created_at"]),
             ],
         )
     alloc_plans = data.get("alloc_plans", [])
@@ -984,4 +1035,5 @@ def restore_data(conn: duckdb.DuckDBPyConnection, data: dict) -> BackupStats:
         order_intents=len(intents),
         cash_flows=len(cash_flows),
         alloc_plans=len(alloc_plans),
+        import_rows=len(import_rows),
     )

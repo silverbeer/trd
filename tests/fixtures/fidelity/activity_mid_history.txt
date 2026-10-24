@@ -1,0 +1,12 @@
+﻿
+
+Run Date,Action,Symbol,Description,Type,Price ($),Quantity,Commission ($),Fees ($),Accrued Interest ($),Amount ($),Cash Balance ($),Settlement Date
+05/02/2025,ADVISORY FEE (Cash),,No Description,Cash,,0,"","","","-10",910,
+05/01/2025,YOU SOLD FIDELITY 500 INDEX FUND (FXAIX) (Cash),FXAIX,FIDELITY 500 INDEX FUND,Cash,210,"-2","","","",420,920,05/02/2025
+
+"SYNTHETIC TEST FIXTURE. Invented data in the layout of a Fidelity Activity History export:"
+"a legal footer of several lines follows the rows, separated by a blank line."
+
+"Nothing below the blank line is a row."
+
+Date downloaded 09/03/2025 10:00 am

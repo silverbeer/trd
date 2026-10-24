@@ -47,7 +47,36 @@ trd quote AAPL                        # live quote + profile: sector / industry 
 trd buy AAPL 10 [--price 213.50] [--account main] [--date 2026-06-10] [--fees 1] [--note ...]
 trd sell AAPL 5 [--price ...]         # validates held quantity
 trd import txns.csv                   # bulk-load transactions
-trd income add 1.98 --symbol VOO [--account sofi] [--date ISO] [--kind dividend|interest|cash_sweep]
+trd import fidelity ACTIVITY.csv --account managed-ira [--create "Managed IRA"]
+              [--positions POSITIONS.csv] [--opening-from-positions] [--opening-price SYM=P]
+              [--fidelity-account NAME|NUMBER] [--dry-run] [--json]
+                                      # Fidelity's Activity History export (no retail API,
+                                      # SB-1418). The file names NO account: --account is
+                                      # mandatory, --create makes it (real). YOU BOUGHT /
+                                      # REINVESTMENT = buy (price from the Amount, not the
+                                      # cents-rounded Price), YOU SOLD = sell, DIVIDEND RECEIVED
+                                      # = income dividend, LONG/SHORT-TERM CAP GAIN = income
+                                      # capital_gain. A DRIP is its two rows: income in, buy out.
+                                      # Core money market (SPAXX/FDRXX/FZFXX/SPRXX/FCASH) is
+                                      # CASH: its dividend = income cash_sweep, its reinvest/buy/
+                                      # sell write nothing. ADVISORY FEE = cash_flow 'fee'; every
+                                      # run (dry or not) lists each fee + the total. CONTRIBUTION/
+                                      # ROLLOVER/TRANSFER/JOURNALED/EFT = deposit|withdrawal by
+                                      # sign. Any other action refuses the WHOLE file, lines
+                                      # listed. Idempotent: rows keyed in import_row (migration
+                                      # 032; date|class|symbol|qty|amount|occurrence), so the same
+                                      # or an overlapping file writes nothing twice; one
+                                      # transaction. Sells of shares trd never saw are refused:
+                                      # --opening-from-positions (first import only) seeds what was
+                                      # held the day before the first row = Positions minus the
+                                      # activity, at the provider's close (or --opening-price), +
+                                      # one deposit of that value plus the cash before the first
+                                      # row (from the file's own Cash Balance column).
+                                      # --positions reconciles every quantity (0.001 sh) and the
+                                      # cash (core ** rows + Pending Activity); mismatch = exit 1.
+                                      # The POSITIONS PARSER IS UNVERIFIED against a real export
+                                      # (says so in its output) — check it on the first one
+trd income add 1.98 --symbol VOO [--account sofi] [--date ISO] [--kind dividend|interest|cash_sweep|capital_gain]
 trd income ls [--account N] [--json]  # cash a holding PAID you, as opposed to the price rising.
                                       # Not a buy: creates no shares, consumes none, never reaches
                                       # FIFO — which is why it is its own table and not a third
@@ -62,8 +91,8 @@ trd income ls [--account N] [--json]  # cash a holding PAID you, as opposed to t
 trd cash deposit 250930 --account fidelity-ira [--date ISO] [--note ...]
 trd cash withdraw AMOUNT --account N | trd cash ls --account N [--json]
                                       # money moved into/out of an account (migration 029). Not a
-                                      # trade: no lot. cash = deposits - withdrawals - buys + sells
-                                      # + income. Only the alloc views read it so far; portfolio /
+                                      # trade: no lot. cash = deposits - withdrawals - fees - buys
+                                      # + sells + income. ls labels kind 'fee' "advisory fee". Only the alloc views read it so far; portfolio /
                                       # equity / dashboard returns are still trade-based
 trd alloc set --account fidelity-ira --capital 250930 --name ... [--kind "Rollover IRA"]
               [--brokerage Fidelity] -t IVV=45 -t IXUS=20 -t QQQM=25 -t SMH=5 -t CASH=5 [--drift 5]
@@ -752,6 +781,14 @@ CSV import format (header required): `date,account,symbol,side,quantity,price[,f
   A plan's share of a payment is pro-rated by the shares the plan held that day. `trd
   backup` carries it (version 5) because no provider can hand it back — a provider knows
   what a symbol has paid, never which payments landed in this account.
+- **A fee is money out that LOWERS the return — never a withdrawal.** An advisory fee
+  (cash_flow kind `fee`, SB-1418) leaves the account's cash, but the owner did not take
+  it, so it is never an external flow: `cashflow.external_flows` (the cash-based returns
+  — alloc view/report XIRR, simple return, same-deposits SPY) leaves it out so the lower
+  worth shows, and `cashflow.fee_flows` puts it into the trade-based ones (dashboard,
+  equity curve) as money the owner paid. `Dashboard.total_return_pct` subtracts it.
+  Booking a fee as a withdrawal would excuse it, and a managed account would score as
+  well as one charging nothing.
 - **Price return and total return are different numbers and trd says which.** `Dashboard.
   price_return_pct` is (value − cost)/cost; `total_return_pct` adds the income. Reporting
   the first under the second's name is what made every figure quietly low.
