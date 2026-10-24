@@ -1,5 +1,6 @@
 from contextlib import suppress
 from datetime import date, datetime, timedelta
+from decimal import Decimal
 
 import duckdb
 from pydantic import BaseModel
@@ -24,6 +25,13 @@ EARNINGS_REFRESH_HORIZON_DAYS = 10
 # generous: a name that misses three consecutive sessions its peers all printed is
 # not late, it is halted, delisted or renamed.
 DORMANT_AFTER_SESSIONS = 3
+
+# How far today's stored close may sit from the quote, after the close, before
+# the bar is read as not yet final (SB-1411). After 16:00 the quote IS the
+# official close, so a settled bar matches it to the cent; 0.2% leaves room for
+# a provider rounding the two differently and none for a morning bar, which
+# on 2026-10-23 sat 7% under PANW's close.
+SETTLE_TOLERANCE = Decimal("0.002")
 
 
 class EarningsSyncResult(BaseModel):
@@ -51,6 +59,9 @@ class SyncResult(BaseModel):
     # merely lagged. Reported, never blocking: they can never catch up, so treating
     # them as stale would wedge `--require-current` permanently.
     dormant_symbols: list[str] = []
+    # Only with `settle=True` (the after-close sync): symbols whose bar for today
+    # is still not the close — see `SyncService._unsettled`.
+    unsettled_symbols: list[str] = []
 
 
 class SyncService:
@@ -64,7 +75,9 @@ class SyncService:
         self.watchlists = WatchlistRepo(conn)
         self.archive = EarningsArchiveService(conn)
 
-    def sync(self, full: bool = False, years: int | None = None) -> SyncResult:
+    def sync(
+        self, full: bool = False, years: int | None = None, settle: bool = False
+    ) -> SyncResult:
         """Refresh quotes + daily bars for every tracked instrument.
 
         Default pulls the last week of bars (gap-fill); --full backfills two
@@ -108,6 +121,7 @@ class SyncService:
 
         intraday_count, intraday_timeframe = self.sync_intraday(failures)
         stale, dormant = self._freshness(instruments)
+        unsettled = self._unsettled(instruments, quotes) if settle else []
 
         return SyncResult(
             instruments=len(instruments),
@@ -119,7 +133,36 @@ class SyncService:
             intraday_timeframe=intraday_timeframe,
             stale_symbols=stale,
             dormant_symbols=dormant,
+            unsettled_symbols=unsettled,
         )
+
+    def _unsettled(self, instruments: list[Instrument], quotes: dict) -> list[str]:
+        """Symbols whose bar dated today does not match the closing quote.
+
+        `--require-current` cannot see this: it asks whether a bar for today
+        EXISTS, and after the morning sync one always does — the 09:3x bar,
+        written once and never rewritten in the session. On 2026-10-23 the close
+        sync's history fetches came back with nothing usable, the morning bars
+        stayed, every symbol was "current", and the day was stamped done with
+        PANW at 355.01 against a 380.55 close. Called only after the close,
+        where the quote is the official close and a final bar matches it.
+
+        Equities only: crypto trades through the night, so its quote never sits
+        still against a daily bar. A symbol with no bar for today is stale, not
+        unsettled, and is reported there.
+        """
+        today = date.today()
+        unsettled: list[str] = []
+        for instrument in instruments:
+            if instrument.type == InstrumentType.CRYPTO or not instrument.tradable:
+                continue
+            quote = quotes.get(instrument.symbol)
+            dated = self.prices.latest_close_dated(instrument.id)
+            if quote is None or not quote.price or dated is None or dated[0] != today:
+                continue
+            if abs(dated[1] - quote.price) / quote.price > SETTLE_TOLERANCE:
+                unsettled.append(instrument.symbol)
+        return sorted(unsettled)
 
     def _freshness(self, instruments: list[Instrument]) -> tuple[list[str], list[str]]:
         """(stale, dormant) — symbols behind the rest of the book, split by how far.

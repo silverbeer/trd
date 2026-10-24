@@ -29,6 +29,9 @@ trd sync [--full] [--require-current] [--json]
                                       # it (unrealized, risk at stop, R) is quietly wrong.
                                       # --require-current exits non-zero when that list is non-empty,
                                       # so an unattended runner retries instead of stamping the day done
+                                      # --require-settled (AFTER the close): also exit non-zero when a
+                                      # bar dated today differs from the closing quote by > 0.2% —
+                                      # the morning bar is always 'current', never the close (SB-1411)
 trd portfolio [--account NAME]        # holdings with live P&L
 trd equity [--account NAME] [--days N | --months N] [--all] [--json]
                                       # equity curve: portfolio value over time, period return,
@@ -655,8 +658,8 @@ CronJob's entrypoint has stopped for the day (it refuses past 16:00), and off th
 ten-minute grid the queue drain uses, so it is not waiting on the writer lock.
 
 Every home's queue drain (`deploy/queue-entrypoint.sh`) also runs the **close sync**
-(SB-1411): once per weekday on the first tick past 16:05, `trd sync --require-current`,
-stamped in `TRD_HOME/.close-sync` only on success. The scan syncs once in the morning and
+(SB-1411): once per weekday on the first tick past 16:05, `trd sync --require-settled`,
+stamped in `TRD_HOME/.close-sync` only on success, retried each tick up to 6 tries. The scan syncs once in the morning and
 stores no bar after it, so without this every evening report read the 09:3x bar as the
 close (PANW 355.01 reported, 380.55 actual, 2026-10-23).
 

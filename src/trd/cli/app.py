@@ -428,6 +428,15 @@ def sync(
             "sync stored — lets a caller retry instead of stamping the day done.",
         ),
     ] = False,
+    require_settled: Annotated[
+        bool,
+        typer.Option(
+            "--require-settled",
+            help="AFTER THE CLOSE: exit non-zero unless every symbol's bar for today "
+            "matches its closing quote (implies --require-current). The evening "
+            "close sync uses it, so a morning bar is never stamped as the close.",
+        ),
+    ] = False,
     as_json: Annotated[bool, typer.Option("--json", help="Emit the result as JSON.")] = False,
 ) -> None:
     """Refresh quotes and daily price history for all tracked instruments."""
@@ -457,7 +466,7 @@ def sync(
         return
     _use_json(as_json)
     with _spinner("Syncing market data..."):
-        result = service.sync(full=full, years=years)
+        result = service.sync(full=full, years=years, settle=require_settled)
     if as_json:
         _emit_json(result)
     else:
@@ -492,9 +501,17 @@ def sync(
                 f"stopped printing several sessions ago — halted, delisted or "
                 "renamed. Marks are frozen; consider removing them."
             )
-    # Deliberately after the report: the caller wanting to retry still gets to see
-    # what happened, and a partial sync is worth keeping either way.
-    if require_current and result.stale_symbols:
+        # Deliberately after the report: the caller wanting to retry still gets to see
+        # what happened, and a partial sync is worth keeping either way.
+        if result.unsettled_symbols:
+            err_console.print(
+                f"[yellow]warning:[/yellow] today's bar is not the close yet for "
+                f"{', '.join(result.unsettled_symbols)} — the stored close differs "
+                "from the closing quote. Re-run 'trd sync' shortly."
+            )
+    if (require_current or require_settled) and result.stale_symbols:
+        raise typer.Exit(code=1)
+    if require_settled and result.unsettled_symbols:
         raise typer.Exit(code=1)
 
 
