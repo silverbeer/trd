@@ -945,12 +945,17 @@ def live_report_message(report: LiveReport, label: str | None = None) -> str:
 
     lines += [
         "",
-        f"💰 Worth <b>{_lusd(day.live_worth, signed=False)}</b> · "
-        f"{_lusd(day.net)} ({_lpc(day.live_return_pct)}) since you put in "
-        f"{_lusd(day.capital, signed=False)}",
-        f"<i>booked {_lusd(day.realized_all)} · open {_lusd(day.unrealized)} · "
-        f"cash {_lusd(day.cash_settled, signed=False)}"
-        + (f" (+{_lusd(day.cash_unsettled, signed=False)} settling)" if day.cash_unsettled else "")
+        f"💰 Worth <b>{_lusd(day.live_worth, signed=False)}</b> — "
+        f"{'up' if (day.net or 0) >= 0 else 'down'} {_lusd(abs(day.net), signed=False)} "
+        f"({_lpc(day.live_return_pct)}) on the {_lusd(day.capital, signed=False)} you started with",
+        f"<i>{_lusd(day.realized_all)} locked in from sold trades · "
+        f"{_lusd(day.unrealized)} on positions still open</i>",
+        f"<i>Buying power {_lusd(day.cash_settled, signed=False)}"
+        + (
+            f" (+{_lusd(day.cash_unsettled, signed=False)} from sales, settles next business day)"
+            if day.cash_unsettled
+            else ""
+        )
         + "</i>",
     ]
     if day.open_intents or day.awaiting_approval:
