@@ -14,6 +14,7 @@ guessed, and re-importing writes nothing twice.
 """
 
 import json
+import re
 from datetime import date, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
@@ -472,7 +473,10 @@ def test_cli_import_then_cash_ls_shows_the_advisory_fee(cli_env: FakeProvider) -
 def test_cli_missing_account_option_is_refused(cli_env: FakeProvider) -> None:
     result = runner.invoke(app, ["import", "fidelity", str(FIX / "activity.txt")])
     assert result.exit_code != 0
-    assert "--account" in result.output
+    # CI renders Typer's error box in colour and wraps it, so match on the text
+    # with ANSI codes and box-drawing stripped rather than the raw output.
+    plain = re.sub(r"\x1b\[[0-9;]*m|[│╭╮╰╯─]|\s+", "", result.output)
+    assert "--account" in plain
 
 
 def test_cli_positions_mismatch_exits_1(cli_env: FakeProvider) -> None:
