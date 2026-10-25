@@ -39,6 +39,7 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from trd.errors import NotifyError, ProviderError, SymbolNotFoundError, TrdError
+from trd.models.engine import ShortName, describe_short
 from trd.notify.privacy import guard, redact_firms
 from trd.services.commands import QUEUE_DIR, CommandKind, enqueue
 from trd.timeframes import SESSION_MINUTES, SESSION_OPEN_MINUTE
@@ -320,9 +321,20 @@ def format_status(payload: dict[str, Any]) -> str:
         f"bars {payload.get('bars_total', 0)} through {payload.get('bars_last') or '—'}"
         f" · last scan {payload.get('last_scan') or 'never'}",
     ]
-    if short:
-        names = ", ".join(f"{row[0]}({row[1]})" for row in short[:8])
-        lines.append(f"⚠ below warm-up, not tradable yet: {names}")
+    detail = payload.get("short_detail")
+    if detail:
+        # Per rule (SB-1433): a name breakout trades while the 200-day rules wait
+        # is warming up, not dead. Only one no rule clears is "not tradable yet".
+        names = [ShortName.model_validate(row) for row in detail]
+        dead = [n for n in names if not n.tradable]
+        if dead:
+            listed = ", ".join(f"{n.symbol}({n.bars})" for n in dead[:8])
+            lines.append(f"⚠ below warm-up, not tradable yet: {listed}")
+        lines += [f"⏳ {line}" for line in describe_short([n for n in names if n.tradable])]
+    elif short:
+        # A status.json published before SB-1433 carries bar counts only.
+        listed = ", ".join(f"{row[0]}({row[1]})" for row in short[:8])
+        lines.append(f"⚠ below warm-up: {listed}")
     if payload.get("config_refused"):
         lines.append("⚠ this config is one 'engine init' would refuse — see trd engine status")
     return "\n".join(lines)

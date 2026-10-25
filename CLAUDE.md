@@ -359,6 +359,10 @@ trd engine cash [--set AMOUNT | --off] [--json]
 trd engine status [--json]            # what this engine is + whether it's healthy: build, DB, rule set,
                                       # capacity, bar depth, last scan. No network — answers when yfinance doesn't
                                       # also: realized / unrealized / NET (all three, never the total alone)
+                                      # names short of a rule's warm-up are listed PER RULE (SB-1433):
+                                      # 'CBRS(113): breakout active · momentum need 201'. Entries gate
+                                      # per strategy, so only a name no rule clears is "not tradable
+                                      # yet". 'short_detail' in --json; 'short_history' unchanged
                                       # and money at risk — what's lost if every stop hits, typically a
                                       # tenth of 'committed'. See 'trd learn risk-at-stop'
                                       # warns in red when the engine's own config is one 'init' would

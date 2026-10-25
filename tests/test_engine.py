@@ -1210,6 +1210,33 @@ def test_status_names_symbols_too_short_to_trade(engine, provider, conn):
     assert status.bars_total == 10
 
 
+def test_status_reports_warmup_per_rule(engine, provider, conn):
+    """SB-1433: entries are gated per strategy, so a 60-bar name is live for
+    breakout while momentum waits. Only a name no rule clears is dead."""
+    from trd.models.engine import describe_short
+
+    for symbol in ("AAA", "BBB"):
+        provider.add_symbol(symbol, price="100")
+    engine.init(symbols=["AAA", "BBB"], strategies=["breakout", "momentum"])
+    for symbol, n in [("AAA", 60), ("BBB", 10)]:
+        instrument = InstrumentRepo(conn).get_by_symbol(symbol)
+        assert instrument is not None
+        PriceRepo(conn).upsert_daily(instrument.id, make_bars([100.0] * n))
+
+    status = engine.status()
+    assert status.short_history == [("AAA", 60), ("BBB", 10)]  # shape unchanged
+    young, dead = status.short_detail
+    assert (young.symbol, young.active, young.short) == ("AAA", ["breakout"], {"momentum": 201})
+    assert young.tradable and not dead.tradable
+    assert dead.short == {"breakout": 51, "momentum": 201}
+    assert describe_short(status.short_detail) == [
+        "AAA(60): breakout active · momentum need 201",
+        "BBB(10): not tradable yet · breakout need 51 · momentum need 201",
+    ]
+    payload = status.model_dump(mode="json")["short_detail"][0]
+    assert payload["tradable"] is True and payload["short"] == {"momentum": 201}
+
+
 def test_status_needs_no_network(engine, provider, monkeypatch):
     """This is the command you reach for when something is wrong — it has to
     answer when the provider is the thing that is wrong."""

@@ -67,7 +67,7 @@ from trd.models import (
     TradeExplanation,
     intent_expiry_cutoff,
 )
-from trd.models.engine import STALE_INTENT_MINUTES
+from trd.models.engine import STALE_INTENT_MINUTES, ShortName
 from trd.providers.base import MarketDataProvider
 from trd.repos import (
     AccountRepo,
@@ -1744,6 +1744,31 @@ class EngineService:
         short = sorted(
             (i.symbol, counts.get(i.id, 0)) for i in universe if counts.get(i.id, 0) < warmup
         )
+        # Per rule, the way `_run_entries` gates: a name short of the 200-day
+        # rules is still evaluated by every rule it clears.
+        daily_counts = self.prices.bar_counts() if source.is_intraday else counts
+        by_symbol = {i.symbol: i for i in universe}
+        detail: list[ShortName] = []
+        for symbol, n in short:
+            iid = by_symbol[symbol].id
+            active: list[str] = []
+            need: dict[str, int] = {}
+            thin: dict[str, int] = {}
+            for key in config.strategies:
+                strategy = STRATEGIES.get(key)
+                if strategy is None:
+                    continue
+                if n < (bars_needed := strategy.warmup_bars(source.timeframe)):
+                    need[key] = bars_needed
+                elif daily_counts.get(iid, 0) < (
+                    daily_needed := strategy.warmup_daily(source.timeframe)
+                ):
+                    thin[key] = daily_needed
+                else:
+                    active.append(key)
+            detail.append(
+                ShortName(symbol=symbol, bars=n, active=active, short=need, thin_trend=thin)
+            )
 
         last_fired = self.signals.last_fired()
         silent = [
@@ -1803,6 +1828,7 @@ class EngineService:
             bars_last=last_bar,
             warmup_bars=warmup,
             short_history=short,
+            short_detail=detail,
             silent_strategies=silent,
             last_scan=recent[0].started_at if recent else None,
             scans_today=self.runs.count_since(midnight),

@@ -494,18 +494,36 @@ def simulate(
     # The command that would actually deepen *this* engine's series. Sending a
     # 5-minute engine after 'sync --years 10' asks for bars nobody keeps.
     deepen = "trd sync" if source.is_intraday else "trd sync --years 10"
-    warmup = max(STRATEGIES[k].warmup_bars(timeframe) for k in strategies)
-    warmup_daily = max(STRATEGIES[k].warmup_daily(timeframe) for k in strategies)
+    # Per rule, as the walk gates below: a name short of the 200-day rules is
+    # still replayed by every rule it clears, so the line names which (SB-1433).
     for symbol in sorted(series):
-        if len(series[symbol]) < warmup:
+        n, n_daily = len(series[symbol]), len(daily_series.get(symbol, []))
+        need = {
+            k: STRATEGIES[k].warmup_bars(timeframe)
+            for k in strategies
+            if n < STRATEGIES[k].warmup_bars(timeframe)
+        }
+        thin = {
+            k: STRATEGIES[k].warmup_daily(timeframe)
+            for k in strategies
+            if k not in need and n_daily < STRATEGIES[k].warmup_daily(timeframe)
+        }
+        if not need and not thin:
+            continue
+        clears = [k for k in strategies if k not in need and k not in thin]
+        tail = (
+            f"replayed by {', '.join(clears)} only"
+            if clears
+            else "not replayed — no rule clears it"
+        )
+        if need:
+            rules = ", ".join(f"{k} needs {v}" for k, v in need.items())
+            skipped.append(f"{symbol}: only {n} bars — {rules}; {tail} (run '{deepen}')")
+        if thin:
+            rules = ", ".join(f"{k} needs {v}" for k, v in thin.items())
             skipped.append(
-                f"{symbol}: only {len(series[symbol])} bars — some strategies need "
-                f"{warmup} before they can fire (run '{deepen}')"
-            )
-        if warmup_daily and len(daily_series.get(symbol, [])) < warmup_daily:
-            skipped.append(
-                f"{symbol}: only {len(daily_series.get(symbol, []))} daily bars for the trend "
-                f"filter — it needs {warmup_daily} (run 'trd sync --years 10')"
+                f"{symbol}: only {n_daily} daily bars for the trend filter — {rules}; "
+                f"{tail} (run 'trd sync --years 10')"
             )
 
     # Keyed on each bar's instant, not its date: on an intraday series a session

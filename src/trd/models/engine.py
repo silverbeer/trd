@@ -450,6 +450,50 @@ class PositionRow(BaseModel):
         return max(Decimal(0), (self.mark - self.stop_in_force) * self.position.remaining_quantity)
 
 
+class ShortName(BaseModel):
+    """One universe name with less history than some configured rule needs.
+
+    Entries are gated per strategy, not on the engine's longest lookback: a
+    56-bar name is evaluated by breakout (51) on every pass while the 200-day
+    rules wait. Reporting it as one bar count against the max read as "not
+    tradable" when one rule was live on it (SB-1433).
+    """
+
+    symbol: str
+    bars: int
+    active: list[str]  # strategies this name clears and is evaluated by
+    short: dict[str, int]  # strategy -> bars it needs (the engine's own series)
+    # strategy -> daily bars its trend filter needs. Intraday only: on a daily
+    # engine the trend reads the same series and `short` covers it.
+    thin_trend: dict[str, int] = {}
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def tradable(self) -> bool:
+        return bool(self.active)
+
+    def rules(self) -> str:
+        """`breakout active · momentum, pullback, macd_cross need 201`."""
+        waiting: dict[str, list[str]] = {}
+        for key, need in self.short.items():
+            waiting.setdefault(str(need), []).append(key)
+        for key, need in self.thin_trend.items():
+            waiting.setdefault(f"{need}d", []).append(key)
+        parts = [f"{', '.join(keys)} need {need}" for need, keys in waiting.items()]
+        head = f"{', '.join(self.active)} active" if self.active else "not tradable yet"
+        return " · ".join([head, *parts])
+
+
+def describe_short(names: list[ShortName]) -> list[str]:
+    """One line per distinct rule picture, the names sharing it listed together:
+    `CBRS(113), XE(127): breakout active · momentum, pullback, macd_cross need 201`.
+    Six young names on one rule set read as one line, not six."""
+    groups: dict[str, list[str]] = {}
+    for name in names:
+        groups.setdefault(name.rules(), []).append(f"{name.symbol}({name.bars})")
+    return [f"{', '.join(symbols)}: {rules}" for rules, symbols in groups.items()]
+
+
 class EngineStatus(BaseModel):
     """Everything you need to know before trusting a running engine, in one object.
 
@@ -527,6 +571,9 @@ class EngineStatus(BaseModel):
     bars_last: date | None
     warmup_bars: int
     short_history: list[tuple[str, int]]  # (symbol, bars) below what a rule needs
+    # The same names with the rules each one clears and waits on. A name is
+    # "not tradable yet" only when `active` is empty.
+    short_detail: list[ShortName] = []
     # (strategy, sessions scanned since it last fired a signal — taken or not)
     # for every configured strategy quiet past SILENT_STRATEGY_SESSIONS. A rule
     # that can no longer fire reads as a quiet market from every other view:
