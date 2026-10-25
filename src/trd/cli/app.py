@@ -1069,7 +1069,7 @@ app.add_typer(account_app, name="account")
 
 @account_app.command("add")
 def account_add(
-    name: Annotated[str, typer.Argument(help="Account name, e.g. fidelity, robinhood.")],
+    name: Annotated[str, typer.Argument(help="Account name, e.g. ira, brokerage, paper.")],
     type_: Annotated[
         str, typer.Option("--type", "-t", help="Account type: real or simulation.")
     ] = "real",
@@ -1912,11 +1912,13 @@ def import_csv(
     console.print(f"Imported [bold]{count}[/bold] transactions from {path}.")
 
 
-@import_app.command("fidelity")
-def import_fidelity(
+@import_app.command("activity")
+def import_activity(
     activity: Annotated[
         Path,
-        typer.Argument(exists=True, readable=True, help="Fidelity 'Activity History' CSV export."),
+        typer.Argument(
+            exists=True, readable=True, help="The brokerage's 'Activity History' CSV export."
+        ),
     ],
     account: Annotated[
         str,
@@ -1932,7 +1934,7 @@ def import_fidelity(
             "--positions",
             exists=True,
             readable=True,
-            help="Fidelity 'Positions' CSV: reconcile every quantity and the cash against it.",
+            help="The brokerage's 'Positions' CSV: reconcile every quantity and the cash.",
         ),
     ] = None,
     create: Annotated[
@@ -1958,10 +1960,10 @@ def import_fidelity(
             help="SYMBOL=PRICE for an opening lot the provider has no close for. Repeatable.",
         ),
     ] = None,
-    fidelity_account: Annotated[
+    source_account: Annotated[
         str | None,
         typer.Option(
-            "--fidelity-account",
+            "--source-account",
             help="Account Number or Name to read from a Positions file holding several.",
         ),
     ] = None,
@@ -1970,7 +1972,7 @@ def import_fidelity(
     ] = False,
     as_json: JsonOpt = False,
 ) -> None:
-    """Import a Fidelity Activity History export (Fidelity has no retail API).
+    """Import a managed account's Activity History export (the custodian has no retail API).
 
     Buys/sells/reinvestments become trades, dividends and capital-gain
     distributions income, core money-market dividends cash interest, and every
@@ -1995,7 +1997,7 @@ def import_fidelity(
             dry_run=dry_run,
             opening_from_positions=opening_from_positions,
             opening_prices=prices,
-            fidelity_account=fidelity_account,
+            fidelity_account=source_account,
         )
     except TrdError as exc:
         _fail(exc)
@@ -3220,7 +3222,7 @@ def engine_review(
     """What the day's decisions say about the rules — statistics, no judgement.
 
     Findings are about a rule, a strategy or the entry filter, never about one
-    trade: "SOFI stopped out, consider a wider stop" written forty times a month
+    trade: "PLTR stopped out, consider a wider stop" written forty times a month
     buries the one real finding. Each carries the population it was drawn from
     and the backtest that would settle it.
 
@@ -4061,8 +4063,8 @@ def engine_what_if(
         console.print(renderable)
 
 
-@engine_app.command("fidelity")
-def engine_fidelity(
+@engine_app.command("replay-match")
+def engine_replay_match(
     days: Annotated[
         int, typer.Option("--days", "-d", help="Trailing window of live entries, in days.")
     ] = 30,
@@ -4539,7 +4541,9 @@ def alloc_set(
     pace_start: PaceStartOpt = None,
     name: Annotated[str | None, typer.Option("--name", help="Plan name.")] = None,
     kind: Annotated[str | None, typer.Option("--kind", help="Account kind, e.g. 'IRA'.")] = None,
-    brokerage: Annotated[str | None, typer.Option("--brokerage", help="e.g. Fidelity.")] = None,
+    brokerage: Annotated[
+        str | None, typer.Option("--brokerage", help="The custodian, for the plan header.")
+    ] = None,
     drift: Annotated[
         str, typer.Option("--drift", help="Drift alert threshold, percentage points.")
     ] = "5",

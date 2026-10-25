@@ -363,7 +363,7 @@ def test_positions_parser_reads_by_header_name() -> None:
 
 
 def test_positions_with_several_accounts_need_one_named() -> None:
-    with pytest.raises(TrdError, match="--fidelity-account"):
+    with pytest.raises(TrdError, match="--source-account"):
         parse_positions(text("positions_two_accounts.txt"))
     other = parse_positions(text("positions_two_accounts.txt"), "other ira")
     assert other.quantities() == {"FXAIX": D(3)} and other.cash == D(90)
@@ -442,7 +442,7 @@ def test_cli_dry_run_json_lists_fees_and_writes_nothing(cli_env: FakeProvider) -
     result = runner.invoke(
         app,
         [
-            "import", "fidelity", str(FIX / "activity.txt"),
+            "import", "activity", str(FIX / "activity.txt"),
             "--account", ACCOUNT, "--create", "Managed IRA", "--dry-run", "--json",
         ],
     )  # fmt: skip
@@ -459,7 +459,7 @@ def test_cli_import_then_cash_ls_shows_the_advisory_fee(cli_env: FakeProvider) -
     runner.invoke(app, ["init"])
     result = runner.invoke(
         app,
-        ["import", "fidelity", str(FIX / "activity.txt"), "-a", ACCOUNT, "--create", "Managed IRA"],
+        ["import", "activity", str(FIX / "activity.txt"), "-a", ACCOUNT, "--create", "Managed IRA"],
     )
     assert result.exit_code == 0, result.output
     assert "ADVISORY FEES" in result.output and "25.50" in result.output
@@ -471,7 +471,7 @@ def test_cli_import_then_cash_ls_shows_the_advisory_fee(cli_env: FakeProvider) -
 
 
 def test_cli_missing_account_option_is_refused(cli_env: FakeProvider) -> None:
-    result = runner.invoke(app, ["import", "fidelity", str(FIX / "activity.txt")])
+    result = runner.invoke(app, ["import", "activity", str(FIX / "activity.txt")])
     assert result.exit_code != 0
     # CI renders Typer's error box in colour and wraps it, so match on the text
     # with ANSI codes and box-drawing stripped rather than the raw output.
@@ -484,7 +484,7 @@ def test_cli_positions_mismatch_exits_1(cli_env: FakeProvider) -> None:
     result = runner.invoke(
         app,
         [
-            "import", "fidelity", str(FIX / "activity.txt"), "-a", ACCOUNT,
+            "import", "activity", str(FIX / "activity.txt"), "-a", ACCOUNT,
             "--create", "Managed IRA", "--positions", str(FIX / "positions_mismatch.txt"),
         ],
     )  # fmt: skip
@@ -497,7 +497,7 @@ def test_cli_unknown_action_is_an_error_in_json(cli_env: FakeProvider) -> None:
     result = runner.invoke(
         app,
         [
-            "import", "fidelity", str(FIX / "activity_unknown.txt"), "-a", ACCOUNT,
+            "import", "activity", str(FIX / "activity_unknown.txt"), "-a", ACCOUNT,
             "--create", "Managed IRA", "--json",
         ],
     )  # fmt: skip

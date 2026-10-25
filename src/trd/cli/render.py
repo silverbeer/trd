@@ -1706,7 +1706,7 @@ def sweep_renderables(result: SweepResult) -> list[RenderableType]:
 
 
 def fidelity_import_renderables(plan: ImportPlan) -> list[RenderableType]:
-    """A Fidelity import: what it adds, the FEES (always, even when nothing is
+    """An activity import: what it adds, the FEES (always, even when nothing is
     new — they are the line a managed account most needs seen), then the
     positions reconciliation."""
     name = f"{plan.display_name} ({plan.account})" if plan.display_name else plan.account
@@ -1716,7 +1716,7 @@ def fidelity_import_renderables(plan: ImportPlan) -> list[RenderableType]:
     span = f"{plan.first_date} → {plan.last_date}" if plan.first_date else "no rows"
     out: list[RenderableType] = [
         Text.from_markup(
-            f"[bold]Fidelity import → {name}[/bold]  {mode}"
+            f"[bold]Activity import → {name}[/bold]  {mode}"
             + ("  [dim](new account)[/dim]" if plan.create_account else "")
         ),
         Text(
@@ -1770,7 +1770,7 @@ def fidelity_import_renderables(plan: ImportPlan) -> list[RenderableType]:
         table = Table(title=title, title_justify="left")
         table.add_column("Symbol")
         table.add_column("trd", justify="right")
-        table.add_column("Fidelity", justify="right")
+        table.add_column("Broker", justify="right")
         table.add_column("Diff", justify="right")
         for r in check.rows:
             bad = r.symbol in check.mismatched
@@ -1814,7 +1814,7 @@ def fidelity_renderables(result: FidelityResult) -> list[RenderableType]:
         return f"{value:+.3f}R" if value is not None else "—"
 
     header = (
-        f"[bold]backtest fidelity[/bold]  {result.start} → {result.end}  ·  {result.timeframe}"
+        f"[bold]replay match[/bold]  {result.start} → {result.end}  ·  {result.timeframe}"
         f"  ·  fill: {result.fill}\n"
         f"live {result.live_trades} trades at {mean(result.live_expectancy_r)}  ·  "
         f"replay {result.replay_trades} at {mean(result.replay_expectancy_r)}  ·  "

@@ -47,9 +47,9 @@ trd quote AAPL                        # live quote + profile: sector / industry 
 trd buy AAPL 10 [--price 213.50] [--account main] [--date 2026-06-10] [--fees 1] [--note ...]
 trd sell AAPL 5 [--price ...]         # validates held quantity
 trd import txns.csv                   # bulk-load transactions
-trd import fidelity ACTIVITY.csv --account managed-ira [--create "Managed IRA"]
+trd import activity ACTIVITY.csv --account managed-ira [--create "Managed IRA"]
               [--positions POSITIONS.csv] [--opening-from-positions] [--opening-price SYM=P]
-              [--fidelity-account NAME|NUMBER] [--dry-run] [--json]
+              [--source-account NAME|NUMBER] [--dry-run] [--json]
                                       # Fidelity's Activity History export (no retail API,
                                       # SB-1418). The file names NO account: --account is
                                       # mandatory, --create makes it (real). YOU BOUGHT /
@@ -523,7 +523,7 @@ trd engine sweep -p KEY=V1,V2 [-p ...] [--start ISO] [--end ISO] [--workers N] [
                                       # 16 rows of 4 months of 5m bars: ~4 min (a single 5m backtest
                                       # went 35 min -> 63 s when volratio stopped re-summing its
                                       # 1,560-bar window every bar — the same speedup reaches scans)
-trd engine fidelity [--days 30] [--start ISO] [--end ISO] [--entry-fill open|close] [--json]
+trd engine replay-match [--days 30] [--start ISO] [--end ISO] [--entry-fill open|close] [--json]
                                       # does the backtest trade the way the engine did? Replays
                                       # the window and pairs it with the live trades (same name,
                                       # same session, nearest entry). Splits Σ replay R - Σ live R

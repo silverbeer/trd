@@ -542,7 +542,7 @@ def parse_positions(text: str, account: str | None = None) -> PositionsFile:
     elif len(accounts) > 1:
         raise TrdError(
             "The Positions export holds several Fidelity accounts "
-            f"({', '.join(accounts)}); name one with --fidelity-account."
+            f"({', '.join(accounts)}); name one with --source-account."
         )
     rows = [p[2] for p in parsed if isinstance(p[2], PositionRow)]
     pending = sum((p[2] for p in parsed if isinstance(p[2], Decimal)), Decimal(0))
