@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# Is the Robinhood MCP still signed in? Checked the way the live runner uses it:
+# Is the broker's MCP still signed in? Checked the way the live runner uses it:
 # a headless `claude -p`, nobody at the keyboard. Hourly, from launchd
 # (deploy/io.silverbeer.trd.broker-auth-probe.plist).
 #

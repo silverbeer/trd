@@ -114,7 +114,7 @@ than by the rules.
 Rules, in order of importance:
 
 1. A finding is about a POPULATION — a rule, a strategy, the entry filter, a
-   market condition — never about one trade. "SOFI stopped out, consider a wider
+   market condition — never about one trade. "PLTR stopped out, consider a wider
    stop" written every day buries the one real finding. If you can only support a
    claim with a single trade, do not make the claim.
 

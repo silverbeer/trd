@@ -261,7 +261,7 @@ engine its own secret — the CronJob's `envFrom` name is the only thing to chan
 ### Live engine alerts — a private chat, not the channel
 
 A live engine's messages that need you to act — an order it wants placed, an
-approval waiting in the Robinhood app, an order rejected, expired or in conflict —
+approval waiting in the broker's app, an order rejected, expired or in conflict —
 go to an **alert chat**, not the channel. Booked live fills still go to the
 channel. Same bot token; the chat is resolved in this order:
 

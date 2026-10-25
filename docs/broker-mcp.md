@@ -1,12 +1,12 @@
-# Robinhood MCP
+# Broker MCP
 
-Connects a Claude Code session to Robinhood's agentic MCP so it can read the
+Connects a Claude Code session to the broker's agentic MCP so it can read the
 brokerage — balances, positions, quotes, orders — and, for the live engine
 only, place and cancel **equity** orders. Every other write tool — options,
 advanced and crypto orders, option exercise, watchlist, scan and alert
 mutations — is denied by policy, not by good intentions. The three equity
 order tools are `ask`: every call prompts in Claude Code, and with trade
-approvals on the order also waits for the customer in the Robinhood app.
+approvals on the order also waits for the customer in the broker's app.
 
 **trd itself never calls the broker.** Nothing in `src/trd` imports or knows
 about MCP. A live engine writes order intents; an agent session drains them
@@ -57,14 +57,14 @@ through stage two — nothing is trusted before it has been named.
 53 reads allowed, 3 asked, 27 denied. `deny` beats `allow`, so a tool in both stays
 blocked. Permission rules match MCP tools as `mcp__<server>` (all tools) or
 `mcp__<server>__<tool>` (exactly one) — there is no mid-name wildcard, so each
-tool needs its own line. That is the point: a tool Robinhood adds next month
+tool needs its own line. That is the point: a tool the broker adds next month
 matches neither list, so it is neither silently allowed nor silently denied — it
 surfaces as an unlisted tool that requires an explicit decision.
 
 The 3 asked are the equity order path the live swing engine needs (SB-1373):
 `review_equity_order`, `place_equity_order` and `cancel_equity_order`. `ask`
 prompts on every call, so each order is approved twice — once in Claude Code,
-once in the Robinhood app, where trade approvals are on for the agentic account
+once in the broker's app, where trade approvals are on for the agentic account
 (with approvals on, the agent proposes and the customer places). An `allow`
 here would leave the app as the only gate.
 
@@ -87,7 +87,7 @@ call at a time.
 ### Re-enumerating the tool list
 
 The list above is a snapshot, and it drifts. Between SB-500 and 2026-10-20
-Robinhood added 30 tools — advanced (OCO) orders, crypto orders, trade
+The broker added 30 tools — advanced (OCO) orders, crypto orders, trade
 approvals, alerts, SEC filings — 11 of them writes, and for that whole time
 they sat on neither list (SB-1364). An unlisted tool is not a denied one: in
 auto mode the classifier decides, not this file. Re-enumerate whenever
@@ -101,7 +101,7 @@ documentation, and without calling a single tool — issue a JSON-RPC
 `initialize` followed by `tools/list` against the endpoint with the stored OAuth
 token. Never read that token by a means that prints it to a terminal or a
 transcript; pipe it. `security find-generic-password -s "Claude Code-credentials" -g`
-prints the secret and will leak both the Robinhood tokens and the Claude Code
+prints the secret and will leak both the broker's tokens and the Claude Code
 session token — use `-w` and pipe it into the request.
 
 ### 2. Add the server, at **local** scope
@@ -135,7 +135,7 @@ claude mcp list
 
 Done once, for the equity order path only (SB-1373, PR #143):
 `review_equity_order`, `place_equity_order` and `cancel_equity_order` moved
-from `deny` to `ask` — not `allow`, so the Robinhood app's trade approval is
+from `deny` to `ask` — not `allow`, so the broker app's trade approval is
 never the only gate. Any further write follows the same rule: one tool at a
 time, out of `deny`, in the **committed** `.claude/settings.json`, reviewed as
 a diff. Not
@@ -162,7 +162,7 @@ same reason all market data goes through `MarketDataProvider`.
 ```json
 {
   "as_of": "2026-08-03T14:22:00-04:00",
-  "source": "robinhood",
+  "source": "broker",
   "account": "paper-agent",
   "cash": "1204.11",
   "unsettled": "0.00",
@@ -305,7 +305,7 @@ Follow these steps exactly, in order.
      TRD_HOME=~/.trd-live trd engine outbox ack <intent_id> --approval-id <approval_id> --notify
      ```
 
-     `--notify` sends the user "approve … in the Robinhood app — expires 16:00 ET"
+     `--notify` sends the user "approve … in the broker's app — expires 16:00 ET"
      in the live alert chat.
    - An **order** (no approval needed): `--broker-order-id <order id>`.
    - An **error** (the place call failed, nothing reached the broker):
@@ -373,8 +373,8 @@ The steps above, run by launchd on the mini every 10 minutes from 09:30 to 16:15
 ET, with nobody at the keyboard. The person's part is the phone:
 
 1. Telegram, private chat: `💵 LIVE: approve BUY NVDA 0.104712 sh (~$20.00 @
-   191.00) in the Robinhood app — expires 16:00 ET`, with the rule's reason.
-2. Approve (or decline) it in the Robinhood app.
+   191.00) in the broker's app — expires 16:00 ET`, with the rule's reason.
+2. Approve (or decline) it in the broker's app.
 3. Telegram, channel: `filled BUY NVDA … @ 190.88 (scan saw 191.00, -0.06%)`.
 
 `deploy/live-runner.sh`, one pass:

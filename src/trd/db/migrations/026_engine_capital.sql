@@ -5,7 +5,7 @@
 -- proceeds settle T+1 and are not buying power until they do. Replayed on the
 -- live swing paper book since 2026-07-12, 105 of 112 entries came the same day as
 -- an earlier exit and 86 of them (77%) would have needed unsettled proceeds.
--- Robinhood rejects those orders, so after the first exit a live engine and its
+-- The broker rejects those orders, so after the first exit a live engine and its
 -- paper twin would be trading different books. With a capital set, the live scan,
 -- paper and the backtest all build the same ledger and skip the same entries.
 --

@@ -1,9 +1,9 @@
-"""Import Fidelity's own CSV exports into an account (SB-1418).
+"""Import a managed account's own CSV exports (SB-1418).
 
-Not `services/replay_match.py`, which is the engine's backtest-fidelity check and
+Not `services/replay_match.py`, which is the engine's replay-match check and
 has nothing to do with the brokerage.
 
-Fidelity offers no retail API, so a Fidelity-managed account — one an adviser
+The custodian offers no retail API, so a custodian-managed account — one an adviser
 trades, for a fee — is tracked from the exports its website gives you:
 
 - **Activity History** (required): every buy, sell, distribution, reinvestment
@@ -18,7 +18,7 @@ How each row lands, and why:
 - YOU BOUGHT / REINVESTMENT -> a `txn` buy; YOU SOLD -> a `txn` sell. The price is
   derived from the Amount (cash that actually moved) rather than read from the
   Price column, which is rounded to cents: over a year of fund trades the
-  rounding is real money, and the cash ledger has to land on Fidelity's.
+  rounding is real money, and the cash ledger has to land on the custodian's.
 - DIVIDEND RECEIVED -> income `dividend`; LONG-/SHORT-TERM CAP GAIN -> income
   `capital_gain`. A reinvested distribution is TWO rows in the export — the
   cash arriving, then the cash buying shares — and is recorded as exactly those
@@ -38,14 +38,14 @@ How each row lands, and why:
 Idempotent: each row is keyed (run date | action class | symbol | quantity |
 amount | occurrence among identical keys in the file) in `import_row`, so the
 same file, or an overlapping later one, writes each row once. Assumes an export
-covers whole days, which Fidelity's date-range downloads do.
+covers whole days, which the custodian's date-range downloads do.
 
 Opening state (built: `opening_from_positions`): an activity history does not
 start at zero. With a Positions export taken AFTER the activity, what was held
 before the first row is Positions minus the activity's net quantity per symbol;
 the cash before it is read off the activity's own running Cash Balance column.
 Those are seeded the day before the first row — buys at that day's provider
-close (or `opening_prices`), note "opening balance from Fidelity positions",
+close (or `opening_prices`), note "opening balance from the positions export",
 and one deposit of their value plus the cash — so the account's return is
 measured from that day and not from nothing. Only on an account with no history.
 
@@ -91,13 +91,13 @@ from trd.services.reconcile import ReconcileService
 SOURCE = "activity"
 CENT = Decimal("0.01")
 PRICE_PLACES = Decimal("0.00000001")  # txn.price is DECIMAL(24, 8)
-# Shares either side may differ by before a symbol is a mismatch: Fidelity
+# Shares either side may differ by before a symbol is a mismatch: The custodian
 # states fund quantities to three decimals.
 POSITION_TOLERANCE = Decimal("0.001")
-# Fidelity's core money-market funds: the account's cash, never a holding. A
+# the custodian's core money-market funds: the account's cash, never a holding. A
 # Positions export marks the core with a trailing '**' as well.
 CORE_SYMBOLS = frozenset({"SPAXX", "FDRXX", "FZFXX", "SPRXX", "FCASH", "CORE"})
-OPENING_NOTE = "opening balance from Fidelity positions"
+OPENING_NOTE = "opening balance from the positions export"
 
 ACTIVITY_COLUMNS = (
     "Run Date",
@@ -194,7 +194,7 @@ def _header_index(lines: Sequence[str], first_cell: str | tuple[str, ...]) -> in
 
 def _data_lines(lines: Sequence[str], header: int) -> list[tuple[int, str]]:
     """(1-based line number, text) from below the header up to the first blank
-    line. Everything after that blank is Fidelity's legal footer."""
+    line. Everything after that blank is the custodian's legal footer."""
     out: list[tuple[int, str]] = []
     for i in range(header + 1, len(lines)):
         if not lines[i].strip():
@@ -212,13 +212,11 @@ def parse_activity(text: str) -> list[ActivityRow]:
     lines = _lines(text)
     header = _header_index(lines, "Run Date")
     if header is None:
-        raise TrdError(
-            "Not a Fidelity Activity History export: no 'Run Date,Action,...' header found."
-        )
+        raise TrdError("Not an Activity History export: no 'Run Date,Action,...' header found.")
     columns = [c.strip() for c in next(csv.reader([lines[header]]))]
     missing = [c for c in ACTIVITY_COLUMNS if c not in columns]
     if missing:
-        raise TrdError(f"Fidelity Activity export is missing columns: {', '.join(missing)}.")
+        raise TrdError(f"Activity export is missing columns: {', '.join(missing)}.")
 
     rows: list[ActivityRow] = []
     problems: list[str] = []
@@ -306,11 +304,11 @@ def cash_effect(row: ActivityRow) -> Decimal:
 
 
 def balance_check(rows: Sequence[ActivityRow]) -> tuple[int, Decimal | None]:
-    """Replay Fidelity's running Cash Balance column (rows newest first).
+    """Replay the custodian's running Cash Balance column (rows newest first).
 
     Returns how many rows break the chain — this row's balance is not the older
     row's balance plus this row's cash effect — and the cash before the oldest
-    row. Zero breaks means this parser and Fidelity agree on every dollar.
+    row. Zero breaks means this parser and the custodian agree on every dollar.
     """
     breaks = 0
     for newer, older in pairwise(rows):
@@ -372,9 +370,9 @@ def _write_for(row: ActivityRow, key: str) -> PlannedWrite:
             WriteTarget.TXN,
             side.value,
             abs(row.amount),
-            "Fidelity: dividend reinvested"
+            "import: dividend reinvested"
             if k == ActivityKind.REINVESTMENT
-            else f"Fidelity: {side.value}",
+            else f"import: {side.value}",
             quantity=quantity,
             price=_trade_price(row, quantity),
             fees=row.fees,
@@ -385,29 +383,29 @@ def _write_for(row: ActivityRow, key: str) -> PlannedWrite:
                 WriteTarget.INCOME,
                 IncomeKind.CASH_SWEEP.value,
                 row.amount,
-                f"Fidelity: core money market interest ({row.symbol})",
+                f"import: core money market interest ({row.symbol})",
                 symbol=None,
             )
-        return make(WriteTarget.INCOME, IncomeKind.DIVIDEND.value, row.amount, "Fidelity: dividend")
+        return make(WriteTarget.INCOME, IncomeKind.DIVIDEND.value, row.amount, "import: dividend")
     if k in (ActivityKind.CAPITAL_GAIN_LONG, ActivityKind.CAPITAL_GAIN_SHORT):
         term = "long-term" if k == ActivityKind.CAPITAL_GAIN_LONG else "short-term"
         return make(
             WriteTarget.INCOME,
             IncomeKind.CAPITAL_GAIN.value,
             row.amount,
-            f"Fidelity: {term} capital gain distribution",
+            f"import: {term} capital gain distribution",
         )
     if k == ActivityKind.ADVISORY_FEE:
         return make(
             WriteTarget.CASH_FLOW,
             CashFlowKind.FEE.value,
             -row.amount,
-            "Fidelity advisory fee",
+            "advisory fee",
             symbol=None,
         )
     flow = CashFlowKind.DEPOSIT if row.amount > 0 else CashFlowKind.WITHDRAWAL
     return make(
-        WriteTarget.CASH_FLOW, flow.value, abs(row.amount), f"Fidelity: {row.action}", symbol=None
+        WriteTarget.CASH_FLOW, flow.value, abs(row.amount), f"import: {row.action}", symbol=None
     )
 
 
@@ -455,7 +453,7 @@ def write_cash(write: PlannedWrite) -> Decimal:
 
 # --------------------------------------------------------------- positions
 #
-# UNTESTED AGAINST A REAL FILE. Written to Fidelity's documented Positions
+# UNTESTED AGAINST A REAL FILE. Written to the custodian's documented Positions
 # layout (Account Number, Account Name, Symbol, Description, Quantity, Last
 # Price, ..., Current Value, ...; the core as 'SPAXX**' with a value and no
 # quantity; a 'Pending Activity' row) before a real export was supplied.
@@ -483,7 +481,7 @@ def _downloaded_at(lines: Sequence[str]) -> datetime | None:
 
 
 def parse_positions(text: str, account: str | None = None) -> PositionsFile:
-    """A Positions export -> rows for ONE Fidelity account.
+    """A Positions export -> rows for ONE the custodian account.
 
     A login with several accounts downloads them all into one file; `account`
     (an Account Number or Account Name) picks one. Several and none named is
@@ -492,11 +490,11 @@ def parse_positions(text: str, account: str | None = None) -> PositionsFile:
     lines = _lines(text)
     header = _header_index(lines, _POSITIONS_FIRST_CELLS)
     if header is None:
-        raise TrdError("Not a Fidelity Positions export: no 'Account Number,...' header found.")
+        raise TrdError("Not a Positions export: no 'Account Number,...' header found.")
     columns = [c.strip() for c in next(csv.reader([lines[header]]))]
     for needed in ("Symbol", "Quantity", "Current Value"):
         if needed not in columns:
-            raise TrdError(f"Fidelity Positions export is missing the '{needed}' column.")
+            raise TrdError(f"Positions export is missing the '{needed}' column.")
 
     parsed: list[tuple[str | None, str | None, PositionRow | Decimal]] = []
     for line_no, line in _data_lines(lines, header):
@@ -536,12 +534,12 @@ def parse_positions(text: str, account: str | None = None) -> PositionsFile:
         ]
         if not parsed:
             raise TrdError(
-                f"No rows for Fidelity account {account!r} in the Positions export "
+                f"No rows for account {account!r} in the Positions export "
                 f"(it has: {', '.join(accounts) or 'none named'})."
             )
     elif len(accounts) > 1:
         raise TrdError(
-            "The Positions export holds several Fidelity accounts "
+            "The Positions export holds several accounts "
             f"({', '.join(accounts)}); name one with --source-account."
         )
     rows = [p[2] for p in parsed if isinstance(p[2], PositionRow)]
@@ -552,7 +550,7 @@ def parse_positions(text: str, account: str | None = None) -> PositionsFile:
 def check_positions(
     held: dict[str, Decimal], cash: Decimal, positions: PositionsFile, projected: bool
 ) -> PositionsCheck:
-    """trd's quantities and cash against Fidelity's, symbol by symbol."""
+    """trd's quantities and cash against the custodian's, symbol by symbol."""
     theirs = positions.quantities()
     rows = [
         PositionCheckRow(symbol=s, trd=held.get(s, Decimal(0)), broker=theirs.get(s, Decimal(0)))
@@ -649,7 +647,7 @@ class ActivityImportService:
             raise UnknownAccountError(account)
         if existing is not None and existing.type != AccountType.REAL:
             raise TrdError(
-                f"'{account}' is a {existing.type.value} account; a Fidelity export is real money."
+                f"'{account}' is a {existing.type.value} account; an activity export is real money."
             )
         account_id = existing.id if existing else None
 
@@ -661,8 +659,8 @@ class ActivityImportService:
         warnings: list[str] = []
         if breaks:
             warnings.append(
-                f"{breaks} row(s) do not follow Fidelity's running Cash Balance — the "
-                "cash trd derives may differ from Fidelity's."
+                f"{breaks} row(s) do not follow the custodian's running Cash Balance — the "
+                "cash trd derives may differ from the custodian's."
             )
 
         if opening_from_positions:
@@ -940,7 +938,7 @@ class ActivityImportService:
 
     def _instrument(self, symbol: str, description: str | None):
         """The provider's instrument, or — for a fund it does not list (many
-        adviser-only share classes) — one named from Fidelity's description. It
+        adviser-only share classes) — one named from the custodian's description. It
         is then simply unpriced: a missing price reads unknown, never zero."""
         try:
             return self.portfolio.ensure_instrument(symbol)

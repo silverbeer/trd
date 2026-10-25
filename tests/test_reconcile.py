@@ -86,9 +86,9 @@ def test_a_position_the_broker_does_not_have(books, reconcile) -> None:
 
 def test_a_position_trd_has_never_heard_of(books, reconcile) -> None:
     result = reconcile.reconcile(
-        snapshot(("AAPL", "10"), ("NVDA", "4"), ("SOFI", "12")), "TEST-ACCT-AGENT"
+        snapshot(("AAPL", "10"), ("NVDA", "4"), ("PLTR", "12")), "TEST-ACCT-AGENT"
     )
-    row = next(r for r in result.rows if r.symbol == "SOFI")
+    row = next(r for r in result.rows if r.symbol == "PLTR")
     assert row.status == ReconcileStatus.UNTRACKED
     assert row.trd_quantity is None
 
@@ -212,7 +212,7 @@ def test_the_snapshot_format_parses_as_documented() -> None:
         """
         {
           "as_of": "2026-08-03T14:22:00-04:00",
-          "source": "robinhood",
+          "source": "broker",
           "account": "TEST-ACCT-AGENT",
           "cash": "1204.11",
           "positions": [
@@ -222,7 +222,7 @@ def test_the_snapshot_format_parses_as_documented() -> None:
         }
         """
     )
-    assert parsed.source == "robinhood"
+    assert parsed.source == "broker"
     assert parsed.cash == Decimal("1204.11")
     assert [p.symbol for p in parsed.positions] == ["AMZN", "MU"]
     assert parsed.positions[0].quantity == Decimal("3.759964")

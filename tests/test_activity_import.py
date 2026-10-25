@@ -1,6 +1,6 @@
-"""Importing Fidelity's CSV exports (SB-1418).
+"""Importing a managed account's CSV exports (SB-1418).
 
-Every fixture under tests/fixtures/activity is SYNTHETIC: Fidelity's layout
+Every fixture under tests/fixtures/activity is SYNTHETIC: The custodian's layout
 (BOM, blank lines, header, newest-first rows, legal footer) and its action
 phrasings, with invented quantities, prices, amounts and dates.
 
@@ -92,7 +92,7 @@ def test_quoted_and_empty_values_and_negative_sell_quantity() -> None:
 
 
 def test_running_cash_balance_replays_without_a_break() -> None:
-    """Fidelity's own Cash Balance column agrees with how every row is read —
+    """The custodian's own Cash Balance column agrees with how every row is read —
     including the core money market reinvestment, which moves no cash."""
     breaks, opening = balance_check(parse_activity(text("activity.txt")))
     assert breaks == 0
@@ -171,7 +171,7 @@ def test_import_writes_every_class(
     balance = CashService(conn).balance(ACCOUNT)
     assert balance.fees == D("25.50")
     assert balance.deposits == D(10000) and balance.withdrawals == 0
-    # Lands on Fidelity's own closing Cash Balance for the file, to the cent.
+    # Lands on the custodian's own closing Cash Balance for the file, to the cent.
     assert balance.cash == D("2279.45")
 
 
@@ -196,7 +196,7 @@ def test_unpriced_fund_is_tracked_under_the_brokers_name(
     """The fake provider knows neither fund — as with adviser-only share classes."""
     run(importer)
     instrument = PortfolioService(conn, FakeProvider()).instruments.get_by_symbol("FXNAX")
-    assert instrument is not None and instrument.name == "FIDELITY US BOND INDEX FUND"
+    assert instrument is not None and instrument.name == "EXAMPLE US BOND INDEX FUND"
 
 
 def test_reimport_writes_nothing(

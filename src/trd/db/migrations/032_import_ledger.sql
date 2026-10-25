@@ -1,5 +1,5 @@
 -- What a broker export has already written into an account (SB-1418: the
--- Fidelity activity CSV), so importing the same file twice — or next month's
+-- activity CSV), so importing the same file twice — or next month's
 -- file, which overlaps this one — writes nothing twice.
 --
 -- A key per source row rather than a column on txn / income / cash_flow: one

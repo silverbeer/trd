@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""The live runner's reader for a headless Claude session's Robinhood MCP calls.
+"""The live runner's reader for a headless Claude session's the broker MCP calls.
 
 The runner (deploy/live-runner.sh) has a model make the broker calls, because the
-Robinhood MCP's sign-in lives in Claude Code. It never lets the model *report*
+The broker MCP's sign-in lives in Claude Code. It never lets the model *report*
 what came back. Every session runs with `--output-format stream-json`, and this
 reads the transcript: each tool call's exact input, and each result as the broker
 returned it. A fill snapshot is the broker's own JSON, never a model's retyping

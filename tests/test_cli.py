@@ -97,11 +97,11 @@ def test_earnings_empty(cli_env: FakeProvider) -> None:
 
 def test_account_add_and_ls(cli_env: FakeProvider) -> None:
     runner.invoke(app, ["init"])
-    result = runner.invoke(app, ["account", "add", "fidelity"])
+    result = runner.invoke(app, ["account", "add", "ira"])
     assert result.exit_code == 0, result.output
-    assert "fidelity" in result.output
+    assert "ira" in result.output
 
-    result = runner.invoke(app, ["account", "add", "fidelity"])
+    result = runner.invoke(app, ["account", "add", "ira"])
     assert result.exit_code == 0
     assert "already exists" in result.output
 
@@ -110,10 +110,10 @@ def test_account_add_and_ls(cli_env: FakeProvider) -> None:
 
     result = runner.invoke(app, ["account", "ls"])
     assert result.exit_code == 0, result.output
-    for name in ("main", "fidelity", "paper"):
+    for name in ("main", "ira", "paper"):
         assert name in result.output
 
-    result = runner.invoke(app, ["buy", "AAPL", "1", "--price", "100", "--account", "fidelity"])
+    result = runner.invoke(app, ["buy", "AAPL", "1", "--price", "100", "--account", "ira"])
     assert result.exit_code == 0, result.output
 
 
@@ -229,7 +229,7 @@ def test_plan_on_real_account_lifecycle(cli_env: FakeProvider) -> None:
     cli_env.add_symbol("SPY", price="500.00", prev_close="495.00", type_=InstrumentType.ETF)
     cli_env.add_symbol("QQQ", price="200.00", type_=InstrumentType.ETF)
     runner.invoke(app, ["init"])
-    runner.invoke(app, ["account", "add", "sofi"])
+    runner.invoke(app, ["account", "add", "dca"])
 
     result = runner.invoke(
         app,
@@ -237,7 +237,7 @@ def test_plan_on_real_account_lifecycle(cli_env: FakeProvider) -> None:
             "plan",
             "set",
             "--account",
-            "sofi",
+            "dca",
             "--monthly",
             "100",
             "--alloc",
@@ -256,13 +256,13 @@ def test_plan_on_real_account_lifecycle(cli_env: FakeProvider) -> None:
     assert "Recorded" in result.output
     assert "broker" in result.output  # real-account reminder
 
-    result = runner.invoke(app, ["plan", "status", "--account", "sofi"])
+    result = runner.invoke(app, ["plan", "status", "--account", "dca"])
     assert result.exit_code == 0, result.output
     assert "Total invested" in result.output
 
     result = runner.invoke(app, ["plan", "ls"])
     assert result.exit_code == 0, result.output
-    assert "sofi" in result.output and "real" in result.output
+    assert "dca" in result.output and "real" in result.output
     assert "DCA" in result.output  # goal column
 
 

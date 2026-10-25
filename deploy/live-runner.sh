@@ -8,7 +8,7 @@
 #      → not placed, and the person is told why
 #   3. place the clean ones (place_equity_order, the spec's own ref_id). Trade
 #      approvals are ON, so each comes back as an approval, and `outbox ack
-#      --notify` sends the Telegram message: "approve BUY X ... in the Robinhood
+#      --notify` sends the Telegram message: "approve BUY X ... in the broker's
 #      app". The person approves on their phone. That tap is the human gate.
 #   4. read back what the broker did with every open intent (orders + approvals)
 #      and book it: `trd engine fills --notify`
@@ -204,7 +204,7 @@ import json, sys
 b = json.loads(sys.argv[1])
 print("%s %s %s sh (intent %s) — %s" % (b["side"].upper(), b["symbol"], b["quantity"], b["intent_id"], b["why"]))
 ' "$line")
-        rh_alert "💵 LIVE: NOT placed — Robinhood's review flagged it
+        rh_alert "💵 LIVE: NOT placed — the broker's review flagged it
 $MSG
 It stays in the outbox and lapses at 16:00. Nothing for you to approve."
         rh_log "blocked: $MSG"
@@ -252,7 +252,7 @@ for a in json.load(open(sys.argv[1]))["acks"]:
             trd_retry engine halt --reason "live runner: order call no spec asked for: $UNEXPECTED" >/dev/null
             rh_alert "⛔ trd live engine HALTED by the runner: an order call did not match any outbox spec.
 $UNEXPECTED
-If an approval for it is waiting in the Robinhood app, DECLINE it. Then check and: trd engine resume"
+If an approval for it is waiting in the broker's app, DECLINE it. Then check and: trd engine resume"
             fail error "unexpected order call — halted"
         fi
         PLACE_AUTH=$(py 'import json,sys; print(json.load(open(sys.argv[1]))["auth"] or "")' "$WORK/placed.json")

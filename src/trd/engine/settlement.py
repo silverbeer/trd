@@ -1,7 +1,7 @@
 """Settled cash: what a cash account may actually spend today.
 
 In a cash account a sale's proceeds settle T+1 — one business day after the
-trade — and a broker excludes them from buying power until then. Robinhood does.
+trade — and a broker excludes them from buying power until then. Some brokers do.
 The engine had no cash concept at all: capacity was a slot count, and a scan runs
 its exits first and refills the freed slot in the same pass. Replayed on the live
 swing paper book since 2026-07-12, 105 of 112 entries came the same day as an

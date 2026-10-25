@@ -103,7 +103,7 @@ def test_income_after_the_window_is_not_counted() -> None:
 
 
 def test_a_plan_gets_only_its_share_of_a_dividend() -> None:
-    """The sofi case. An account holding SPY from an old one-off and from one
+    """The dca case. An account holding SPY from an old one-off and from one
     plan contribution must not credit the plan with the whole payment — that
     would flatter the very comparison the plan exists to make."""
     account = [txn(1, "buy", "3", "100", DAY - timedelta(days=30)), txn(1, "buy", "1", "100", DAY)]
@@ -113,7 +113,7 @@ def test_a_plan_gets_only_its_share_of_a_dividend() -> None:
 
 
 def test_a_plan_gets_none_of_a_dividend_on_something_it_never_bought() -> None:
-    """VOO pays the sofi account; the plan has never held VOO."""
+    """VOO pays the dca account; the plan has never held VOO."""
     account = [txn(2, "buy", "5", "500", DAY - timedelta(days=30))]
     plan = [txn(1, "buy", "1", "100", DAY)]
     assert plan_income_flows([income("8", DAY, instrument_id=2)], plan, account) == []

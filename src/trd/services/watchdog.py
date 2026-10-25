@@ -208,7 +208,7 @@ def guard_alarms(payload: dict) -> list[str]:
 def runner_alarms(home: Path, now: datetime) -> list[str]:
     """Is the live runner placing what the engine decides? Judged on its heartbeat.
 
-    Staleness only. A runner that runs and fails — a lapsed Robinhood login,
+    Staleness only. A runner that runs and fails — a lapsed broker login,
     approvals switched off — sends its own alert; repeating it here would be the
     same news twice. What only the watchdog can see is a runner that is not
     running at all.

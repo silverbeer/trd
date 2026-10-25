@@ -1,6 +1,6 @@
-"""A Fidelity CSV export, parsed, and the writes it implies (SB-1418).
+"""A managed account's CSV export, parsed, and the writes it implies (SB-1418).
 
-Fidelity has no retail API, so a Fidelity-managed account is tracked from the
+The custodian has no retail API, so a custodian-managed account is tracked from the
 exports its website offers: Activity History (every buy, sell, distribution and
 fee) and Positions (what is held now). These models are the parsed rows and the
 plan of writes, so `--dry-run` and the real import print the same document.
@@ -36,7 +36,7 @@ class ActivityRow(BaseModel):
     symbol: str | None
     description: str | None
     price: Decimal | None
-    quantity: Decimal  # as Fidelity writes it: a sell is negative
+    quantity: Decimal  # as the custodian writes it: a sell is negative
     fees: Decimal  # Commission ($) + Fees ($)
     amount: Decimal  # signed cash: a buy is negative
     cash_balance: Decimal | None
@@ -64,7 +64,7 @@ class PlannedWrite(BaseModel):
     # fee | deposit | withdrawal (cash_flow); core_cash (none)
     kind: str
     symbol: str | None = None
-    description: str | None = None  # Fidelity's fund name, kept for an unpriced symbol
+    description: str | None = None  # the custodian's fund name, kept for an unpriced symbol
     quantity: Decimal | None = None
     price: Decimal | None = None
     fees: Decimal = Decimal(0)
@@ -80,7 +80,7 @@ class FeeLine(BaseModel):
 
 
 class PositionRow(BaseModel):
-    """One row of a Fidelity Positions export."""
+    """One row of a custodian Positions export."""
 
     account: str | None
     symbol: str
@@ -132,11 +132,11 @@ class PositionsCheck(BaseModel):
     cash_broker: Decimal
     cash_ok: bool
     projected: bool  # True on --dry-run: trd's side is the DB plus the planned writes
-    # The Positions parser was written against Fidelity's documented layout
+    # The Positions parser was written against the custodian's documented layout
     # before a real export was available. Carried in the output until it has
     # been checked against one, so nobody mistakes a pass for a proven parser.
     note: str = (
-        "Positions parser not yet verified against a real Fidelity Positions export; "
+        "Positions parser not yet verified against a real the custodian Positions export; "
         "check the rows above against the file."
     )
 
@@ -157,9 +157,9 @@ class ImportPlan(BaseModel):
     rows: int
     writes: list[PlannedWrite]
     fees: list[FeeLine]
-    # Fidelity's own running Cash Balance column, replayed: rows where the
+    # the custodian's own running Cash Balance column, replayed: rows where the
     # balance does not follow from the previous row and this row's amount.
-    # Zero means the parser and Fidelity agree about every dollar of cash.
+    # Zero means the parser and the custodian agree about every dollar of cash.
     cash_balance_breaks: int = 0
     opening_cash: Decimal | None = None  # cash before the first row, per that column
     positions: PositionsCheck | None = None

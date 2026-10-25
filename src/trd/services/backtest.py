@@ -864,7 +864,7 @@ class BacktestService:
         if config is None:
             raise TrdError("No engine configured. Run 'trd engine init' first.")
         # An engine with a capital trades a cash account, so its replay starts
-        # from that cash and honours T+1 unless told otherwise. Fidelity and the
+        # from that cash and honours T+1 unless told otherwise. Most custodians and the
         # sweep reach here without either argument, so they inherit it too — a
         # replay that refilled slots the live engine could not would be comparing
         # two different books.

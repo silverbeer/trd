@@ -35,12 +35,12 @@ def test_sim_init_creates_simulation_account(plans: PlanService) -> None:
 
 def test_plan_on_unknown_real_account_rejected(plans: PlanService) -> None:
     with pytest.raises(TrdError, match="No account named"):
-        plans.set_plan("sofi", Decimal(100))
+        plans.set_plan("dca", Decimal(100))
 
 
 def test_plan_on_real_account(plans: PlanService) -> None:
-    AccountRepo(plans.conn).create("sofi", AccountType.REAL)
-    plan = plans.set_plan("sofi", Decimal(100))
+    AccountRepo(plans.conn).create("dca", AccountType.REAL)
+    plan = plans.set_plan("dca", Decimal(100))
     assert not plan.is_paper
 
 
@@ -105,22 +105,22 @@ def test_real_account_plan_isolated_from_other_holdings(
 ) -> None:
     """The headline feature: plan status scores only plan-tagged txns, even when
     the same real account holds other positions."""
-    AccountRepo(plans.conn).create("sofi", AccountType.REAL)
+    AccountRepo(plans.conn).create("dca", AccountType.REAL)
     portfolio = PortfolioService(plans.conn, provider)
     # unrelated pre-existing holding in the same account
-    portfolio.record_trade("sofi", "NVDA", Side.BUY, Decimal(10), Decimal(100))
+    portfolio.record_trade("dca", "NVDA", Side.BUY, Decimal(10), Decimal(100))
 
-    plans.set_plan("sofi", Decimal(100))
-    [txn] = plans.invest("sofi")
+    plans.set_plan("dca", Decimal(100))
+    [txn] = plans.invest("dca")
     assert txn.plan_id is not None
 
-    status = plans.status("sofi")
+    status = plans.status("dca")
     assert status.invested == Decimal("100.00")  # NVDA's $1000 not counted
     assert status.value is not None
     assert status.value < Decimal(200)  # plan value only, not the NVDA position
 
     # account-level portfolio still sees everything
-    symbols = {p.instrument.symbol for p in portfolio.positions("sofi")}
+    symbols = {p.instrument.symbol for p in portfolio.positions("dca")}
     assert symbols == {"NVDA", "SPY"}
 
 
@@ -182,8 +182,8 @@ def test_resolve_default_account(plans: PlanService) -> None:
         plans.resolve_default_account()
     _sim(plans)
     assert plans.resolve_default_account() == "sim"
-    AccountRepo(plans.conn).create("sofi", AccountType.REAL)
-    plans.set_plan("sofi", Decimal(50))
+    AccountRepo(plans.conn).create("dca", AccountType.REAL)
+    plans.set_plan("dca", Decimal(50))
     with pytest.raises(TrdError, match="Multiple plans"):
         plans.resolve_default_account()
     assert len(plans.list_plans()) == 2

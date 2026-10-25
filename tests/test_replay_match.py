@@ -1,4 +1,4 @@
-"""Backtest fidelity (SB-1342): pair the replay's trades with the live ones and
+"""Replay match (SB-1342): pair the replay's trades with the live ones and
 split the gap into parts that sum to it exactly.
 
 Reuses the exit what-if fixtures: a day-engine trade entered at 100 with a

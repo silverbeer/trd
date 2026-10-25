@@ -1,4 +1,4 @@
-"""Backtest fidelity: does the replay trade the way the engine did? (SB-1342)
+"""Replay match: does the replay trade the way the engine did? (SB-1342)
 
 On the day engine's last thirty days the replay and the live engine each took 220
 trades and came out 0.12R apart — larger than any effect the SB-1033 exit sweep

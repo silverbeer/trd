@@ -57,7 +57,7 @@ class BrokerSnapshot(BaseModel):
     fill will show a gap that is timing, not error."""
 
     as_of: datetime
-    source: str = "robinhood"
+    source: str = "broker"
     account: str | None = None  # the broker's own account label, for the header
     # Settled buying power, and sale proceeds still waiting to settle. Both
     # optional: a snapshot without them reconciles positions only. Compared with

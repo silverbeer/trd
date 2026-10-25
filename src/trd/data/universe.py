@@ -91,7 +91,7 @@ UNIVERSE: dict[str, tuple[str, str]] = {
     "MS": ("Morgan Stanley", "Financials"),
     "C": ("Citigroup", "Financials"),
     "BLK": ("BlackRock", "Financials"),
-    "SCHW": ("Charles Schwab", "Financials"),
+    "SCHW": ("Charles Schwab", "Financials"),  # a stock in the universe, not a custodian
     "AXP": ("American Express", "Financials"),
     "V": ("Visa", "Financials"),
     "MA": ("Mastercard", "Financials"),

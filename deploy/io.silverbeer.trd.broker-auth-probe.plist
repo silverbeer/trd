@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!--
-  Hourly: is the Robinhood MCP still signed in for a headless session? Telegram to the private alert chat when it is not, and when it works again (SB-1382).
+  Hourly: is the broker's MCP still signed in for a headless session? Telegram to the private alert chat when it is not, and when it works again (SB-1382).
 
   Runs the PINNED copy in ~/.trd-runner/bin, never the checkout: code that
   places orders changes only when deploy/live-runner.sh install is re-run.

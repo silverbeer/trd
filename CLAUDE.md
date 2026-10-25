@@ -16,7 +16,7 @@ uv run ty check             # type checking
 
 ```bash
 trd init                              # create ~/.trd/trd.duckdb + 'main' account
-trd account add fidelity              # one account per brokerage (--type simulation for paper)
+trd account add ira                   # one account per brokerage (--type simulation for paper)
 trd account ls
 trd sync [--full] [--require-current] [--json]
                                       # refresh quotes + daily bars + earnings (--full = 2y backfill)
@@ -50,7 +50,7 @@ trd import txns.csv                   # bulk-load transactions
 trd import activity ACTIVITY.csv --account managed-ira [--create "Managed IRA"]
               [--positions POSITIONS.csv] [--opening-from-positions] [--opening-price SYM=P]
               [--source-account NAME|NUMBER] [--dry-run] [--json]
-                                      # Fidelity's Activity History export (no retail API,
+                                      # the custodian's Activity History export (no retail API,
                                       # SB-1418). The file names NO account: --account is
                                       # mandatory, --create makes it (real). YOU BOUGHT /
                                       # REINVESTMENT = buy (price from the Amount, not the
@@ -95,7 +95,7 @@ trd cash withdraw AMOUNT --account N | trd cash ls --account N [--json]
                                       # + sells + income. ls labels kind 'fee' "advisory fee". Only the alloc views read it so far; portfolio /
                                       # equity / dashboard returns are still trade-based
 trd alloc set --account ira --capital 100000 --name ... [--kind "IRA"]
-              [--brokerage Fidelity] -t IVV=45 -t IXUS=20 -t QQQM=25 -t SMH=5 -t CASH=5 [--drift 5]
+              [--brokerage NAME] -t IVV=45 -t IXUS=20 -t QQQM=25 -t SMH=5 -t CASH=5 [--drift 5]
                                       # --pace SPCX=24 [--pace-start ISO] (set or edit): a PACED
                                       # target (SB-1388, migration 030) — its weight of capital is
                                       # earmarked and bought in equal monthly instalments, outside
@@ -152,7 +152,7 @@ trd exit ls|check|rm [--account NAME]  # ls = all triggers vs latest close; chec
                                       # rule fires on a daily CLOSE beyond the level (run trd sync)
 trd indicators NVDA                   # indicator panel with plain-English readings
 trd indicator ls|catalog|add|rm|info  # manage followed indicators (trd indicator add ema -p period=8)
-trd dca set --account sofi --monthly 100 --day 15 --alloc SPY=40 --alloc QQQ=40 --alloc SMH=10 --alloc ARKX=10
+trd dca set --account dca --monthly 100 --day 15 --alloc SPY=40 --alloc QQQ=40 --alloc SMH=10 --alloc ARKX=10
                                       # DCA plan on ANY account; real accounts: you execute at
                                       # the broker, trd records + scores vs SPY ('trd plan' = alias)
 trd dca invest [--account NAME] [--date 2026-01-15]    # record the month (once/month/plan)
@@ -537,7 +537,7 @@ trd engine replay-match [--days 30] [--start ISO] [--end ISO] [--entry-fill open
 trd engine backtest --settlement/--no-settlement
                                       # T+1: exit proceeds wait a business day before funding an
                                       # entry ('cash_blocked' counts the skips). Default follows
-                                      # the engine's capital, as does --capital; fidelity and
+                                      # the engine's capital, as does --capital; replay-match and
                                       # sweep inherit both. MEASURED 2026-10-20, swing config,
                                       # 8y, capital 1000: +0.126R/3,058 trades off vs +0.129R/
                                       # 2,977 on (466 refills deferred), max DD -31.3% -> -28.2%.
@@ -793,7 +793,7 @@ CSV import format (header required): `date,account,symbol,side,quantity,price[,f
   price_return_pct` is (value − cost)/cost; `total_return_pct` adds the income. Reporting
   the first under the second's name is what made every figure quietly low.
 - Money/quantities are `Decimal` end to end. Never float.
-- Broker integration is **agent-side only**: an MCP session reads the brokerage and writes a snapshot file; `trd engine reconcile` does the diff. Nothing under `src/trd` imports or knows about MCP. Unattended, that session is the **live runner** (`deploy/live-runner.sh`, launchd, SB-1382): headless `claude -p` makes the broker calls, and `deploy/broker_stream.py` reads what came back from the stream-json transcript — the broker's JSON as returned, never the model's retelling — and halts the engine on any order call no outbox spec explains. It runs with `--setting-sources local` plus `deploy/live-runner-settings.json`, pinned in `~/.trd-runner` by `live-runner.sh install`; the phone approval in the Robinhood app is the per-order human gate, and it refuses to place when approvals are off. The committed `.claude/settings.json` (never `settings.local.json`, which is gitignored and would put the gate on one machine only) names every tool the server has exposed: 53 reads allowed, 3 asked, 27 denied. The asked three are the equity order path (`review_equity_order`, `place_equity_order`, `cancel_equity_order`, SB-1373): `ask` prompts on every call, on top of the Robinhood app's own trade approval. The denied are the 24 other writes (option/advanced/crypto order place and cancel, option exercise, declining a trade approval, watchlist, scan and alert mutations) plus the three non-equity order previews (`review_option_order`, `review_advanced_order`, `preview_crypto_order`), denied because trd decides from its own data. The list drifts: Robinhood added 30 tools, 11 of them writes, that sat unlisted until SB-1364. There is no mid-name wildcard, so a tool added later matches neither list and surfaces as an unlisted tool needing an explicit decision. See [docs/broker-mcp.md](docs/broker-mcp.md).
+- Broker integration is **agent-side only**: an MCP session reads the brokerage and writes a snapshot file; `trd engine reconcile` does the diff. Nothing under `src/trd` imports or knows about MCP. Unattended, that session is the **live runner** (`deploy/live-runner.sh`, launchd, SB-1382): headless `claude -p` makes the broker calls, and `deploy/broker_stream.py` reads what came back from the stream-json transcript — the broker's JSON as returned, never the model's retelling — and halts the engine on any order call no outbox spec explains. It runs with `--setting-sources local` plus `deploy/live-runner-settings.json`, pinned in `~/.trd-runner` by `live-runner.sh install`; the phone approval in the broker's app is the per-order human gate, and it refuses to place when approvals are off. The committed `.claude/settings.json` (never `settings.local.json`, which is gitignored and would put the gate on one machine only) names every tool the server has exposed: 53 reads allowed, 3 asked, 27 denied. The asked three are the equity order path (`review_equity_order`, `place_equity_order`, `cancel_equity_order`, SB-1373): `ask` prompts on every call, on top of the broker app's own trade approval. The denied are the 24 other writes (option/advanced/crypto order place and cancel, option exercise, declining a trade approval, watchlist, scan and alert mutations) plus the three non-equity order previews (`review_option_order`, `review_advanced_order`, `preview_crypto_order`), denied because trd decides from its own data. The list drifts: The broker added 30 tools, 11 of them writes, that sat unlisted until SB-1364. There is no mid-name wildcard, so a tool added later matches neither list and surfaces as an unlisted tool needing an explicit decision. See [docs/broker-mcp.md](docs/broker-mcp.md).
 - The Telegram command bot ([src/trd/notify/bot.py](src/trd/notify/bot.py)) **never opens the database**. DuckDB is single-writer and the bot is resident while a scan is not, so a connection held there would lock out a scan — putting a chat feature in the trading path. Reads answer from the snapshots the scan publishes (`status.json`, `report.json`, `status.txt`); writes go to a queue of JSON files under `TRD_HOME/commands/` that `trd engine apply-queue` drains inside the scan's process. Queue files are named by Telegram's `update_id` so replay order is the order typed and a redelivered update is recognised, not reapplied. Authorization is a numeric-user-id allowlist checked before anything reads the message text.
 - Static reference data (curated universe, FOMC/macro calendar) lives in [src/trd/data](src/trd/data) as plain Python — no YAML dep. `SundayPrepService` is pure (provider + data, no DuckDB); its briefing narrative is deterministic templates, leaving a seam for a future `--ai` pass.
 - **The only code in trd that calls a model lives in [src/trd/agents](src/trd/agents)**, is

@@ -49,7 +49,7 @@ GUARD_ORDER_MULTIPLE = Decimal("1.25")
 GUARD_MAX_LOSS_FRACTION = Decimal("0.20")
 
 # Sessions an intent may sit SUBMITTED at the broker before it counts as stuck.
-# Robinhood's market orders are good-for-day: one the broker still holds after the
+# The broker's market orders are good-for-day: one the broker still holds after the
 # session it was placed in means the snapshot that would resolve it never came.
 STUCK_SUBMITTED_SESSIONS = 1
 

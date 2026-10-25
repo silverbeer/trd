@@ -23,7 +23,7 @@ exactly this.
 
 Three rules run through everything here:
 
-- **A finding names a population, never a trade.** "SOFI stopped out, consider a
+- **A finding names a population, never a trade.** "PLTR stopped out, consider a
   wider stop" written forty times a month buries the one real finding.
 - **Small samples are hypotheses**, labelled as such, each carrying the backtest
   that would test it. A suggestion with no test attached is an opinion.

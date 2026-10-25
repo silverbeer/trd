@@ -9,7 +9,7 @@ single DuckDB file. Full design: [DESIGN.md](DESIGN.md). Command reference: [CLA
 trd dashboard        # value, return, XIRR, vs S&P 500, today, top holding, movers
 trd portfolio        # holdings, sorted by size, with weights + 30-day change
 trd equity           # equity curve: value over time, return, XIRR, max drawdown
-trd dca show -a sofi # a DCA plan's XIRR, per-symbol drift, cadence
+trd dca show -a dca # a DCA plan's XIRR, per-symbol drift, cadence
 trd sunday-prep      # week-ahead briefing: futures, macro events, earnings, levels, themes
 trd engine report    # paper-trading engine: win rate, avg win/loss, expectancy per strategy
 trd learn xirr       # the formula behind any number trd shows
@@ -159,8 +159,8 @@ finish syncing a 20 MB+ binary.
 
 ```bash
 trd init                      # create the database + default 'main' account
-trd account add fidelity      # one account per brokerage
-trd buy AAPL 10 --price 213.50 --account fidelity
+trd account add ira           # one account per brokerage
+trd buy AAPL 10 --price 213.50 --account ira
 trd sync --full               # download ~2 years of price history
 trd portfolio
 ```

@@ -22,9 +22,9 @@ def _populate(conn: duckdb.DuckDBPyConnection, provider: FakeProvider) -> None:
     seed_defaults(conn)
     portfolio = PortfolioService(conn, provider)
     portfolio.accounts.create("main", AccountType.REAL)
-    portfolio.accounts.create("fidelity", AccountType.REAL)
+    portfolio.accounts.create("ira", AccountType.REAL)
     portfolio.record_trade(
-        "fidelity", "AAPL", Side.BUY, Decimal(10), Decimal(150), executed_at=datetime(2025, 1, 5)
+        "ira", "AAPL", Side.BUY, Decimal(10), Decimal(150), executed_at=datetime(2025, 1, 5)
     )
     portfolio.record_trade(
         "main", "NVDA", Side.BUY, Decimal(2), Decimal(100), executed_at=datetime(2025, 2, 1)
@@ -50,7 +50,7 @@ def test_round_trip(tmp_path: Path, conn: duckdb.DuckDBPyConnection, provider) -
     fresh = connect(tmp_path / "restored.duckdb")
     stats = restore_data(fresh, data)
     assert stats.transactions == 4  # AAPL, NVDA, + 2 sim allocation legs
-    assert stats.accounts == 3  # main, fidelity, sim
+    assert stats.accounts == 3  # main, ira, sim
 
     # transactions preserved with account + symbol + dates
     rows = fresh.execute(
@@ -58,7 +58,7 @@ def test_round_trip(tmp_path: Path, conn: duckdb.DuckDBPyConnection, provider) -
            FROM txn t JOIN account a ON a.id=t.account_id JOIN instrument i ON i.id=t.instrument_id
            ORDER BY t.executed_at, i.symbol"""
     ).fetchall()
-    assert ("fidelity", "AAPL", "buy", Decimal(10), Decimal(150)) == rows[0][:5]
+    assert ("ira", "AAPL", "buy", Decimal(10), Decimal(150)) == rows[0][:5]
     assert rows[0][5].date().isoformat() == "2025-01-05"
 
     # plan + allocation restored and re-linked to its account's txns

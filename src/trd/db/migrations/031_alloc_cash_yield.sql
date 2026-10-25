@@ -1,6 +1,6 @@
 -- What the plan's uninvested cash earns while it waits (SB-1417). A staged plan
 -- holds a large share in cash BY DESIGN, and at the broker that cash sits in a
--- core money-market position (Fidelity's SPAXX), which pays a yield. Stating the
+-- core money-market position (the custodian's core fund), which pays a yield. Stating the
 -- fund and its rate is what lets the report say the cash is working rather than
 -- idle.
 --

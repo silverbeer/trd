@@ -67,7 +67,7 @@ def ira(conn: duckdb.DuckDBPyConnection, provider: FakeProvider) -> AllocService
         D("100000"),
         TARGETS,
         account_kind="IRA",
-        brokerage="Fidelity",
+        brokerage="Example Custodian",
     )
     return service
 
@@ -368,7 +368,7 @@ def test_cli_end_to_end(cli_env: FakeProvider) -> None:
             "--kind",
             "IRA",
             "--brokerage",
-            "Fidelity",
+            "Example Custodian",
             "-t",
             "IVV=45",
             "-t",

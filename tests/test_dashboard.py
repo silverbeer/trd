@@ -21,13 +21,13 @@ def dash_service(conn: duckdb.DuckDBPyConnection, provider: FakeProvider) -> Das
 def _seed_portfolio(conn: duckdb.DuckDBPyConnection, provider: FakeProvider) -> None:
     portfolio = PortfolioService(conn, provider)
     portfolio.accounts.create("main", AccountType.REAL)
-    portfolio.accounts.create("fidelity", AccountType.REAL)
+    portfolio.accounts.create("ira", AccountType.REAL)
     portfolio.accounts.create("paper", AccountType.SIMULATION)
     seed_bars(conn, "SPY", days=800, start_price=100.0, daily_gain=0.0)
     old = datetime.combine(date.today() - timedelta(days=400), datetime.min.time())
     # WIN: paid 100, now 200 (+100%). LOSE: paid 100, now 50 (-50%).
     portfolio.record_trade("main", "WIN", Side.BUY, Decimal(10), Decimal(100), executed_at=old)
-    portfolio.record_trade("fidelity", "LOSE", Side.BUY, Decimal(10), Decimal(100), executed_at=old)
+    portfolio.record_trade("ira", "LOSE", Side.BUY, Decimal(10), Decimal(100), executed_at=old)
     # paper account holding — must be excluded by default
     portfolio.record_trade("paper", "WIN", Side.BUY, Decimal(100), Decimal(100), executed_at=old)
 

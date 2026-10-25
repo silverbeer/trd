@@ -111,7 +111,7 @@ elif [[ "$SWING20_MODE" == true ]]; then
     # home, and on its own it would take the default ten names and every rule.
     INIT_FLAGS=(--account swing20 --size 20 --max 5 --capital 100)
 elif [[ "$LIVE_MODE" == true ]]; then
-    # The live engine: same rules as swing20, trading the real Robinhood cash
+    # The live engine: same rules as swing20, trading the real the broker cash
     # account. Its scan writes order intents, never trades; an agent session
     # places them. Fills are not pushed by the scan (there are none) — but the
     # scan keeps --notify, because that is what sends each new intent to the

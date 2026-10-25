@@ -2,7 +2,7 @@
 #
 # Shared by deploy/live-runner.sh and deploy/broker-auth-probe.sh. Sourced, not run.
 #
-# Both scripts reach the Robinhood MCP the only way it can be reached: a headless
+# Both scripts reach the broker's MCP the only way it can be reached: a headless
 # `claude -p` in the trd checkout, where the server is configured (local scope)
 # and its OAuth sign-in lives. Both alert through the same Telegram bot to the
 # private alert chat, and share one login state so a lapsed sign-in is one
@@ -104,21 +104,21 @@ rh_note_login() {
     now=$(date +%s)
     if [[ "$status" == FAIL ]]; then
         if [[ "$kind" == approvals_off ]]; then
-            what="Trade approvals are OFF on the Robinhood agent account, so the live runner will not place orders. Turn them back on: Robinhood app → Agent Settings → Safety Controls."
+            what="Trade approvals are OFF on the broker's agent account, so the live runner will not place orders. Turn them back on: broker app → Agent Settings → Safety Controls."
         else
             what="The live engine cannot place orders until Robinhood is signed in again. On the mini: cd ~/gitrepos/trd, run claude, type /mcp, pick robinhood-trading, authenticate."
         fi
         if [[ "$prev" != FAIL ]]; then
-            rh_alert "🔴 trd: Robinhood login check FAILED
+            rh_alert "🔴 trd: The broker login check FAILED
 $what
 Detail: $detail" && last=$now
         elif rh_window 0930 1600 && (( now - last >= RH_REPEAT_HOURS * 3600 )); then
-            rh_alert "🔴 trd: Robinhood login still failing
+            rh_alert "🔴 trd: The broker login still failing
 $what
 Detail: $detail" && last=$now
         fi
     elif [[ "$prev" == FAIL ]]; then
-        rh_alert "🟢 trd: Robinhood login works again — the live engine can place orders."
+        rh_alert "🟢 trd: The broker login works again — the live engine can place orders."
         last=0
     fi
     echo "$status $last" > "$state"
