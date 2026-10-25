@@ -95,7 +95,8 @@ def test_a_private_term_is_refused(tmp_path) -> None:
     assert "rule private-term" in refused("worth $4,242,424.00", env=env)
     assert "rule private-term" in refused("worth 4242424", env=env)
     privacy.guard("worth $14,242,424", env=env)  # a different number
-    privacy.guard("Acme Pensioners", env=env)  # whole tokens only
+    assert "rule private-term" in refused("Acme Pensioners", env=env)  # a term inside a word
+    privacy.guard("Acme Pens", env=env)  # not the whole term
 
 
 def test_the_refusal_never_carries_what_it_matched(tmp_path) -> None:

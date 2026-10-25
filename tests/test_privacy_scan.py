@@ -320,3 +320,209 @@ def test_the_hooks_block_a_commit_and_a_branch_name(repo: Path, env, tmp_path) -
         ["git", "push", "-q", "origin", "main"], cwd=repo, capture_output=True, text=True, env=env
     )
     assert ok.returncode == 0, ok.stderr
+
+
+# ------------------------------------------------------------------ SB-1429: shapes that got past
+
+
+def terms_env(env, tmp_path, *terms: str) -> dict[str, str]:
+    path = tmp_path / "terms.txt"
+    path.write_text("\n".join(terms) + "\n", encoding="utf-8")
+    return {**env, "TRD_PRIVATE_TERMS": str(path)}
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "jane-example",  # slug
+        "jane_example",  # snake
+        "janeexample",  # concatenated
+        "Jane​Example",  # zero-width space inside
+        "Jane­Example",  # soft hyphen inside
+        "JANE  EXAMPLE",  # double space, upper
+        "maplewoodira",  # a one-word term inside a longer token
+        "the maplewood-ira plan",
+    ],
+)
+def test_a_private_term_is_found_in_every_spelling(repo: Path, env, tmp_path, text: str) -> None:
+    env = terms_env(env, tmp_path, "Jane Example", "maplewood")
+    stage(repo, "a.md", f"note: {text}\n")
+    result = scan(repo, env, "--staged")
+    assert result.returncode == 1 and "[private-term] a.md:1" in result.stderr, result.stderr
+    assert "jane" not in result.stderr.lower() and "maplewood" not in result.stderr.lower()
+
+
+def test_a_short_term_still_has_to_stand_alone(repo: Path, env, tmp_path) -> None:
+    env = terms_env(env, tmp_path, "main")
+    stage(repo, "a.py", "domain = remain\n")
+    assert scan(repo, env, "--staged").returncode == 0
+    stage(repo, "b.py", "branch = 'main'\n")
+    assert scan(repo, env, "--staged").returncode == 1
+
+
+def test_a_term_split_across_two_lines_is_found_once(repo: Path, env, tmp_path) -> None:
+    env = terms_env(env, tmp_path, "Jane Example", "maplewood")
+    stage(repo, "a.md", "paid to Jane\nExample on Monday\nmaple\nwood\n")
+    result = scan(repo, env, "--staged")
+    assert result.returncode == 1
+    assert "[private-term] a.md:1: " in result.stderr and "split across lines" in result.stderr
+    assert "[private-term] a.md:3: " in result.stderr
+    assert result.stderr.count("[private-term]") == 2
+    stage(repo, "c.py", 'acct = ("maple"\n        "wood")\n')  # a string continued in code
+    assert "[private-term] c.py:1: " in scan(repo, env, "--staged").stderr
+    stage(repo, "b.md", "paid to Jane Example\n")  # a whole-line hit is reported once, not twice
+    result = scan(repo, env, "--staged")
+    assert result.stderr.count("[private-term] b.md") == 1
+
+
+def test_a_private_term_in_a_file_name_is_blocked(repo: Path, env, tmp_path) -> None:
+    env = terms_env(env, tmp_path, "Jane Example")
+    stage(repo, "notes/jane-example-2026.md", "nothing here\n")
+    result = scan(repo, env, "--staged")
+    assert result.returncode == 1
+    assert "[private-term] notes/jane-example-2026.md: " in result.stderr
+    # the location names the file, which is the term; the preview never does
+    assert "j…e (12 chars), in the file name" in result.stderr
+    git(repo, "commit", "-q", "--no-verify", "-m", "seed", env=env)
+    assert "in the file name" in scan(repo, env, "--tree").stderr
+
+
+def test_a_binary_file_is_blocked_and_its_strings_are_read(repo: Path, env, tmp_path) -> None:
+    env = terms_env(env, tmp_path, "Jane Example")
+    stage(repo, "blob.bin", b"\x00\x01\x02" * 8 + b"paid to Jane Example" + b"\x00" * 16)
+    result = scan(repo, env, "--staged")
+    assert result.returncode == 1
+    assert "[forbidden-file] blob.bin: binary file" in result.stderr
+    assert "[private-term] blob.bin:binary" in result.stderr
+    git(repo, "rm", "-q", "--cached", "blob.bin")
+    stage(repo, "logo.png", b"\x89PNG\r\n\x1a\n" + b"\x00" * 64)  # an allowed asset type
+    assert scan(repo, env, "--staged").returncode == 0
+    stage(repo, "logo2.png", b"\x89PNG\r\n\x1a\n" + b"\x00" * 8 + b"Jane Example" + b"\x00" * 8)
+    assert "[private-term] logo2.png:binary" in scan(repo, env, "--staged").stderr
+
+
+def glue(*parts: str) -> str:
+    """Shapes assembled at runtime so this file never holds one for the tree scan."""
+    return "".join(parts)
+
+
+@pytest.mark.parametrize(
+    ("text", "blocked"),
+    [
+        (glue("account ", "4821", "-3579", "-01"), True),
+        (glue("account ", "4821", " 3579", " 01"), True),
+        (glue("4821", " 3579", " 0142", " is the acct"), True),
+        (glue("ending ", "****", "4821"), True),
+        (glue("card ", "xxxx", "4821"), True),
+        (glue("acct ", "...", "4821"), True),
+        (glue("account ", "X", "47182"), True),
+        (glue("Z47", " ", "182936"), True),  # letter-dd, space, dddddd
+        ("account opened 2026-10-25", False),  # a date
+        ("on 10-25-2026 the account", False),
+        ("account 12 34", False),  # too short to be one
+        ("**2026 goals** for the account", False),  # markdown bold, not a mask
+        ("see account docs in ~/.trd", False),
+    ],
+)
+def test_account_number_shapes(repo: Path, env, text: str, blocked: bool) -> None:
+    stage(repo, "a.md", text + "\n")
+    result = scan(repo, env, "--staged")
+    assert (result.returncode == 1) is blocked, result.stderr
+    if blocked:
+        assert "[account-number] a.md:1" in result.stderr
+
+
+@pytest.mark.parametrize(
+    ("text", "blocked"),
+    [
+        (glue("/home/", "alicew", "/.trd"), True),
+        (glue("~", "alicew", "/.trd-engine"), True),
+        ("/home/runner/work/trd", False),
+        ("~/.trd", False),
+        ("~5 minutes, ~ten names", False),
+        ("/Users/USERNAME/.trd", False),
+    ],
+)
+def test_home_path_shapes(repo: Path, env, text: str, blocked: bool) -> None:
+    stage(repo, "a.yaml", f"path: {text}\n")
+    result = scan(repo, env, "--staged")
+    assert (result.returncode == 1) is blocked, result.stderr
+    findings = [line for line in result.stderr.splitlines() if "note:" not in line]
+    assert "alicew" not in "\n".join(findings)  # the notice names tmp_path, i.e. this test
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        ".envrc",
+        "deploy/live.envrc",
+        "prod.env",
+        "a.tsv",
+        "a.jsonl",
+        "a.qif",
+        "a.numbers",
+        "a.ods",
+        "a.zip",
+        "id.key",
+        "a.p12",
+    ],
+)
+def test_more_forbidden_files_are_blocked_by_name(repo: Path, env, path: str) -> None:
+    stage(repo, path, "x\n")
+    result = scan(repo, env, "--staged")
+    assert result.returncode == 1 and f"[forbidden-file] {path}" in result.stderr
+
+
+def test_an_env_named_file_with_a_template_suffix_is_allowed(repo: Path, env) -> None:
+    stage(repo, "prod.env.example", "TOKEN=CHANGE_ME\n")
+    assert scan(repo, env, "--staged").returncode == 0
+
+
+def test_archives_keys_and_backups_are_blocked_by_content(repo: Path, env) -> None:
+    stage(repo, "sheet.bin", b"PK\x03\x04" + b"\x00" * 32)  # xlsx / numbers / zip renamed
+    stage(
+        repo,
+        "id_ed25519",
+        "-----BEGIN OPENSSH PRIVATE KEY-----\nabc\n-----END OPENSSH PRIVATE KEY-----\n",
+    )
+    stage(repo, "one.json", '{"accounts": [{"id": "TEST-ACCT-1"}]}\n')  # one key, no version
+    stage(repo, "two.json", '{"version": 9, "watchlists": []}\n')
+    stage(repo, "ok.json", '{"version": 2, "accounts": "none", "permissions": {}}\n')
+    result = scan(repo, env, "--staged")
+    assert result.returncode == 1
+    assert "[forbidden-file] sheet.bin: zip archive" in result.stderr
+    assert "[forbidden-file] id_ed25519: private key" in result.stderr
+    assert "[backup-json] one.json" in result.stderr and "[backup-json] two.json" in result.stderr
+    assert "ok.json" not in result.stderr
+
+
+def test_a_table_pasted_into_a_text_file_is_blocked(repo: Path, env) -> None:
+    rows = "\n".join(f"2025-0{i},buy,VOO,{i}0,500.0{i},0" for i in range(1, 6)) + "\n"
+    stage(repo, "data.txt", "symbol,side,qty,price,fees,note\n" + rows)
+    stage(repo, "notes.txt", "a, b and c\nmore prose, with a comma\nand, another, one, here\n")
+    stage(
+        repo, "two.txt", "date,account,symbol,side,quantity,price\n2026-01-01,main,SPY,buy,1,500\n"
+    )
+    result = scan(repo, env, "--staged")
+    assert result.returncode == 1
+    assert "[delimited-text] data.txt" in result.stderr and "notes.txt" not in result.stderr
+    assert "[delimited-text] two.txt" in result.stderr  # a header and one row is already a table
+    stage(repo, "tests/fixtures/SYNTHETIC.md", "- `tests/fixtures/t/rows.txt` — synthetic\n")
+    stage(repo, "tests/fixtures/t/rows.txt", "symbol,side,qty,price,fees,note\n" + rows)
+    assert "rows.txt" not in scan(repo, env, "--staged").stderr
+
+
+def test_an_export_row_without_its_header_is_blocked(repo: Path, env) -> None:
+    date = glue("08/0", "1/2025")
+    row = ",".join(
+        [date, "YOU BOUGHT", "VOO", "ACME S&P 500 ETF", "Cash", "500.12", "10", "0", "0"]
+    )
+    stage(repo, "notes.md", f"history:\n{row}\n")
+    result = scan(repo, env, "--staged")
+    assert result.returncode == 1 and "[export-row] notes.md:2" in result.stderr
+    stage(
+        repo,
+        "doc.md",
+        "YOU BOUGHT / REINVESTMENT = buy, YOU SOLD = sell, DIVIDEND RECEIVED = income\n",
+    )
+    assert "doc.md" not in scan(repo, env, "--staged").stderr

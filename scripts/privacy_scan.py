@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Keep real account data out of a public repository (SB-1421).
+"""Keep real account data out of a public repository (SB-1421, SB-1429).
 
 This repository is public. trd tracks real retirement accounts, and the rule is
 that no real account data ever enters the repo or its git metadata: no broker
@@ -22,6 +22,14 @@ Modes:
 A finding prints its rule id, where, and a REDACTED preview — first and last
 character and the length, never the value. Exit 1 on any block, 0 otherwise
 (warnings included).
+
+Text is matched after FOLDING (SB-1429): NFKC-normalised, zero-width and other
+format characters removed, lowercased. A private term of six characters or more
+matches inside a longer token and with any of space, `-`, `_` or `.` between its
+words, so `jane-example`, `jane_example` and `janeexample` all find `Jane
+Example`; a shorter term still has to stand alone. Two consecutive lines are
+also read as one, so a term split across a line break is found. File names,
+and the printable strings inside a binary file, are scanned like text.
 """
 
 from __future__ import annotations
@@ -33,6 +41,8 @@ import os
 import re
 import subprocess
 import sys
+import unicodedata
+from collections.abc import Collection, Sequence
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
@@ -74,10 +84,16 @@ MONEY_MARKET_TICKERS = (
 )
 
 # Account-number shapes. The named group `v` is the value that gets redacted.
+# A grouped match (digits split by spaces or dashes) is kept only when it holds
+# 8-12 digits and is not a date — see `is_placeholder`.
 ACCOUNT_NUMBER_PATTERNS = (
-    r"(?<![A-Za-z0-9])(?P<v>[A-Z]\d{2}-\d{6})(?![0-9])",
+    r"(?<![A-Za-z0-9])(?P<v>[A-Z]\d{2}[ -]\d{6})(?![0-9])",
     r"(?i:acct|account)[^\n\d]{0,20}(?<![0-9])(?P<v>\d{8,12})(?![0-9])",
     r"(?<![0-9])(?P<v>\d{8,12})(?![0-9])[^\n\d]{0,20}(?i:acct|account)",
+    r"(?i:acct|account)[^\n\d]{0,20}(?<![0-9])(?P<v>\d{2,4}(?:[ -]\d{2,4}){1,3})(?![0-9])",
+    r"(?<![0-9])(?P<v>\d{2,4}(?:[ -]\d{2,4}){1,3})(?![0-9])[^\n\d]{0,20}(?i:acct|account)",
+    r"(?<![A-Za-z0-9*.])(?P<v>(?:\*{4,}|[xX]{4,}|\.{3})\d{4})(?![0-9])",
+    r"(?i:acct|account)[^\n\d]{0,20}(?<![A-Za-z0-9])(?P<v>X\d{4,5})(?![0-9])",
 )
 
 # Values that are obviously placeholders, never real (exact, case-insensitive).
@@ -106,8 +122,30 @@ EXPORT_FOOTERS = (
     "date downloaded",
 )
 
-PERSONAL_PATH = r"/Users/(?P<v>[A-Za-z0-9._-]+)"
-PATH_PLACEHOLDERS = ("USERNAME", "CHANGE_ME", "runner", "Shared")
+# A data ROW of an activity export, for a file whose header and footer were cut
+# off: one of the broker's action phrases, a US date, and at least six commas on
+# the same line. Code and docs that explain the importer name the phrases but
+# never in that shape.
+EXPORT_ROW_ACTIONS = (
+    "YOU BOUGHT",
+    "YOU SOLD",
+    "DIVIDEND RECEIVED",
+    "REINVESTMENT",
+    "ADVISORY FEE",
+    "ROLLOVER",
+    "CONTRIBUTION",
+    "JOURNALED",
+    "TRANSFERRED",
+    "ELECTRONIC FUNDS TRANSFER",
+)
+EXPORT_ROW_MIN_COMMAS = 6
+US_DATE_RE = re.compile(r"\b\d{2}/\d{2}/\d{4}\b")
+
+# `/Users/<name>` (macOS), `/home/<name>` (Linux) and `~<name>/` all name a person.
+# `~` alone, or as "approximately", is not a path.
+PERSONAL_PATH = r"(?:/Users|/home)/(?P<v>[A-Za-z0-9._-]+)"
+TILDE_PATH = r"(?<![A-Za-z0-9@/])~(?P<v>[A-Za-z][A-Za-z0-9._-]{1,31})(?=/)"
+PATH_PLACEHOLDERS = ("USERNAME", "CHANGE_ME", "runner", "Shared", "user", "ubuntu", "USER")
 
 FORBIDDEN_SUFFIXES = (
     ".db",
@@ -115,16 +153,79 @@ FORBIDDEN_SUFFIXES = (
     ".sqlite3",
     ".ofx",
     ".qfx",
+    ".qif",
     ".xlsx",
     ".xls",
+    ".xlsm",
+    ".numbers",
+    ".ods",
     ".pem",
+    ".key",
+    ".p12",
+    ".pfx",
+    ".ppk",
+    ".jsonl",
+    ".parquet",
+    ".feather",
+    ".pkl",
+    ".pickle",
+    ".zip",
+    ".7z",
+    ".rar",
+    ".tar",
+    ".tgz",
+    ".gz",
+    ".bz2",
+    ".xz",
 )
+# Tabular text: allowed only as a listed synthetic fixture.
+TABULAR_SUFFIXES = (".csv", ".tsv")
 # `.env` files: allowed only when the name says it is a template.
 ENV_TEMPLATE_SUFFIXES = (".example", ".sample", ".template")
-# Top-level keys of `trd backup` (src/trd/services/backup.py export_data).
+# Top-level keys of `trd backup` (src/trd/services/backup.py export_data). One
+# of them holding a list is enough: a backup with a single table is still a
+# backup, and nothing else in this tree uses these names.
 BACKUP_KEYS = frozenset(
-    {"accounts", "transactions", "instruments", "cash_flows", "alloc_plans", "income"}
+    {
+        "accounts",
+        "transactions",
+        "instruments",
+        "cash_flows",
+        "alloc_plans",
+        "income",
+        "plans",
+        "watchlists",
+        "earnings_results",
+    }
 )
+# A binary file is allowed only as one of these asset types; its printable
+# strings are scanned either way.
+BINARY_ALLOWED_SUFFIXES = (
+    ".png",
+    ".jpg",
+    ".jpeg",
+    ".gif",
+    ".ico",
+    ".webp",
+    ".woff",
+    ".woff2",
+    ".ttf",
+    ".otf",
+    ".pdf",
+)
+# Plain-text files that a spreadsheet or export is pasted into under a harmless
+# name. Two or more consecutive lines with the same count of 4+ commas or tabs
+# is a table, not prose.
+DELIMITED_SUFFIXES = (".txt", ".dat", ".log", ".tsv", "")
+DELIMITED_MIN_FIELDS = 5
+DELIMITED_MIN_ROWS = 2
+
+# A private term this long or longer is also found INSIDE a longer token
+# (`maplewoodira` for `maplewood`); a shorter one must stand alone, or `main`
+# would hit `domain`.
+SUBSTRING_MIN_LEN = 6
+# What may sit between the words of a multi-word term: a slug, a snake, nothing.
+WORD_JOINER = r"[\s_\-.]*"
 
 FIXTURES = "tests/fixtures/"
 SYNTHETIC_LIST = "tests/fixtures/SYNTHETIC.md"
@@ -156,13 +257,28 @@ def redact(value: str) -> str:
     return f"{value[0]}…{value[-1]} ({n} chars)"
 
 
+def is_date(value: str) -> bool:
+    """2026-10-25, 10-25-2026, 25 10 2026: grouped digits that are a date, not an account."""
+    v = value.strip()
+    return bool(
+        re.fullmatch(r"\d{4}[ -]\d{1,2}[ -]\d{1,2}", v)
+        or re.fullmatch(r"\d{1,2}[ -]\d{1,2}[ -]\d{4}", v)
+    )
+
+
 def is_placeholder(value: str) -> bool:
     v = value.strip().upper()
     if v in PLACEHOLDERS or v.startswith(PLACEHOLDER_PREFIXES):
         return True
+    if is_date(v):
+        return True
     digits = re.sub(r"\D", "", v)
+    if not digits:
+        return False
+    if (" " in v or "-" in v) and not 8 <= len(digits) <= 12:
+        return True  # a grouped number is an account only at account length
     # 00000000, 99999999, 12345678: the numbers people type when they mean "a number".
-    return bool(digits) and (len(set(digits)) == 1 or "1234567890123".startswith(digits))
+    return len(set(digits)) == 1 or "1234567890123".startswith(digits)
 
 
 def _token(fragment: str) -> str:
@@ -173,6 +289,7 @@ FIRM_RE = re.compile("|".join(f"({_token(f)})" for f in FIRM_PATTERNS), re.IGNOR
 MONEY_MARKET_RE = re.compile(_token("|".join(MONEY_MARKET_TICKERS)), re.IGNORECASE)
 ACCOUNT_RES = tuple(re.compile(p) for p in ACCOUNT_NUMBER_PATTERNS)
 PATH_RE = re.compile(PERSONAL_PATH)
+TILDE_RE = re.compile(TILDE_PATH)
 
 
 def firm_blocks_in_message(match: str) -> bool:
@@ -185,9 +302,18 @@ def firm_blocks_in_message(match: str) -> bool:
 # ---------------------------------------------------------------- private terms
 
 
+def fold(text: str) -> str:
+    """The text as a reader sees it: compatibility-normalised, format characters
+    (zero-width space and joiner, soft hyphen, direction marks) dropped, lowercased."""
+    text = unicodedata.normalize("NFKC", text)
+    return "".join(ch for ch in text if unicodedata.category(ch) != "Cf").lower()
+
+
 def term_pattern(term: str) -> re.Pattern[str]:
-    """A whole-token, case-insensitive pattern. A number also matches with or
-    without thousands separators: 1234567 finds 1,234,567 and 1_234_567."""
+    """A case-insensitive pattern for a FOLDED line. A number also matches with
+    or without thousands separators: 1234567 finds 1,234,567 and 1_234_567. A
+    word term matches with any joiner between its words; at six characters or
+    more it also matches inside a longer token."""
     plain = term.replace(",", "").replace("_", "")
     if re.fullmatch(r"\d+(\.\d+)?", plain):
         whole, _, frac = plain.partition(".")
@@ -197,7 +323,11 @@ def term_pattern(term: str) -> re.Pattern[str]:
             whole = whole[:-3]
         body = "[,_]?".join(groups) + (re.escape("." + frac) if frac else "")
         return re.compile(rf"(?<![\d,_.])(?P<v>{body})(?![\d]|[,_]\d)")
-    return re.compile(rf"(?<![A-Za-z0-9])(?P<v>{re.escape(term)})(?![A-Za-z0-9])", re.IGNORECASE)
+    words = [w for w in re.split(r"[\s_\-.]+", fold(term)) if w]
+    body = WORD_JOINER.join(re.escape(w) for w in words)
+    if len("".join(words)) >= SUBSTRING_MIN_LEN:
+        return re.compile(rf"(?P<v>{body})")
+    return re.compile(rf"(?<![a-z0-9])(?P<v>{body})(?![a-z0-9])")
 
 
 def load_private_terms(notice: list[str]) -> list[re.Pattern[str]]:
@@ -212,6 +342,15 @@ def load_private_terms(notice: list[str]) -> list[re.Pattern[str]]:
         if line:
             terms.append(term_pattern(line))
     return terms
+
+
+def term_findings(text: str, where: str, terms: Sequence[re.Pattern[str]]) -> list[Finding]:
+    folded = fold(text)
+    return [
+        Finding(BLOCK, "private-term", where, redact(m.group("v")))
+        for rx in terms
+        for m in rx.finditer(folded)
+    ]
 
 
 # ---------------------------------------------------------------- line rules
@@ -241,6 +380,11 @@ def scan_line(
         for phrase in EXPORT_FOOTERS:
             if phrase in lowered:
                 out.append(Finding(BLOCK, "export-footer", where, f"broker footer {phrase!r}"))
+        if line.count(",") >= EXPORT_ROW_MIN_COMMAS and US_DATE_RE.search(line):
+            for action in EXPORT_ROW_ACTIONS:
+                if action in line:
+                    out.append(Finding(BLOCK, "export-row", where, f"activity row {action!r}"))
+                    break
     for rx in ACCOUNT_RES:
         for m in rx.finditer(line):
             value = m.group("v")
@@ -249,10 +393,12 @@ def scan_line(
     for m in PATH_RE.finditer(line):
         name = m.group("v")
         if name not in PATH_PLACEHOLDERS:
-            out.append(Finding(BLOCK, "home-path", where, f"/Users/{redact(name)}"))
-    for rx in terms:
-        for m in rx.finditer(line):
-            out.append(Finding(BLOCK, "private-term", where, redact(m.group("v"))))
+            out.append(Finding(BLOCK, "home-path", where, f"home of {redact(name)}"))
+    for m in TILDE_RE.finditer(line):
+        name = m.group("v")
+        if name not in PATH_PLACEHOLDERS:
+            out.append(Finding(BLOCK, "home-path", where, f"~ of {redact(name)}"))
+    out += term_findings(line, where, terms)
     for m in FIRM_RE.finditer(line):
         if prose and firm_blocks_in_message(m.group(0)):
             out.append(Finding(BLOCK, "firm-name", where, redact(m.group(0))))
@@ -264,38 +410,126 @@ def scan_line(
     return out
 
 
+def scan_lines(
+    lines: list[str],
+    where: str,
+    terms: list[re.Pattern[str]],
+    *,
+    prose: bool,
+    synthetic: bool = False,
+    first_line: int = 1,
+) -> list[Finding]:
+    """Every line on its own, then every pair of neighbours joined (with and
+    without a space, and with quotes, brackets and `+` dropped, which is how a
+    string is continued in code) so a term split across a line break is still
+    one term.
+    A pair finding is reported at the first line, once per term, and only when
+    neither line alone matched that term."""
+    out: list[Finding] = []
+    prev: str | None = None
+    for i, line in enumerate(lines):
+        n = first_line + i
+        out += scan_line(line, f"{where}:{n}", terms, prose=prose, synthetic=synthetic)
+        if prev is not None and terms:
+            folded_prev, folded_line = fold(prev), fold(line)
+            for rx in terms:
+                if rx.search(folded_prev) or rx.search(folded_line):
+                    continue
+                glued = re.sub(r"[\s\"'+()]+", "", folded_prev + folded_line)
+                for joined in (folded_prev + folded_line, folded_prev + " " + folded_line, glued):
+                    m = rx.search(joined)
+                    if m:
+                        preview = f"{redact(m.group('v'))}, split across lines"
+                        out.append(Finding(BLOCK, "private-term", f"{where}:{n - 1}", preview))
+                        break
+        prev = line
+    return out
+
+
 # ---------------------------------------------------------------- file rules
 
 
-def file_name_findings(path: str, synthetic: set[str]) -> list[Finding]:
+def file_name_findings(
+    path: str, synthetic: Collection[str], terms: Sequence[re.Pattern[str]] = ()
+) -> list[Finding]:
     p = PurePosixPath(path)
     name = p.name.lower()
     where = path
+    out: list[Finding] = []
     if ".duckdb" in name:
-        return [Finding(BLOCK, "forbidden-file", where, "DuckDB database")]
-    if name.endswith(FORBIDDEN_SUFFIXES):
-        return [Finding(BLOCK, "forbidden-file", where, f"{p.suffix} file")]
-    if name.startswith(".env") and not name.endswith(ENV_TEMPLATE_SUFFIXES):
-        return [Finding(BLOCK, "forbidden-file", where, "environment file")]
-    if name.endswith(".csv") and not (path.startswith(FIXTURES) and path in synthetic):
-        return [Finding(BLOCK, "forbidden-file", where, "CSV outside the synthetic fixtures")]
-    return []
+        out.append(Finding(BLOCK, "forbidden-file", where, "DuckDB database"))
+    elif name.endswith(FORBIDDEN_SUFFIXES):
+        out.append(Finding(BLOCK, "forbidden-file", where, f"{p.suffix} file"))
+    elif (name.startswith(".env") or name.endswith((".env", ".envrc"))) and not name.endswith(
+        ENV_TEMPLATE_SUFFIXES
+    ):
+        out.append(Finding(BLOCK, "forbidden-file", where, "environment file"))
+    elif name.endswith(TABULAR_SUFFIXES) and not (path.startswith(FIXTURES) and path in synthetic):
+        out.append(
+            Finding(BLOCK, "forbidden-file", where, f"{p.suffix} outside the synthetic fixtures")
+        )
+    for f in term_findings(path, where, terms):
+        out.append(Finding(BLOCK, "private-term", where, f"{f.preview}, in the file name"))
+    for m in FIRM_RE.finditer(path):
+        out.append(Finding(WARN, "firm-name", where, f"{redact(m.group(0))}, in the file name"))
+    return out
 
 
-def content_findings(path: str, data: bytes) -> list[Finding]:
+def _delimited_rows(text: str) -> int:
+    """Longest run of consecutive lines sharing the same count (>= 4) of commas or tabs."""
+    best = run = 0
+    last: tuple[str, int] | None = None
+    for line in text.splitlines():
+        key = None
+        for sep in (",", "\t"):
+            count = line.count(sep)
+            if count >= DELIMITED_MIN_FIELDS - 1:
+                key = (sep, count)
+                break
+        if key is not None and key == last:
+            run += 1
+        else:
+            run = 1 if key is not None else 0
+        last = key
+        best = max(best, run)
+    return best
+
+
+def content_findings(
+    path: str, data: bytes, synthetic: Collection[str] = frozenset()
+) -> list[Finding]:
     """What a file IS, whatever it is called."""
     if data.startswith(b"SQLite format 3\x00"):
         return [Finding(BLOCK, "forbidden-file", path, "SQLite database (by content)")]
     if data[8:12] == b"DUCK":
         return [Finding(BLOCK, "forbidden-file", path, "DuckDB database (by content)")]
-    head = data.lstrip()[:1]
-    if head == b"{" and len(data) < 200_000_000:
+    if data.startswith(b"PK\x03\x04"):
+        return [
+            Finding(
+                BLOCK, "forbidden-file", path, "zip archive or Office/Numbers document (by content)"
+            )
+        ]
+    head = data[:512]
+    if (b"-----BEGIN " in head and b"PRIVATE KEY" in head) or head.startswith(
+        b"PuTTY-User-Key-File"
+    ):
+        return [Finding(BLOCK, "forbidden-file", path, "private key (by content)")]
+    first = data.lstrip()[:1]
+    if first == b"{" and len(data) < 200_000_000:
         try:
             doc = json.loads(data.decode("utf-8"))
         except (UnicodeDecodeError, ValueError):
             return []
-        if isinstance(doc, dict) and "version" in doc and len(BACKUP_KEYS & doc.keys()) >= 2:
+        if isinstance(doc, dict) and any(isinstance(doc.get(k), list) for k in BACKUP_KEYS):
             return [Finding(BLOCK, "backup-json", path, "shape of a `trd backup` file")]
+        return []
+    tabular = PurePosixPath(path).suffix.lower() in DELIMITED_SUFFIXES and not is_binary(data)
+    if tabular and not (path.startswith(FIXTURES) and path in synthetic):
+        rows = _delimited_rows(data.decode("utf-8", "replace"))
+        if rows >= DELIMITED_MIN_ROWS:
+            return [
+                Finding(BLOCK, "delimited-text", path, f"{rows} rows of comma/tab separated data")
+            ]
     return []
 
 
@@ -303,14 +537,25 @@ def is_binary(data: bytes) -> bool:
     return b"\x00" in data[:8192]
 
 
+def binary_findings(path: str, data: bytes, terms: list[re.Pattern[str]]) -> list[Finding]:
+    """A binary file is allowed only as a known asset type, and its printable
+    strings are read like text either way — an xlsx renamed .png is still a
+    spreadsheet full of names."""
+    out: list[Finding] = []
+    if not path.lower().endswith(BINARY_ALLOWED_SUFFIXES):
+        out.append(
+            Finding(BLOCK, "forbidden-file", path, "binary file that is not an allowed asset type")
+        )
+    strings = [s.decode("ascii") for s in re.findall(rb"[\x20-\x7e]{6,}", data)]
+    out += scan_lines(strings, f"{path}:binary", terms, prose=False, first_line=0)
+    return out
+
+
 def scan_file_text(
     path: str, text: str, terms: list[re.Pattern[str]], synthetic: set[str]
 ) -> list[Finding]:
     exempt = path.startswith(FIXTURES) and path in synthetic
-    out: list[Finding] = []
-    for n, line in enumerate(text.splitlines(), 1):
-        out += scan_line(line, f"{path}:{n}", terms, prose=False, synthetic=exempt)
-    return out
+    return scan_lines(text.splitlines(), path, terms, prose=False, synthetic=exempt)
 
 
 # ---------------------------------------------------------------- git helpers
@@ -365,26 +610,49 @@ def mode_staged(terms: list[re.Pattern[str]]) -> list[Finding]:
     synthetic = synthetic_list(read_index)
     out: list[Finding] = []
     names = git("diff", "--cached", "--name-only", "-z", "--diff-filter=ACMR").split(b"\0")
+    binary: set[str] = set()
     for raw in filter(None, names):
         path = raw.decode("utf-8", "replace")
-        out += file_name_findings(path, synthetic)
+        out += file_name_findings(path, synthetic, terms)
         with contextlib.suppress(subprocess.CalledProcessError):  # a submodule: nothing to read
-            out += content_findings(path, read_index(path))
+            data = read_index(path)
+            out += content_findings(path, data, synthetic)
+            if is_binary(data):
+                binary.add(path)
+                out += binary_findings(path, data, terms)
     diff = git("diff", "--cached", "--no-color", "--no-ext-diff", "-U0", "--diff-filter=ACMR")
     path, line_no = "", 0
+    run: list[str] = []
+    run_start = 0
+
+    def flush() -> None:
+        nonlocal run
+        if run and path not in binary:
+            exempt = path.startswith(FIXTURES) and path in synthetic
+            out.extend(
+                scan_lines(run, path, terms, prose=False, synthetic=exempt, first_line=run_start)
+            )
+        run = []
+
     for raw in diff.decode("utf-8", "replace").splitlines():
         if raw.startswith("+++ "):
+            flush()
             target = raw[4:]
             path = target[2:] if target.startswith("b/") else target
             continue
         if raw.startswith("@@"):
+            flush()
             m = re.search(r"\+(\d+)", raw)
             line_no = int(m.group(1)) if m else 0
             continue
         if raw.startswith("+"):
-            exempt = path.startswith(FIXTURES) and path in synthetic
-            out += scan_line(raw[1:], f"{path}:{line_no}", terms, prose=False, synthetic=exempt)
+            if not run:
+                run_start = line_no
+            run.append(raw[1:])
             line_no += 1
+        else:
+            flush()
+    flush()
     return out
 
 
@@ -396,22 +664,21 @@ def mode_tree(terms: list[re.Pattern[str]]) -> list[Finding]:
     out: list[Finding] = []
     for raw in filter(None, git("ls-files", "-z").split(b"\0")):
         path = raw.decode("utf-8", "replace")
-        out += file_name_findings(path, synthetic)
+        out += file_name_findings(path, synthetic, terms)
         try:
             data = Path(path).read_bytes()
         except OSError:
             continue  # deleted in the work tree
-        out += content_findings(path, data)
-        if not is_binary(data):
+        out += content_findings(path, data, synthetic)
+        if is_binary(data):
+            out += binary_findings(path, data, terms)
+        else:
             out += scan_file_text(path, data.decode("utf-8", "replace"), terms, synthetic)
     return out
 
 
 def mode_prose(text: str, label: str, terms: list[re.Pattern[str]]) -> list[Finding]:
-    out: list[Finding] = []
-    for n, line in enumerate(text.splitlines(), 1):
-        out += scan_line(line, f"{label}:{n}", terms, prose=True)
-    return out
+    return scan_lines(text.splitlines(), label, terms, prose=True)
 
 
 def commit_message_text(path: str) -> str:
@@ -451,7 +718,7 @@ def main(argv: list[str] | None = None) -> int:
         findings = mode_prose(sys.stdin.read(), args.label, terms)
         exceptions = []
 
-    findings = [f for f in findings if not excepted(f, exceptions)]
+    findings = [f for f in dict.fromkeys(findings) if not excepted(f, exceptions)]
     for note in notices:
         print(f"privacy-scan: {note}", file=sys.stderr)
 

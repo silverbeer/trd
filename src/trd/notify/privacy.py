@@ -18,6 +18,7 @@ scanner as text and fails when the two copies drift.
 import html
 import os
 import re
+import unicodedata
 from pathlib import Path
 
 from trd.errors import NotifyError
@@ -61,9 +62,13 @@ MONEY_MARKET_TICKERS = (
 
 # Account-number shapes. The named group `v` is the value that gets redacted.
 ACCOUNT_NUMBER_PATTERNS = (
-    r"(?<![A-Za-z0-9])(?P<v>[A-Z]\d{2}-\d{6})(?![0-9])",
+    r"(?<![A-Za-z0-9])(?P<v>[A-Z]\d{2}[ -]\d{6})(?![0-9])",
     r"(?i:acct|account)[^\n\d]{0,20}(?<![0-9])(?P<v>\d{8,12})(?![0-9])",
     r"(?<![0-9])(?P<v>\d{8,12})(?![0-9])[^\n\d]{0,20}(?i:acct|account)",
+    r"(?i:acct|account)[^\n\d]{0,20}(?<![0-9])(?P<v>\d{2,4}(?:[ -]\d{2,4}){1,3})(?![0-9])",
+    r"(?<![0-9])(?P<v>\d{2,4}(?:[ -]\d{2,4}){1,3})(?![0-9])[^\n\d]{0,20}(?i:acct|account)",
+    r"(?<![A-Za-z0-9*.])(?P<v>(?:\*{4,}|[xX]{4,}|\.{3})\d{4})(?![0-9])",
+    r"(?i:acct|account)[^\n\d]{0,20}(?<![A-Za-z0-9])(?P<v>X\d{4,5})(?![0-9])",
 )
 
 # Values that are obviously placeholders, never real (exact, case-insensitive).
@@ -86,17 +91,45 @@ _MONEY_MARKET = re.compile(_token("|".join(MONEY_MARKET_TICKERS)), re.IGNORECASE
 _ACCOUNT = tuple(re.compile(p) for p in ACCOUNT_NUMBER_PATTERNS)
 
 
+def is_date(value: str) -> bool:
+    """2026-10-25, 10-25-2026: grouped digits that are a date, not an account."""
+    v = value.strip()
+    return bool(
+        re.fullmatch(r"\d{4}[ -]\d{1,2}[ -]\d{1,2}", v)
+        or re.fullmatch(r"\d{1,2}[ -]\d{1,2}[ -]\d{4}", v)
+    )
+
+
 def is_placeholder(value: str) -> bool:
     v = value.strip().upper()
     if v in PLACEHOLDERS or v.startswith(PLACEHOLDER_PREFIXES):
         return True
+    if is_date(v):
+        return True
     digits = re.sub(r"\D", "", v)
-    return bool(digits) and (len(set(digits)) == 1 or "1234567890123".startswith(digits))
+    if not digits:
+        return False
+    if (" " in v or "-" in v) and not 8 <= len(digits) <= 12:
+        return True  # a grouped number is an account only at account length
+    return len(set(digits)) == 1 or "1234567890123".startswith(digits)
+
+
+SUBSTRING_MIN_LEN = 6
+WORD_JOINER = r"[\s_\-.]*"
+
+
+def fold(text: str) -> str:
+    """The text as a reader sees it: NFKC-normalised, format characters (zero-width
+    space and joiner, soft hyphen) dropped, lowercased. Same as the scanner's."""
+    text = unicodedata.normalize("NFKC", text)
+    return "".join(ch for ch in text if unicodedata.category(ch) != "Cf").lower()
 
 
 def term_pattern(term: str) -> re.Pattern[str]:
-    """Whole token, case-insensitive; a number also matches with or without
-    thousands separators. Same construction as the scanner's."""
+    """A pattern for a FOLDED text; a number also matches with or without
+    thousands separators, a word term with any joiner between its words and,
+    at six characters or more, inside a longer token. Same construction as the
+    scanner's."""
     plain = term.replace(",", "").replace("_", "")
     if re.fullmatch(r"\d+(\.\d+)?", plain):
         whole, _, frac = plain.partition(".")
@@ -106,7 +139,11 @@ def term_pattern(term: str) -> re.Pattern[str]:
             whole = whole[:-3]
         body = "[,_]?".join(groups) + (re.escape("." + frac) if frac else "")
         return re.compile(rf"(?<![\d,_.])(?P<v>{body})(?![\d]|[,_]\d)")
-    return re.compile(rf"(?<![A-Za-z0-9])(?P<v>{re.escape(term)})(?![A-Za-z0-9])", re.IGNORECASE)
+    words = [w for w in re.split(r"[\s_\-.]+", fold(term)) if w]
+    body = WORD_JOINER.join(re.escape(w) for w in words)
+    if len("".join(words)) >= SUBSTRING_MIN_LEN:
+        return re.compile(rf"(?P<v>{body})")
+    return re.compile(rf"(?<![a-z0-9])(?P<v>{body})(?![a-z0-9])")
 
 
 def private_terms(env: dict[str, str] | None = None) -> list[re.Pattern[str]]:
@@ -136,8 +173,9 @@ def violation(text: str, terms: list[re.Pattern[str]] | None = None) -> str | No
         for rx in _ACCOUNT:
             if any(not is_placeholder(m.group("v")) for m in rx.finditer(body)):
                 return "account-number"
+        folded = fold(body)
         for rx in terms or []:
-            if rx.search(body):
+            if rx.search(folded):
                 return "private-term"
     return None
 

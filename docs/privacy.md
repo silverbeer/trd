@@ -68,11 +68,13 @@ directly and do **not** pass through this guard.
 |---|---|---|
 | `export-header` | a broker export's column layout (compared with quotes and spaces removed, lowercased) | diff, tree |
 | `export-footer` | a broker download's legal footer ("Brokerage services are provided by", "Date downloaded") | diff, tree |
-| `account-number` | `[A-Z]\d{2}-\d{6}`; an 8–12 digit run within 20 characters of `acct`/`account` | everywhere, Telegram |
-| `forbidden-file` | `*.duckdb*`, `*.db`, `*.sqlite*`, `*.ofx`, `*.qfx`, `*.xlsx`, `*.xls`, `*.pem`, `.env*` (except `.example`/`.sample`/`.template`), `*.csv` outside listed fixtures; a DuckDB or SQLite file by its bytes, whatever its name | diff, tree |
-| `backup-json` | a JSON object with `version` and two or more of `trd backup`'s top-level keys (`accounts`, `transactions`, `instruments`, `cash_flows`, `alloc_plans`, `income`) | diff, tree |
-| `home-path` | `/Users/<name>/` unless `<name>` is `USERNAME`, `CHANGE_ME`, `runner` or `Shared` | everywhere |
-| `private-term` | a term from the private list (below) | everywhere, Telegram |
+| `account-number` | `[A-Z]\d{2}-\d{6}` (dash or space); an 8–12 digit run, plain or grouped by spaces or dashes (`NNNN-NNNN-NN`), within 20 characters of `acct`/`account`; a masked last-four (`****NNNN`, `xxxxNNNN`, `...NNNN`), and `XNNNNN` near the keyword. A date is never one | everywhere, Telegram |
+| `forbidden-file` | `*.duckdb*`, `*.db`, `*.sqlite*`, `*.ofx`, `*.qfx`, `*.qif`, `*.xlsx`, `*.xls`, `*.xlsm`, `*.numbers`, `*.ods`, `*.pem`, `*.key`, `*.p12`, `*.pfx`, `*.ppk`, `*.jsonl`, `*.parquet`, `*.feather`, `*.pkl`, archives (`*.zip`, `*.7z`, `*.tar`, `*.gz`, …); `.env*`, `*.env` and `.envrc` (except `.example`/`.sample`/`.template`); `*.csv` and `*.tsv` outside listed fixtures; by content whatever the name: a DuckDB or SQLite file, a zip/Office/Numbers document, a PEM/OpenSSH/PuTTY private key; any binary file that is not an image, font or PDF (and the printable strings inside every binary are scanned like text) | diff, tree |
+| `backup-json` | a JSON object with any of `trd backup`'s top-level keys (`accounts`, `transactions`, `instruments`, `cash_flows`, `alloc_plans`, `income`, `plans`, `watchlists`, `earnings_results`) holding a list — one table is still a backup | diff, tree |
+| `delimited-text` | a `.txt`, `.dat`, `.log`, `.tsv` or suffix-less file with two or more consecutive lines carrying the same count of 4+ commas or tabs: a table pasted under a harmless name. Listed synthetic fixtures are exempt | diff, tree |
+| `export-row` | a data row of an activity export with its header and footer cut off: one of the broker's action phrases (`YOU BOUGHT`, `DIVIDEND RECEIVED`, …) with a US date and six or more commas on one line | diff, tree |
+| `home-path` | `/Users/<name>`, `/home/<name>` and `~<name>/` unless `<name>` is `USERNAME`, `CHANGE_ME`, `runner`, `Shared`, `user`, `ubuntu` | everywhere |
+| `private-term` | a term from the private list (below), in text, in a file name, inside a binary, in any spelling (see below) | everywhere, Telegram |
 | `firm-name` | Fidelity, Robinhood, Schwab, Vanguard, E*Trade/ETRADE, SoFi, Merrill, Ameritrade, Interactive Brokers/IBKR, Webull, Public.com, Wealthfront, Betterment, Firstrade, Ally Invest | BLOCK in commit messages, PR text, branch names and Telegram; WARN in code |
 | `money-market` | SPAXX, FDRXX, FZFXX, SPRXX, FZDXX, FCASH, SWVXX, VMFXX, VMRXX | BLOCK in commit messages, PR text, branch names and Telegram |
 
@@ -100,10 +102,17 @@ and extend `EXPORT_HEADERS` in `scripts/privacy_scan.py`.
 ## Private terms
 
 `~/.config/trd/private-terms.txt` — **not in the repo**. Override the path with
-`TRD_PRIVATE_TERMS`. One term per line; `#` starts a comment. Matched
-case-insensitively as whole tokens. A number also matches with or without
-thousands separators: `1234567` finds `1,234,567`, `1_234_567` and
-`1234567.00`.
+`TRD_PRIVATE_TERMS`. One term per line; `#` starts a comment. A number matches
+with or without thousands separators: `1234567` finds `1,234,567`, `1_234_567`
+and `1234567.00`. A word term is matched against the FOLDED text — NFKC,
+zero-width and other format characters removed, lowercased — with any of space,
+`-`, `_` or `.` between its words, so `Jane Example` finds `jane-example`,
+`jane_example`, `janeexample` and `Jane\u200bExample`. A term of six characters
+or more also matches inside a longer token (`maplewood` finds `maplewoodira`);
+a shorter one must stand alone, or `main` would hit `domain`. Two consecutive
+lines are also read as one, so a term split across a line break is found and
+reported at the first line. File names and the printable strings inside binary
+files are matched the same way.
 
 ```text
 # names
