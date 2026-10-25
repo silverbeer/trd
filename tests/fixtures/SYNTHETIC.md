@@ -11,11 +11,11 @@ download by editing numbers; write it from the documented layout.
 Every other rule (account numbers, home paths, private terms) still applies to
 listed files.
 
-- `tests/fixtures/fidelity/activity.txt` — synthetic: invented data, public tickers
-- `tests/fixtures/fidelity/activity_later.txt` — synthetic: invented data, public tickers
-- `tests/fixtures/fidelity/activity_mid_history.txt` — synthetic: invented data, public tickers
-- `tests/fixtures/fidelity/activity_unknown.txt` — synthetic: invented data, public tickers
-- `tests/fixtures/fidelity/positions.txt` — synthetic: invented data, public tickers
-- `tests/fixtures/fidelity/positions_mid_history.txt` — synthetic: invented data, public tickers
-- `tests/fixtures/fidelity/positions_mismatch.txt` — synthetic: invented data, public tickers
-- `tests/fixtures/fidelity/positions_two_accounts.txt` — synthetic: invented data, public tickers
+- `tests/fixtures/activity/activity.txt` — synthetic: invented data, public tickers
+- `tests/fixtures/activity/activity_later.txt` — synthetic: invented data, public tickers
+- `tests/fixtures/activity/activity_mid_history.txt` — synthetic: invented data, public tickers
+- `tests/fixtures/activity/activity_unknown.txt` — synthetic: invented data, public tickers
+- `tests/fixtures/activity/positions.txt` — synthetic: invented data, public tickers
+- `tests/fixtures/activity/positions_mid_history.txt` — synthetic: invented data, public tickers
+- `tests/fixtures/activity/positions_mismatch.txt` — synthetic: invented data, public tickers
+- `tests/fixtures/activity/positions_two_accounts.txt` — synthetic: invented data, public tickers

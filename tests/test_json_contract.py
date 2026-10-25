@@ -34,7 +34,7 @@ SERIALISED_SOURCES = [
     "src/trd/models/reconcile.py",
     "src/trd/services/backtest.py",
     "src/trd/services/exit_whatif.py",
-    "src/trd/services/fidelity.py",
+    "src/trd/services/replay_match.py",
     "src/trd/services/sweep.py",
 ]
 

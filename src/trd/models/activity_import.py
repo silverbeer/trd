@@ -115,12 +115,12 @@ class PositionsFile(BaseModel):
 class PositionCheckRow(BaseModel):
     symbol: str
     trd: Decimal
-    fidelity: Decimal
+    broker: Decimal
 
     @computed_field  # type: ignore[prop-decorator]
     @property
     def diff(self) -> Decimal:
-        return self.trd - self.fidelity
+        return self.trd - self.broker
 
 
 class PositionsCheck(BaseModel):
@@ -129,7 +129,7 @@ class PositionsCheck(BaseModel):
     rows: list[PositionCheckRow]
     mismatched: list[str]
     cash_trd: Decimal
-    cash_fidelity: Decimal
+    cash_broker: Decimal
     cash_ok: bool
     projected: bool  # True on --dry-run: trd's side is the DB plus the planned writes
     # The Positions parser was written against Fidelity's documented layout

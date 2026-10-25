@@ -104,7 +104,7 @@ PLACEHOLDER_PREFIXES = ("TEST-ACCT-",)
 
 # Column signatures of broker export files, compared after the line is
 # normalised (quotes and spaces removed, lowercased). The first two are the
-# layouts trd's own importer reads (tests/fixtures/fidelity); the rest are the
+# layouts trd's own importer reads (tests/fixtures/activity); the rest are the
 # commonly published layouts of other brokers, from memory and best-effort:
 # verify against a real export (locally, never committed) and extend.
 EXPORT_HEADERS = (

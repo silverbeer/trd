@@ -206,7 +206,7 @@ def test_the_verdict_survives_json(books, reconcile) -> None:
 
 
 def test_the_snapshot_format_parses_as_documented() -> None:
-    """The shape in docs/robinhood-mcp.md, verbatim. If this drifts, whatever
+    """The shape in docs/broker-mcp.md, verbatim. If this drifts, whatever
     writes snapshots is writing them against a format that no longer loads."""
     parsed = BrokerSnapshot.model_validate_json(
         """

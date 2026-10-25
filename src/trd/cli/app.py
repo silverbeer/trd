@@ -17,6 +17,7 @@ from typer.core import TyperGroup
 
 from trd.build import build_version
 from trd.cli.render import (
+    activity_import_renderables,
     agenda_renderables,
     ai_review_renderables,
     alloc_view_renderables,
@@ -50,8 +51,6 @@ from trd.cli.render import (
     equity_daily_table,
     exit_table,
     exit_whatif_renderables,
-    fidelity_import_renderables,
-    fidelity_renderables,
     fill_ingest_renderables,
     fmt_money,
     fmt_signed,
@@ -70,6 +69,7 @@ from trd.cli.render import (
     prep_history_table,
     proposal_renderables,
     reconcile_renderables,
+    replay_match_renderables,
     review_renderables,
     sunday_prep_markdown,
     sunday_prep_renderables,
@@ -135,6 +135,7 @@ from trd.services import (
     SyncService,
     WatchlistService,
 )
+from trd.services.activity_import import ActivityImportService
 from trd.services.agenda import (
     DEFAULT_MIN_SESSIONS,
     DEFAULT_WINDOW_SESSIONS,
@@ -162,12 +163,11 @@ from trd.services.engine import (
     scan_events,
 )
 from trd.services.exit_whatif import ExitWhatIfService, parse_variants
-from trd.services.fidelity import FidelityService, window_start
-from trd.services.fidelity_import import FidelityImportService
 from trd.services.indicators import seed_defaults
 from trd.services.live_report import live_report
 from trd.services.outcomes import OutcomeService
 from trd.services.plan import PlanStatus
+from trd.services.replay_match import ReplayMatchService, window_start
 from trd.services.review import (
     DEFAULT_REVIEW_WINDOW,
     EnginePack,
@@ -1987,7 +1987,7 @@ def import_activity(
         if not sep:
             _fail(TrdError(f"--opening-price wants SYMBOL=PRICE, got {spec!r}"))
         prices[symbol.strip().upper()] = _parse_decimal(value, f"opening price for {symbol}")
-    service = FidelityImportService(connect(get_settings().db_path), YFinanceProvider())
+    service = ActivityImportService(connect(get_settings().db_path), YFinanceProvider())
     try:
         plan = service.run(
             activity,
@@ -1997,7 +1997,7 @@ def import_activity(
             dry_run=dry_run,
             opening_from_positions=opening_from_positions,
             opening_prices=prices,
-            fidelity_account=source_account,
+            source_account=source_account,
         )
     except TrdError as exc:
         _fail(exc)
@@ -2007,7 +2007,7 @@ def import_activity(
     if as_json:
         _emit_json(plan)
     else:
-        for renderable in fidelity_import_renderables(plan):
+        for renderable in activity_import_renderables(plan):
             console.print(renderable)
     if plan.refused or (plan.positions is not None and not plan.positions.ok):
         raise typer.Exit(code=1)
@@ -3607,7 +3607,7 @@ def engine_reconcile(
     The gap no backtest shows: a paper book can be perfectly consistent with
     itself and still describe a portfolio that does not exist. Reading the
     broker is an authenticated, interactive step done outside trd (see
-    docs/robinhood-mcp.md); this command does the deterministic comparison, so
+    docs/broker-mcp.md); this command does the deterministic comparison, so
     it needs no network and no credentials.
 
     --compare-cash also diffs the broker's settled cash (and unsettled, when the
@@ -3678,7 +3678,7 @@ def engine_fills(
     txns, and open or close positions at the price the broker actually gave.
 
     The snapshot is the brokerage's own order and trade-approval reads written
-    to a file unchanged (see docs/robinhood-mcp.md). Orders match an intent by
+    to a file unchanged (see docs/broker-mcp.md). Orders match an intent by
     its ref id, its approval id, or a broker order id already recorded. Orders
     and approvals that match no intent are reported and left alone. Re-ingesting
     the same snapshot changes nothing.
@@ -3747,7 +3747,7 @@ def engine_outbox(
 
     Oldest first. An intent past its 16:00 ET expiry is left out. One written at
     or after 15:45 ET is flagged late: an approval raised then has minutes to be
-    given. Read-only. Placing is the agent's job (docs/robinhood-mcp.md); record
+    given. Read-only. Placing is the agent's job (docs/broker-mcp.md); record
     what came back with 'trd engine outbox ack'.
 
     The guardrails apply here too: halted, nothing is emitted (`halted: true`);
@@ -4093,7 +4093,7 @@ def engine_replay_match(
     start_at = _parse_date(start)
     end_at = _parse_date(end)
     try:
-        service = FidelityService(connect_read_only(get_settings().db_path))
+        service = ReplayMatchService(connect_read_only(get_settings().db_path))
         with _spinner("Replaying the window and pairing it with the live trades..."):
             result = service.run(
                 start=start_at.date() if start_at else window_start(days),
@@ -4106,7 +4106,7 @@ def engine_replay_match(
     if as_json:
         _emit_json(result)
         return
-    for renderable in fidelity_renderables(result):
+    for renderable in replay_match_renderables(result):
         console.print(renderable)
 
 

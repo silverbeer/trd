@@ -73,7 +73,7 @@ rewrites text hides the renderer bug that produced it. Renderers are written so
 legitimate messages pass — the IRA report says "a money market fund", never the
 stored fund; live-engine alerts say "your broker app".
 
-The shell alerts in `deploy/rh-lib.sh` / `deploy/live-runner.sh` call curl
+The shell alerts in `deploy/broker-lib.sh` / `deploy/live-runner.sh` call curl
 directly and do **not** pass through this guard.
 
 ## The rules
@@ -97,7 +97,7 @@ Placeholders that never count as an account number: `TEST-ACCT-*`,
 and the start of `1234567890…`.
 
 **Firm names in code only warn.** The code already uses them (`trd import
-fidelity`, `docs/robinhood-mcp.md`, account names in examples); renaming is a
+fidelity`, `docs/broker-mcp.md`, account names in examples); renaming is a
 pending owner decision. `--tree` and long `--staged` runs print one summary line
 for them instead of one line each.
 
@@ -180,7 +180,7 @@ audit (266 commits); counts and commit ranges only — no values:
 - **A real macOS username** in k3s `hostPath` placeholders in 19 commits between
   `fe67025` and `53f2388`. Never in a commit message.
 - **Two 9-digit numbers used as broker account numbers** in
-  `tests/test_rh_stream.py`, possibly real, in 2 commits (`186acf2`, `dafd03f`).
+  `tests/test_broker_stream.py`, possibly real, in 2 commits (`186acf2`, `dafd03f`).
 - **The live account's last four digits** in 2 commits (`03f7d5c`, `0568a84`);
   how much the live account was funded with and how much sits idle in 4 commits
   between `249e1c0` and `0568a84`.

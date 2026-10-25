@@ -14,7 +14,7 @@
 #      and book it: `trd engine fills --notify`
 #
 # The model only makes the calls. What came back is read from the session's
-# stream-json transcript by deploy/rh_stream.py — the broker's own JSON, never a
+# stream-json transcript by deploy/broker_stream.py — the broker's own JSON, never a
 # model's retelling — and every order call is checked against the spec that
 # asked for it. An order call nobody asked for halts the engine.
 #
@@ -35,7 +35,7 @@
 #                               Re-run after every k3s deploy, never automatic —
 #                               code that places orders changes when you say so.
 set -u
-# shellcheck disable=SC2034 # read by rh-lib.sh
+# shellcheck disable=SC2034 # read by broker-lib.sh
 RH_TAG=runner
 HERE="$(cd "$(dirname "$0")" && pwd)"
 
@@ -50,7 +50,7 @@ if [[ "${1:-}" == install ]]; then
     mkdir -p "$RUNNER_HOME/bin"
     uv venv -q --allow-existing --python 3.14 "$RUNNER_HOME/venv"
     TRD_GIT_SHA="$SHA" uv pip install -q --python "$RUNNER_HOME/venv/bin/python" --reinstall-package trd "$TMP"
-    for f in live-runner.sh rh-lib.sh rh_stream.py rh-auth-probe.sh live-runner-settings.json \
+    for f in live-runner.sh broker-lib.sh broker_stream.py broker-auth-probe.sh live-runner-settings.json \
         alloc-report.sh; do
         cp "$TMP/deploy/$f" "$RUNNER_HOME/bin/$f"
     done
@@ -61,8 +61,8 @@ if [[ "${1:-}" == install ]]; then
     exit 0
 fi
 
-# shellcheck source=deploy/rh-lib.sh
-. "$HERE/rh-lib.sh"
+# shellcheck source=deploy/broker-lib.sh
+. "$HERE/broker-lib.sh"
 
 TRD_LIVE_HOME="${TRD_LIVE_HOME:-$HOME/.trd-live}"
 TRD="${RUNNER_TRD:-$RUNNER_HOME/venv/bin/trd}"
@@ -159,10 +159,10 @@ fi
 
 # --- 2. review --------------------------------------------------------------
 if [[ "$N_SPECS" -gt 0 ]]; then
-    "$RH_PY" "$RH_LIB_DIR/rh_stream.py" args --specs "$WORK/specs.json" --account "$ACCT" --tool review > "$WORK/review-args.json"
+    "$RH_PY" "$RH_LIB_DIR/broker_stream.py" args --specs "$WORK/specs.json" --account "$ACCT" --tool review > "$WORK/review-args.json"
     rh_session "$WORK/review.jsonl" "You are a relay with no discretion. Load the tools with ToolSearch (query 'select:mcp__robinhood-trading__get_trade_approval_setting,mcp__robinhood-trading__review_equity_order'). Call get_trade_approval_setting with account_number \"$ACCT\". Then call review_equity_order once for EACH argument object in this JSON array, passing the object exactly as given — do not change, round, add or drop any field: $(cat "$WORK/review-args.json"). Call nothing else, place nothing, then reply DONE." \
         ToolSearch mcp__robinhood-trading__get_trade_approval_setting mcp__robinhood-trading__review_equity_order
-    "$RH_PY" "$RH_LIB_DIR/rh_stream.py" review --stream "$WORK/review.jsonl" --specs "$WORK/specs.json" --account "$ACCT" > "$WORK/review.json"
+    "$RH_PY" "$RH_LIB_DIR/broker_stream.py" review --stream "$WORK/review.jsonl" --specs "$WORK/specs.json" --account "$ACCT" > "$WORK/review.json"
 
     AUTH=$(py 'import json,sys; print(json.load(open(sys.argv[1]))["auth"] or "")' "$WORK/review.json")
     read -r APPROVALS_ON N_CLEAN UNEXPECTED < <(py '
@@ -221,10 +221,10 @@ import json, sys
 clean = set(json.load(open(sys.argv[1]))["clean"])
 json.dump([s for s in json.load(open(sys.argv[2])) if s["intent_id"] in clean], open(sys.argv[3], "w"))
 ' "$WORK/review.json" "$WORK/specs.json" "$WORK/clean.json"
-        "$RH_PY" "$RH_LIB_DIR/rh_stream.py" args --specs "$WORK/clean.json" --account "$ACCT" --tool place > "$WORK/place-args.json"
+        "$RH_PY" "$RH_LIB_DIR/broker_stream.py" args --specs "$WORK/clean.json" --account "$ACCT" --tool place > "$WORK/place-args.json"
         rh_session "$WORK/place.jsonl" "You are a relay with no discretion. Load mcp__robinhood-trading__place_equity_order with ToolSearch (query 'select:mcp__robinhood-trading__place_equity_order'). Call place_equity_order once for EACH argument object in this JSON array, passing the object exactly as given, ref_id included — do not change, round, add or drop any field, and never invent a ref_id: $(cat "$WORK/place-args.json"). These orders were already reviewed; the customer approves each in the Robinhood app. If a call fails, do not retry it with different arguments. Call nothing else, then reply DONE." \
             ToolSearch mcp__robinhood-trading__place_equity_order
-        "$RH_PY" "$RH_LIB_DIR/rh_stream.py" placed --stream "$WORK/place.jsonl" --specs "$WORK/clean.json" --account "$ACCT" > "$WORK/placed.json"
+        "$RH_PY" "$RH_LIB_DIR/broker_stream.py" placed --stream "$WORK/place.jsonl" --specs "$WORK/clean.json" --account "$ACCT" > "$WORK/placed.json"
 
         # Record every answer, then deal with surprises. An ack that fails is
         # retried next pass from the log, never by placing again.
@@ -269,7 +269,7 @@ if [[ "$N_OPEN" -gt 0 ]]; then
     [[ "$APPROVAL_IDS" != "[]" ]] && APPROVAL_ARG=" Then call get_trade_approvals with account_number \"$ACCT\" and approval_ids $APPROVAL_IDS."
     rh_session "$WORK/fills.jsonl" "You are a relay with no discretion. Load the tools with ToolSearch (query 'select:mcp__robinhood-trading__get_equity_orders,mcp__robinhood-trading__get_trade_approvals'). Call get_equity_orders with account_number \"$ACCT\", created_at_gte \"$SINCE\" and agent_initiated true.$APPROVAL_ARG Call nothing else, then reply DONE." \
         ToolSearch mcp__robinhood-trading__get_equity_orders mcp__robinhood-trading__get_trade_approvals
-    if ! "$RH_PY" "$RH_LIB_DIR/rh_stream.py" snapshot --stream "$WORK/fills.jsonl" --account "$ACCT" > "$WORK/snapshot.json"; then
+    if ! "$RH_PY" "$RH_LIB_DIR/broker_stream.py" snapshot --stream "$WORK/fills.jsonl" --account "$ACCT" > "$WORK/snapshot.json"; then
         AUTH=$(py 'import json,sys; print(json.load(open(sys.argv[1])).get("auth") or "")' "$WORK/snapshot.json")
         if [[ -n "$AUTH" ]]; then
             rh_note_login FAIL auth "$AUTH"

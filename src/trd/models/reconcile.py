@@ -7,7 +7,7 @@ mark taken from a stale bar.
 
 The broker side arrives as a snapshot file rather than a live call on purpose.
 Reading a brokerage is an authenticated, interactive, agent-side operation (see
-docs/robinhood-mcp.md); the diff is deterministic arithmetic. Keeping them apart
+docs/broker-mcp.md); the diff is deterministic arithmetic. Keeping them apart
 means the comparison is reproducible, testable without a broker session, and
 cannot smuggle a network call into a service that must never make one.
 """

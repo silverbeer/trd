@@ -389,7 +389,7 @@ ET, with nobody at the keyboard. The person's part is the phone:
 | heartbeat | `~/.trd-live/runner.json` every pass; `trd engine watchdog` alarms when it is 25+ minutes old in the session |
 
 **The model makes the calls; it never reports them.** Every session runs with
-`--output-format stream-json`, and `deploy/rh_stream.py` reads each tool call's
+`--output-format stream-json`, and `deploy/broker_stream.py` reads each tool call's
 exact input and the broker's exact result from the transcript. The fill snapshot
 is the broker's JSON as returned. Every order call is matched against the spec
 that asked for it (symbol, side, quantity, type, `ref_id`, account); one that
@@ -401,7 +401,7 @@ path, which cannot prompt with nobody there, does not apply — plus
 `deploy/live-runner-settings.json`: exactly the five calls a drain makes allowed,
 `cancel_equity_order`, every other write and every local tool denied.
 
-**Login.** `deploy/rh-auth-probe.sh` runs hourly and checks the same way. A
+**Login.** `deploy/broker-auth-probe.sh` runs hourly and checks the same way. A
 lapsed sign-in (or approvals switched off) is one Telegram message to the private
 chat, a reminder at most every 3 hours in the session, and an all-clear. It
 shares its state with the runner, so the runner hitting the same failure does not
@@ -415,7 +415,7 @@ failures are how long a sign-in lasts.
 deploy/live-runner.sh install            # pins trd + these scripts at `main` into ~/.trd-runner
 # ~/.config/trd/live.env, chmod 600: TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID,
 #   TRD_BOT_ALLOWED_USER_IDS, RH_ACCOUNT_NUMBER (the agentic account)
-for n in live-runner rh-auth-probe; do
+for n in live-runner broker-auth-probe; do
   sed "s#/Users/USERNAME#$HOME#g" deploy/io.silverbeer.trd.$n.plist \
     > ~/Library/LaunchAgents/io.silverbeer.trd.$n.plist
   launchctl load ~/Library/LaunchAgents/io.silverbeer.trd.$n.plist

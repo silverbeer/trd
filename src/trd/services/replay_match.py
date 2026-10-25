@@ -59,7 +59,7 @@ class GapPart(BaseModel):
     mean_r: float | None = None
 
 
-class FidelityResult(BaseModel):
+class ReplayMatchResult(BaseModel):
     start: date
     end: date
     timeframe: str
@@ -200,7 +200,7 @@ def decompose(
     return parts, gap, residual, detail
 
 
-class FidelityService:
+class ReplayMatchService:
     """Runs the replay over a window and lays it against the live book. Read-only
     by connection, like the backtest it drives."""
 
@@ -213,7 +213,7 @@ class FidelityService:
 
     def run(
         self, start: date, end: date | None = None, entry_fill: EntryFill | None = None
-    ) -> FidelityResult:
+    ) -> ReplayMatchResult:
         config = self.configs.get()
         if config is None:
             raise TrdError("No engine configured. Run 'trd engine init' first.")
@@ -261,7 +261,7 @@ class FidelityService:
         )
         live_r = [_r(p.realized_r) for p, _ in live]
         replay_r = [_r(t.r_multiple) for t in replay]
-        return FidelityResult(
+        return ReplayMatchResult(
             start=start,
             end=end or result.end,
             timeframe=config.timeframe,

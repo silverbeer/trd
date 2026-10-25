@@ -4,7 +4,7 @@ answer back in.
 A live scan writes order intents and places nothing. An agent session reads the
 outbox, places each order through the broker's own tools, and acks what came back
 — an approval id, a broker order id, or the error the place call returned. trd
-never reaches the broker (docs/robinhood-mcp.md): the spec it emits and the id it
+never reaches the broker (docs/broker-mcp.md): the spec it emits and the id it
 records are the whole of its side.
 
 The ack is the agent's word for what happened at the moment of placing; the fill

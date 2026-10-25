@@ -2,7 +2,7 @@
 #
 # Is the Robinhood MCP still signed in? Checked the way the live runner uses it:
 # a headless `claude -p`, nobody at the keyboard. Hourly, from launchd
-# (deploy/io.silverbeer.trd.rh-auth-probe.plist).
+# (deploy/io.silverbeer.trd.broker-auth-probe.plist).
 #
 # When the sign-in lapses, every order the live engine wants sits in the outbox
 # until 16:00: buys expire harmlessly, but an exit nobody places leaves a real
@@ -16,12 +16,12 @@
 #
 # Read-only. Approvals OFF counts as a failure: the runner will not place then.
 #
-# Test the alert path without a real failure:  RH_PROBE_FORCE_FAIL=1 rh-auth-probe.sh
+# Test the alert path without a real failure:  RH_PROBE_FORCE_FAIL=1 broker-auth-probe.sh
 set -u
-# shellcheck disable=SC2034 # read by rh-lib.sh
+# shellcheck disable=SC2034 # read by broker-lib.sh
 RH_TAG=probe
-# shellcheck source=deploy/rh-lib.sh
-. "$(cd "$(dirname "$0")" && pwd)/rh-lib.sh"
+# shellcheck source=deploy/broker-lib.sh
+. "$(cd "$(dirname "$0")" && pwd)/broker-lib.sh"
 
 rh_load_env || exit 1
 if [[ -z "${RH_ACCOUNT_NUMBER:-}" ]]; then
@@ -36,7 +36,7 @@ else
     rh_session "$STREAM" \
         "Load mcp__robinhood-trading__get_trade_approval_setting with ToolSearch (query 'select:mcp__robinhood-trading__get_trade_approval_setting'), call it once with account_number \"$RH_ACCOUNT_NUMBER\", then reply DONE. Call nothing else." \
         ToolSearch mcp__robinhood-trading__get_trade_approval_setting
-    RESULT=$("$RH_PY" "$RH_LIB_DIR/rh_stream.py" probe --stream "$STREAM")
+    RESULT=$("$RH_PY" "$RH_LIB_DIR/broker_stream.py" probe --stream "$STREAM")
 fi
 
 read -r STATUS KIND DETAIL < <("$RH_PY" -c '

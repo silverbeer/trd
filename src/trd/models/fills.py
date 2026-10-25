@@ -4,7 +4,7 @@ A live scan writes order intents and fills nothing (see OrderIntent). What the
 broker did with them arrives as a snapshot file, shaped exactly like the
 brokerage's own order and trade-approval reads so an agent can dump them with no
 reshaping. Same split as reconciliation: the authenticated read happens outside
-trd (docs/robinhood-mcp.md), and turning it into txns and positions is
+trd (docs/broker-mcp.md), and turning it into txns and positions is
 deterministic arithmetic that needs no network and no credentials.
 """
 

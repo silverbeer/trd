@@ -1,6 +1,6 @@
 """Import Fidelity's own CSV exports into an account (SB-1418).
 
-Not `services/fidelity.py`, which is the engine's backtest-fidelity check and
+Not `services/replay_match.py`, which is the engine's backtest-fidelity check and
 has nothing to do with the brokerage.
 
 Fidelity offers no retail API, so a Fidelity-managed account — one an adviser
@@ -66,8 +66,7 @@ import duckdb
 
 from trd.errors import ProviderError, SymbolNotFoundError, TrdError, UnknownAccountError
 from trd.models import AccountType, IncomeKind, InstrumentInfo, InstrumentType, Side
-from trd.models.alloc import CashFlowKind
-from trd.models.fidelity_import import (
+from trd.models.activity_import import (
     ActivityKind,
     ActivityRow,
     FeeLine,
@@ -79,6 +78,7 @@ from trd.models.fidelity_import import (
     PositionsFile,
     WriteTarget,
 )
+from trd.models.alloc import CashFlowKind
 from trd.models.reconcile import CASH_TOLERANCE
 from trd.providers.base import MarketDataProvider
 from trd.repos import AccountRepo, TransactionRepo
@@ -88,7 +88,7 @@ from trd.services.alloc import CashService
 from trd.services.portfolio import PortfolioService
 from trd.services.reconcile import ReconcileService
 
-SOURCE = "fidelity"
+SOURCE = "activity"
 CENT = Decimal("0.01")
 PRICE_PLACES = Decimal("0.00000001")  # txn.price is DECIMAL(24, 8)
 # Shares either side may differ by before a symbol is a mismatch: Fidelity
@@ -555,15 +555,15 @@ def check_positions(
     """trd's quantities and cash against Fidelity's, symbol by symbol."""
     theirs = positions.quantities()
     rows = [
-        PositionCheckRow(symbol=s, trd=held.get(s, Decimal(0)), fidelity=theirs.get(s, Decimal(0)))
+        PositionCheckRow(symbol=s, trd=held.get(s, Decimal(0)), broker=theirs.get(s, Decimal(0)))
         for s in sorted(set(held) | set(theirs))
     ]
-    rows = [r for r in rows if r.trd != 0 or r.fidelity != 0]
+    rows = [r for r in rows if r.trd != 0 or r.broker != 0]
     return PositionsCheck(
         rows=rows,
         mismatched=[r.symbol for r in rows if abs(r.diff) > POSITION_TOLERANCE],
         cash_trd=cash,
-        cash_fidelity=positions.cash,
+        cash_broker=positions.cash,
         cash_ok=abs(cash - positions.cash) <= CASH_TOLERANCE,
         projected=projected,
     )
@@ -579,7 +579,7 @@ class _Context:
     account_id: int | None
 
 
-class FidelityImportService:
+class ActivityImportService:
     def __init__(self, conn: duckdb.DuckDBPyConnection, provider: MarketDataProvider) -> None:
         self.conn = conn
         self.provider = provider
@@ -601,7 +601,7 @@ class FidelityImportService:
         dry_run: bool = False,
         opening_from_positions: bool = False,
         opening_prices: dict[str, Decimal] | None = None,
-        fidelity_account: str | None = None,
+        source_account: str | None = None,
     ) -> ImportPlan:
         """Plan the import and, unless `dry_run`, write it in one transaction."""
         plan, ctx = self._plan(
@@ -611,7 +611,7 @@ class FidelityImportService:
             create=create,
             opening_from_positions=opening_from_positions,
             opening_prices=opening_prices or {},
-            fidelity_account=fidelity_account,
+            source_account=source_account,
         )
         plan.dry_run = dry_run
         if dry_run:
@@ -640,10 +640,10 @@ class FidelityImportService:
         create: str | None,
         opening_from_positions: bool,
         opening_prices: dict[str, Decimal],
-        fidelity_account: str | None,
+        source_account: str | None,
     ) -> tuple[ImportPlan, _Context]:
         rows = parse_activity(activity_text)
-        positions = parse_positions(positions_text, fidelity_account) if positions_text else None
+        positions = parse_positions(positions_text, source_account) if positions_text else None
         existing = self.accounts.get_by_name(account)
         if existing is None and create is None:
             raise UnknownAccountError(account)

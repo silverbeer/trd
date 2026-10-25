@@ -17,7 +17,7 @@ from trd.engine.base import Strategy, StrategyContext, StrategySignal
 from trd.errors import TrdError
 from trd.models import Bar, IntradayBar
 from trd.services.backtest import BacktestTrade, EntryFill, FillMode
-from trd.services.fidelity import decompose, pair
+from trd.services.replay_match import decompose, pair
 
 BAR = OPENED.replace(second=0)  # the replay enters at the bar's own stamp
 

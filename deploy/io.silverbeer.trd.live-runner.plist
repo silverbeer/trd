@@ -6,7 +6,7 @@
   places orders changes only when deploy/live-runner.sh install is re-run.
   Secrets are not in this file. They are read from ~/.config/trd/live.env
   (chmod 600): TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, TRD_BOT_ALLOWED_USER_IDS,
-  RH_ACCOUNT_NUMBER. See docs/robinhood-mcp.md, "The live runner".
+  RH_ACCOUNT_NUMBER. See docs/broker-mcp.md, "The live runner".
 
   Install:
     1) Replace USERNAME below with your account name (absolute paths only).

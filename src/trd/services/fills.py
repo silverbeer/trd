@@ -3,7 +3,7 @@ opened and closed at the price the broker actually gave.
 
 A live scan writes order intents and fills nothing. This is the other half: a
 snapshot of the brokerage's orders and trade approvals (written as-is by an agent
-session — see docs/robinhood-mcp.md) is matched to those intents and applied. No
+session — see docs/broker-mcp.md) is matched to those intents and applied. No
 network, no provider, no credentials: the same split as `ReconcileService`, for
 the same reason — the read is authenticated and interactive, the bookkeeping is
 deterministic and has to be testable without a broker account.

@@ -104,7 +104,7 @@ The full operator guide, including turning it on and off, is
 
 `--live` deploys the live engine against `~/.trd-live`: CronJobs `trd-live-scan` and
 `trd-live-queue`, label `💵 live`. Its scan writes order intents and fills nothing; an
-agent session places them (docs/robinhood-mcp.md, "Draining the outbox") and ingests the
+agent session places them (docs/broker-mcp.md, "Draining the outbox") and ingests the
 fills. The scan keeps `--notify`, because that is what sends each new intent to the
 private alert chat — never the channel (see "Live engine alerts" below).
 
@@ -279,7 +279,7 @@ kubectl patch secret trd-engine-telegram -n trd \
 
 Live messages are labelled `💵 live` unless `TRD_ENGINE_LABEL` is
 set. The runbook that drains the outbox is in
-[docs/robinhood-mcp.md](../../docs/robinhood-mcp.md#draining-the-outbox-live-engine).
+[docs/broker-mcp.md](../../docs/broker-mcp.md#draining-the-outbox-live-engine).
 
 ## The queue drain — chat outside market hours
 

@@ -3,7 +3,7 @@
 A live scan writes order intents and places nothing. An agent session drains
 them: `trd engine outbox` hands over each pending intent as the parameters the
 broker's order tool takes, and `trd engine outbox ack` records what the broker
-answered. trd never calls the broker itself (docs/robinhood-mcp.md) — it emits a
+answered. trd never calls the broker itself (docs/broker-mcp.md) — it emits a
 spec and reads back an id, which is the whole of its side of the conversation.
 """
 

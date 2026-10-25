@@ -1,4 +1,4 @@
-"""The live runner's transcript reader (deploy/rh_stream.py).
+"""The live runner's transcript reader (deploy/broker_stream.py).
 
 It is the only thing between a model's broker calls and trd's books, so what is
 worth pinning is what it refuses: an order call no spec asked for, a review with
@@ -14,7 +14,7 @@ from typing import Any
 import pytest
 
 SPEC = importlib.util.spec_from_file_location(
-    "rh_stream", Path(__file__).parent.parent / "deploy" / "rh_stream.py"
+    "broker_stream", Path(__file__).parent.parent / "deploy" / "broker_stream.py"
 )
 assert SPEC and SPEC.loader
 rh = importlib.util.module_from_spec(SPEC)

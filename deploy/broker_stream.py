@@ -14,11 +14,11 @@ emitted (symbol, side, quantity, ref_id, account); anything else is reported as
 
 Stdlib only, and not part of `trd`: nothing under src/trd knows about MCP.
 
-    rh_stream.py args     --specs F --account A --tool review|place
-    rh_stream.py probe    --stream F
-    rh_stream.py review   --stream F --specs F --account A
-    rh_stream.py placed   --stream F --specs F --account A
-    rh_stream.py snapshot --stream F --account A
+    broker_stream.py args     --specs F --account A --tool review|place
+    broker_stream.py probe    --stream F
+    broker_stream.py review   --stream F --specs F --account A
+    broker_stream.py placed   --stream F --specs F --account A
+    broker_stream.py snapshot --stream F --account A
 """
 
 from __future__ import annotations

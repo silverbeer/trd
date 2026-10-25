@@ -6,7 +6,7 @@ approved by you on your phone.
 
 This is the operator's guide: what it is, how an order travels, how to turn it
 on, how to turn it off, and what to do when something goes wrong. The design
-behind it is in [robinhood-mcp.md](robinhood-mcp.md) ("Draining the outbox", "The
+behind it is in [broker-mcp.md](broker-mcp.md) ("Draining the outbox", "The
 live runner") and the tickets SB-1325 (go/no-go) and SB-1373–1382.
 
 > Facts measured on this account, not recalled: with trade approvals on, the
@@ -49,7 +49,7 @@ mini  live-runner, next pass
 
 The runner is a headless `claude -p` on the mini, because the Robinhood MCP's
 sign-in lives in Claude Code. **The model makes the calls and never reports
-them**: `deploy/rh_stream.py` reads what the broker actually returned from the
+them**: `deploy/broker_stream.py` reads what the broker actually returned from the
 session transcript, and checks every order call against the intent that asked
 for it. An order call nothing asked for halts the engine.
 
@@ -95,11 +95,11 @@ two years of bars for 137 names and takes several minutes. Nothing spends money
 until step 6.
 
 **Already in place** (2026-10-22): trade approvals ON, account funded, launchd jobs
-`io.silverbeer.trd.live-runner` and `io.silverbeer.trd.rh-auth-probe` loaded,
+`io.silverbeer.trd.live-runner` and `io.silverbeer.trd.broker-auth-probe` loaded,
 `~/.config/trd/live.env` written. Check with:
 
 ```bash
-launchctl list | grep -E 'trd\.(live-runner|rh-auth-probe)'   # both listed, status 0
+launchctl list | grep -E 'trd\.(live-runner|broker-auth-probe)'   # both listed, status 0
 tail -3 ~/Library/Logs/trd-live-runner.log                    # recent "[probe] OK ok approvals=on"
 ```
 
@@ -286,7 +286,7 @@ you bring the books back in line (see *Selling in the app* below).
 
 4. Remove `,live=$HOME/.trd-live` from the watchdog plist and reload it.
 5. Optional: leave the login check running (it's harmless) or unload
-   `io.silverbeer.trd.rh-auth-probe` too. Withdraw the cash in the Robinhood app
+   `io.silverbeer.trd.broker-auth-probe` too. Withdraw the cash in the Robinhood app
    once it has settled.
 
 The retired home keeps every intent, fill and trade — `TRD_HOME=~/.trd-live.retired-…

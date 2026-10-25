@@ -1,6 +1,6 @@
 """Importing Fidelity's CSV exports (SB-1418).
 
-Every fixture under tests/fixtures/fidelity is SYNTHETIC: Fidelity's layout
+Every fixture under tests/fixtures/activity is SYNTHETIC: Fidelity's layout
 (BOM, blank lines, header, newest-first rows, legal footer) and its action
 phrasings, with invented quantities, prices, amounts and dates.
 
@@ -27,26 +27,26 @@ from tests.conftest import FakeProvider
 from trd.cli.app import app
 from trd.errors import TrdError, UnknownAccountError
 from trd.models import AccountType, DailyBar, IncomeKind, Side
+from trd.models.activity_import import ActivityKind, WriteTarget
 from trd.models.alloc import AllocTarget, CashFlowKind
-from trd.models.fidelity_import import ActivityKind, WriteTarget
 from trd.repos import AccountRepo
 from trd.repos.income import IncomeRepo
-from trd.services.alloc import AllocService, CashService
-from trd.services.cashflow import cash_flows, external_flows
-from trd.services.dashboard import Dashboard
-from trd.services.fidelity_import import (
-    FidelityImportService,
+from trd.services.activity_import import (
+    ActivityImportService,
     balance_check,
     parse_activity,
     parse_positions,
     plan_rows,
 )
+from trd.services.alloc import AllocService, CashService
+from trd.services.cashflow import cash_flows, external_flows
+from trd.services.dashboard import Dashboard
 from trd.services.portfolio import PortfolioService
 from trd.services.reconcile import ReconcileService
 from trd.services.xirr import xirr
 
 D = Decimal
-FIX = Path(__file__).parent / "fixtures" / "fidelity"
+FIX = Path(__file__).parent / "fixtures" / "activity"
 ACCOUNT = "managed-ira"
 runner = CliRunner()
 
@@ -56,11 +56,11 @@ def text(name: str) -> str:
 
 
 @pytest.fixture
-def importer(conn: duckdb.DuckDBPyConnection, provider: FakeProvider) -> FidelityImportService:
-    return FidelityImportService(conn, provider)
+def importer(conn: duckdb.DuckDBPyConnection, provider: FakeProvider) -> ActivityImportService:
+    return ActivityImportService(conn, provider)
 
 
-def run(importer: FidelityImportService, name: str = "activity.txt", **kw):
+def run(importer: ActivityImportService, name: str = "activity.txt", **kw):
     kw.setdefault("create", "Managed IRA")
     return importer.run(FIX / name, ACCOUNT, **kw)
 
@@ -151,7 +151,7 @@ def test_identical_rows_on_one_day_get_distinct_keys() -> None:
 
 
 def test_import_writes_every_class(
-    importer: FidelityImportService, conn: duckdb.DuckDBPyConnection
+    importer: ActivityImportService, conn: duckdb.DuckDBPyConnection
 ) -> None:
     plan = run(importer)
     assert plan.applied and plan.create_account
@@ -176,7 +176,7 @@ def test_import_writes_every_class(
 
 
 def test_reinvested_dividend_is_income_in_and_a_buy_out_once_each(
-    importer: FidelityImportService, conn: duckdb.DuckDBPyConnection
+    importer: ActivityImportService, conn: duckdb.DuckDBPyConnection
 ) -> None:
     run(importer)
     account = AccountRepo(conn).get_by_name(ACCOUNT)
@@ -190,8 +190,8 @@ def test_reinvested_dividend_is_income_in_and_a_buy_out_once_each(
     assert [i.amount for i in paid] == [D(9)]
 
 
-def test_unpriced_fund_is_tracked_under_fidelitys_name(
-    importer: FidelityImportService, conn: duckdb.DuckDBPyConnection
+def test_unpriced_fund_is_tracked_under_the_brokers_name(
+    importer: ActivityImportService, conn: duckdb.DuckDBPyConnection
 ) -> None:
     """The fake provider knows neither fund — as with adviser-only share classes."""
     run(importer)
@@ -200,7 +200,7 @@ def test_unpriced_fund_is_tracked_under_fidelitys_name(
 
 
 def test_reimport_writes_nothing(
-    importer: FidelityImportService, conn: duckdb.DuckDBPyConnection
+    importer: ActivityImportService, conn: duckdb.DuckDBPyConnection
 ) -> None:
     run(importer)
     before = CashService(conn).balance(ACCOUNT)
@@ -213,7 +213,7 @@ def test_reimport_writes_nothing(
 
 
 def test_overlapping_file_imports_only_the_new_rows(
-    importer: FidelityImportService, conn: duckdb.DuckDBPyConnection
+    importer: ActivityImportService, conn: duckdb.DuckDBPyConnection
 ) -> None:
     run(importer)
     later = run(importer, "activity_later.txt")
@@ -225,7 +225,7 @@ def test_overlapping_file_imports_only_the_new_rows(
 
 
 def test_dry_run_writes_nothing(
-    importer: FidelityImportService, conn: duckdb.DuckDBPyConnection
+    importer: ActivityImportService, conn: duckdb.DuckDBPyConnection
 ) -> None:
     plan = run(importer, dry_run=True)
     assert plan.dry_run and not plan.applied
@@ -235,13 +235,13 @@ def test_dry_run_writes_nothing(
     assert conn.execute("SELECT count(*) FROM import_row").fetchone() == (0,)
 
 
-def test_missing_account_without_create_is_refused(importer: FidelityImportService) -> None:
+def test_missing_account_without_create_is_refused(importer: ActivityImportService) -> None:
     with pytest.raises(UnknownAccountError):
         importer.run(FIX / "activity.txt", ACCOUNT)
 
 
 def test_simulation_account_is_refused(
-    importer: FidelityImportService, conn: duckdb.DuckDBPyConnection
+    importer: ActivityImportService, conn: duckdb.DuckDBPyConnection
 ) -> None:
     AccountRepo(conn).create(ACCOUNT, AccountType.SIMULATION)
     with pytest.raises(TrdError, match="real money"):
@@ -249,7 +249,7 @@ def test_simulation_account_is_refused(
 
 
 def test_a_failed_write_rolls_back_everything(
-    importer: FidelityImportService,
+    importer: ActivityImportService,
     conn: duckdb.DuckDBPyConnection,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -267,7 +267,7 @@ def test_a_failed_write_rolls_back_everything(
 
 
 def test_sells_before_any_holding_are_refused_without_positions(
-    importer: FidelityImportService,
+    importer: ActivityImportService,
 ) -> None:
     with pytest.raises(TrdError, match="--opening-from-positions"):
         run(importer, "activity_mid_history.txt")
@@ -287,7 +287,7 @@ def _opening_bars(provider: FakeProvider) -> None:
 
 
 def test_opening_from_positions_seeds_the_day_before(
-    importer: FidelityImportService,
+    importer: ActivityImportService,
     conn: duckdb.DuckDBPyConnection,
     provider: FakeProvider,
 ) -> None:
@@ -318,7 +318,7 @@ def test_opening_from_positions_seeds_the_day_before(
 
 
 def test_opening_needs_a_price_and_takes_one_by_hand(
-    importer: FidelityImportService, provider: FakeProvider
+    importer: ActivityImportService, provider: FakeProvider
 ) -> None:
     with pytest.raises(TrdError, match="--opening-price"):
         run(
@@ -339,15 +339,15 @@ def test_opening_needs_a_price_and_takes_one_by_hand(
     assert plan.positions is not None and plan.positions.ok and plan.positions.projected
 
 
-def test_positions_reconcile_match(importer: FidelityImportService) -> None:
+def test_positions_reconcile_match(importer: ActivityImportService) -> None:
     plan = run(importer, positions=FIX / "positions.txt")
     assert plan.positions is not None
     assert plan.positions.ok and not plan.positions.projected
-    assert plan.positions.cash_fidelity == D("2279.45")
+    assert plan.positions.cash_broker == D("2279.45")
     assert "not yet verified" in plan.positions.note
 
 
-def test_positions_reconcile_mismatch(importer: FidelityImportService) -> None:
+def test_positions_reconcile_mismatch(importer: ActivityImportService) -> None:
     plan = run(importer, positions=FIX / "positions_mismatch.txt")
     assert plan.positions is not None and not plan.positions.ok
     assert plan.positions.mismatched == ["FXAIX"]
@@ -506,7 +506,7 @@ def test_cli_unknown_action_is_an_error_in_json(cli_env: FakeProvider) -> None:
 
 
 def test_backup_carries_the_import_ledger(
-    importer: FidelityImportService, conn: duckdb.DuckDBPyConnection, tmp_path: Path
+    importer: ActivityImportService, conn: duckdb.DuckDBPyConnection, tmp_path: Path
 ) -> None:
     """A restore that dropped the ledger would let the next import of the same
     export write every row twice."""
@@ -518,6 +518,6 @@ def test_backup_carries_the_import_ledger(
     assert data["version"] == 11 and len(data["import_rows"]) == 15
     fresh = connect(tmp_path / "restored.duckdb")
     restore_data(fresh, data)
-    again = FidelityImportService(fresh, FakeProvider()).run(FIX / "activity.txt", ACCOUNT)
+    again = ActivityImportService(fresh, FakeProvider()).run(FIX / "activity.txt", ACCOUNT)
     assert again.new_writes == 0
     assert CashService(fresh).balance(ACCOUNT).cash == D("2279.45")

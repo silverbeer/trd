@@ -2,7 +2,7 @@
 
 Pure arithmetic over a snapshot file and the database — no network, no provider.
 The brokerage read happens elsewhere (an authenticated MCP session; see
-docs/robinhood-mcp.md) precisely so this part stays deterministic and testable
+docs/broker-mcp.md) precisely so this part stays deterministic and testable
 without a broker account.
 
 trd's side is FIFO-derived from transactions, never a stored balance, so this

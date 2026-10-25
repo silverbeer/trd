@@ -1,6 +1,6 @@
 # shellcheck shell=bash
 #
-# Shared by deploy/live-runner.sh and deploy/rh-auth-probe.sh. Sourced, not run.
+# Shared by deploy/live-runner.sh and deploy/broker-auth-probe.sh. Sourced, not run.
 #
 # Both scripts reach the Robinhood MCP the only way it can be reached: a headless
 # `claude -p` in the trd checkout, where the server is configured (local scope)

@@ -5,7 +5,7 @@
 # line here is reviewed like code — say why the match is not real data.
 
 # The importer recognises the footer a broker appends; it has to name it.
-src/trd/services/fidelity_import.py export-footer the parser matching the footer, not an export
+src/trd/services/activity_import.py export-footer the parser matching the footer, not an export
 
 # The guardrail's own definitions and tests name what they look for.
 scripts/privacy_scan.py export-header the scanner's signature list

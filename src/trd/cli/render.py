@@ -37,6 +37,7 @@ from trd.models import (
     TradeExplanation,
     TradeOutcome,
 )
+from trd.models.activity_import import ImportPlan
 from trd.models.alloc import (
     CASH_FLOW_LABELS,
     AllocView,
@@ -45,7 +46,6 @@ from trd.models.alloc import (
     CashFlowKind,
     Proposal,
 )
-from trd.models.fidelity_import import ImportPlan
 from trd.repos import PrepSnapshotRow
 from trd.services.backtest import BacktestResult as EngineBacktestResult
 from trd.services.dashboard import Dashboard, Holding
@@ -55,11 +55,11 @@ from trd.services.edge import EdgeGroup, EdgeReport, Measure
 from trd.services.engine import ScanResult
 from trd.services.equity_curve import EquityCurve
 from trd.services.exit_whatif import WhatIfArm, WhatIfResult
-from trd.services.fidelity import FidelityResult
 from trd.services.history import HistoryResult
 from trd.services.movers import MoverRow
 from trd.services.outcomes import OutcomeSummary
 from trd.services.plan import PlanStatus
+from trd.services.replay_match import ReplayMatchResult
 from trd.services.review import MIN_TRADES_FOR_FINDING, EnginePack, ReviewResult
 from trd.services.sunday_prep import SundayPrepBriefing
 from trd.services.sweep import SweepResult, SweepRow
@@ -1705,7 +1705,7 @@ def sweep_renderables(result: SweepResult) -> list[RenderableType]:
     return [table, Text(result.caveat, style="dim")]
 
 
-def fidelity_import_renderables(plan: ImportPlan) -> list[RenderableType]:
+def activity_import_renderables(plan: ImportPlan) -> list[RenderableType]:
     """An activity import: what it adds, the FEES (always, even when nothing is
     new — they are the line a managed account most needs seen), then the
     positions reconciliation."""
@@ -1778,15 +1778,15 @@ def fidelity_import_renderables(plan: ImportPlan) -> list[RenderableType]:
             table.add_row(
                 r.symbol,
                 f"{r.trd.normalize():f}",
-                f"{r.fidelity.normalize():f}",
+                f"{r.broker.normalize():f}",
                 f"[red]{diff}[/red]" if bad else diff,
             )
         table.add_section()
-        cash = f"{fmt_money(check.cash_trd - check.cash_fidelity)}"
+        cash = f"{fmt_money(check.cash_trd - check.cash_broker)}"
         table.add_row(
             "cash",
             fmt_money(check.cash_trd),
-            fmt_money(check.cash_fidelity),
+            fmt_money(check.cash_broker),
             cash if check.cash_ok else f"[red]{cash}[/red]",
         )
         out.append(table)
@@ -1806,7 +1806,7 @@ def fidelity_import_renderables(plan: ImportPlan) -> list[RenderableType]:
     return out
 
 
-def fidelity_renderables(result: FidelityResult) -> list[RenderableType]:
+def replay_match_renderables(result: ReplayMatchResult) -> list[RenderableType]:
     """How far the replay sits from the live book, split into named parts that
     sum to the gap. The parts are the point; the headline is only their total."""
 
