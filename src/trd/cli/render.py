@@ -48,6 +48,7 @@ from trd.models.alloc import (
 )
 from trd.models.engine import describe_short
 from trd.repos import PrepSnapshotRow
+from trd.services.backtest import YOUNG_CAVEAT
 from trd.services.backtest import BacktestResult as EngineBacktestResult
 from trd.services.dashboard import Dashboard, Holding
 from trd.services.dca_detail import PlanDetail
@@ -1964,6 +1965,13 @@ def engine_backtest_renderables(
             if result.settlement
             else ""
         )
+        + (
+            f"\nyoung-listing slice: entries only in the first {result.young_sessions} "
+            f"sessions of {len(result.young_names)} names that listed inside the stored "
+            f"history — n = {len(result.trades)} closed"
+            if result.young_sessions
+            else ""
+        )
     )
     out.append(Panel(header, expand=False, border_style="cyan"))
     if result.equity:
@@ -1988,6 +1996,10 @@ def engine_backtest_renderables(
         out.append(engine_backtest_windows_table(result))
     for note in result.skipped:
         out.append(Text(f"  {note}", style="dim"))
+    if result.young_sessions:
+        listed = ", ".join(f"{s} {d:%Y-%m}" for s, d in result.young_names)
+        out.append(Text(f"  slice: {listed or 'no name listed inside the history'}", style="dim"))
+        out.append(Panel(YOUNG_CAVEAT, border_style="yellow", title="Slice", title_align="left"))
     out.append(Panel(result.caveat, border_style="yellow", title="Caveat", title_align="left"))
     return out
 

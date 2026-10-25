@@ -419,6 +419,27 @@ def test_a_name_no_rule_clears_says_so():
     assert "breakout needs 51" in result.skipped[0]
 
 
+def test_young_slice_takes_entries_only_in_a_listings_first_sessions():
+    """SB-1434: breakout fires on session 61 (60 before it). Inside a 61-session
+    slice it is taken; a 60-session slice has already closed on the name."""
+    series = breakout_series()
+    horizon = series[0].date - timedelta(days=30)
+    inside = run({"AAA": series}, young_sessions=61, young_after=horizon)
+    assert inside.open_at_end == 1
+    assert inside.young_names == [("AAA", series[0].date)]
+    outside = run({"AAA": series}, young_sessions=60, young_after=horizon)
+    assert outside.open_at_end == 0
+
+
+def test_young_slice_leaves_out_a_name_that_predates_the_history():
+    """Its first bar is the backfill horizon, not a listing: its first sessions
+    are an arbitrary stretch of an old chart."""
+    series = breakout_series()
+    result = run({"AAA": series}, young_sessions=200, young_after=series[0].date)
+    assert result.open_at_end == 0
+    assert result.young_names == []
+
+
 def test_windows_slice_trades_by_exit_date():
     """The drift detector: one simulation, regraded over trailing windows. A
     2019 trade shows up in the full column but not the 3y/1y ones."""
@@ -731,3 +752,40 @@ def test_the_default_fill_is_the_one_the_live_engine_gets() -> None:
     assert default_fill("1d") == FillMode.INTRABAR
     assert default_fill("5m") == FillMode.CLOSE
     assert default_fill("1h") == FillMode.CLOSE
+
+
+def test_the_cli_young_slice_finds_the_listing_and_overrides_rules(cli_env: FakeProvider, tmp_path):
+    """SB-1434 end to end: the horizon is the first stored bar anywhere, so the
+    name synced from 2019 is history and the one starting 2024 is a listing."""
+    import json
+    import os
+
+    from typer.testing import CliRunner
+
+    from trd.cli.app import app
+    from trd.db.connection import connect
+
+    home = tmp_path / "engine"
+    home.mkdir()
+    conn = connect(home / "trd.duckdb")
+    cli_env.add_symbol("OLD", price="101.00")
+    cli_env.add_symbol("NEW", price="101.00")
+    EngineService(conn, cli_env).init(symbols=["OLD", "NEW"], strategies=["momentum"])
+    for symbol, series in [("OLD", shifted_breakout(date(2019, 1, 1))), ("NEW", breakout_series())]:
+        instrument = InstrumentRepo(conn).get_by_symbol(symbol)
+        assert instrument is not None
+        PriceRepo(conn).upsert_daily(instrument.id, series)
+    conn.close()
+
+    os.environ["TRD_HOME"] = str(home)
+    try:
+        args = ["engine", "backtest", "--young", "200", "--strategies", "breakout", "--json"]
+        result = CliRunner().invoke(app, args)
+        assert result.exit_code == 0, result.output
+        out = json.loads(result.output)
+        assert out["strategies"] == ["breakout"]
+        assert out["young_sessions"] == 200
+        assert [name for name, _first in out["young_names"]] == ["NEW"]
+        assert out["open_at_end"] == 1  # NEW's breakout; OLD's is outside the slice
+    finally:
+        os.environ.pop("TRD_HOME", None)
