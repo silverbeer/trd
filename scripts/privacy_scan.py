@@ -4,8 +4,8 @@
 This repository is public. trd tracks real retirement accounts, and the rule is
 that no real account data ever enters the repo or its git metadata: no broker
 export, no account number, no database, no backup, no real home path, no figure
-the owner has listed as private, and no brokerage name in a commit message, PR
-or branch name. See docs/privacy.md.
+the owner has listed as private, and no brokerage name or custodian fund
+anywhere — code, docs, commit message, PR or branch name. See docs/privacy.md.
 
 stdlib only and imports nothing from trd, so it runs in a bare git hook before
 `uv sync` and in CI before anything is installed. The Telegram send guard
@@ -292,11 +292,12 @@ PATH_RE = re.compile(PERSONAL_PATH)
 TILDE_RE = re.compile(TILDE_PATH)
 
 
-def firm_blocks_in_message(match: str) -> bool:
-    """In prose that is not code, lowercase `fidelity` is the ordinary word
-    (`trd engine fidelity`, backtest fidelity); Fidelity/FIDELITY are the firm.
-    SOFI in capitals is SoFi Technologies' ticker, a stock, not an account."""
-    return match not in ("fidelity", "SOFI")
+def firm_blocks(match: str) -> bool:
+    """SOFI in capitals is SoFi Technologies' ticker, a stock the engines may
+    trade, not an account. Every other spelling of every firm blocks, in code
+    as in prose (SB-1427): the files that must name the broker's MCP server
+    are listed in scripts/privacy_exceptions.txt."""
+    return match != "SOFI"
 
 
 # ---------------------------------------------------------------- private terms
@@ -369,7 +370,7 @@ def scan_line(
     synthetic: bool = False,
 ) -> list[Finding]:
     """Every rule that reads a line of text. `prose` = a commit message, PR text
-    or branch name, where firm names block; elsewhere (code) they only warn."""
+    or branch name; firm names and money-market tickers block everywhere."""
     out: list[Finding] = []
     if not synthetic:
         flat = normalise(line)
@@ -400,13 +401,10 @@ def scan_line(
             out.append(Finding(BLOCK, "home-path", where, f"~ of {redact(name)}"))
     out += term_findings(line, where, terms)
     for m in FIRM_RE.finditer(line):
-        if prose and firm_blocks_in_message(m.group(0)):
+        if firm_blocks(m.group(0)):
             out.append(Finding(BLOCK, "firm-name", where, redact(m.group(0))))
-        elif not prose:
-            out.append(Finding(WARN, "firm-name", where, redact(m.group(0))))
-    if prose:
-        for m in MONEY_MARKET_RE.finditer(line):
-            out.append(Finding(BLOCK, "money-market", where, redact(m.group(0))))
+    for m in MONEY_MARKET_RE.finditer(line):
+        out.append(Finding(BLOCK, "money-market", where, redact(m.group(0))))
     return out
 
 
@@ -471,7 +469,10 @@ def file_name_findings(
     for f in term_findings(path, where, terms):
         out.append(Finding(BLOCK, "private-term", where, f"{f.preview}, in the file name"))
     for m in FIRM_RE.finditer(path):
-        out.append(Finding(WARN, "firm-name", where, f"{redact(m.group(0))}, in the file name"))
+        if firm_blocks(m.group(0)):
+            out.append(
+                Finding(BLOCK, "firm-name", where, f"{redact(m.group(0))}, in the file name")
+            )
     return out
 
 

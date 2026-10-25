@@ -14,3 +14,28 @@ tests/test_privacy_scan.py export-header synthetic headers the tests stage to pr
 tests/test_privacy_scan.py export-footer synthetic footers the tests stage to prove a block
 docs/privacy.md export-header documents what is blocked
 docs/privacy.md export-footer documents what is blocked
+
+# Firm names and custodian funds block everywhere since SB-1427. These files
+# must carry one: the broker's MCP server is addressed by its name, its tool
+# names and its URL, and nothing else can stand in for them.
+.claude/settings.json firm-name the MCP server's tool names, allow/ask/deny per tool
+deploy/live-runner-settings.json firm-name the same tool list for the headless runner
+deploy/broker-lib.sh firm-name the MCP server name in the headless session setup
+deploy/live-runner.sh firm-name the MCP tool names the relay prompt loads
+deploy/broker-auth-probe.sh firm-name the MCP tool name the login probe loads
+deploy/broker_stream.py firm-name the MCP server name, matched in the transcript
+tests/test_broker_stream.py firm-name the same server and tool names, synthetic transcripts
+docs/broker-mcp.md firm-name the runbook: server name, URL and tool names to configure
+# A stock's issuer in the curated universe is a company being traded, not a custodian.
+src/trd/data/universe.py firm-name issuer names of stocks in the curated universe
+# The guardrail's own lists, tests and documentation name what they block.
+scripts/privacy_scan.py firm-name the scanner's own firm list
+scripts/privacy_scan.py money-market the scanner's own fund list
+src/trd/notify/privacy.py firm-name the guard's copy of the firm list
+src/trd/notify/privacy.py money-market the guard's copy of the fund list
+tests/test_privacy_scan.py firm-name synthetic text the tests stage to prove a block
+tests/test_privacy_scan.py money-market synthetic text the tests stage to prove a block
+tests/test_notify_privacy.py firm-name synthetic messages the tests send to prove a refusal
+tests/test_notify_privacy.py money-market synthetic messages the tests send to prove a refusal
+docs/privacy.md firm-name documents what is blocked
+docs/privacy.md money-market documents what is blocked

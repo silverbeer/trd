@@ -1,5 +1,5 @@
 ﻿Account Number,Account Name,Symbol,Description,Quantity,Last Price,Last Price Change,Current Value,Today's Gain/Loss Dollar,Today's Gain/Loss Percent,Total Gain/Loss Dollar,Total Gain/Loss Percent,Percent Of Account,Cost Basis Total,Average Cost Basis,Type
-TEST-ACCT-1,MANAGED IRA,SPAXX**,HELD IN MONEY MARKET,,,,$2279.45,,,,,22.00%,,,Cash,
+TEST-ACCT-1,MANAGED IRA,CORXX**,HELD IN MONEY MARKET,,,,$2279.45,,,,,22.00%,,,Cash,
 TEST-ACCT-1,MANAGED IRA,FXAIX,EXAMPLE 500 INDEX FUND,21.2,$270.00,+$1.00,$5724.00,,,,,52.00%,,,Cash,
 TEST-ACCT-1,MANAGED IRA,FXNAX,EXAMPLE US BOND INDEX FUND,400.9,$10.10,-$0.01,$4049.09,,,,,26.00%,,,Cash,
 

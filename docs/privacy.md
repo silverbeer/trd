@@ -89,24 +89,23 @@ directly and do **not** pass through this guard.
 | `export-row` | a data row of an activity export with its header and footer cut off: one of the broker's action phrases (`YOU BOUGHT`, `DIVIDEND RECEIVED`, …) with a US date and six or more commas on one line | diff, tree |
 | `home-path` | `/Users/<name>`, `/home/<name>` and `~<name>/` unless `<name>` is `USERNAME`, `CHANGE_ME`, `runner`, `Shared`, `user`, `ubuntu` | everywhere |
 | `private-term` | a term from the private list (below), in text, in a file name, inside a binary, in any spelling (see below) | everywhere, Telegram |
-| `firm-name` | Fidelity, Robinhood, Schwab, Vanguard, E*Trade/ETRADE, SoFi, Merrill, Ameritrade, Interactive Brokers/IBKR, Webull, Public.com, Wealthfront, Betterment, Firstrade, Ally Invest | BLOCK in commit messages, PR text, branch names and Telegram; WARN in code |
-| `money-market` | SPAXX, FDRXX, FZFXX, SPRXX, FZDXX, FCASH, SWVXX, VMFXX, VMRXX | BLOCK in commit messages, PR text, branch names and Telegram |
+| `firm-name` | Fidelity, Robinhood, Schwab, Vanguard, E*Trade/ETRADE, SoFi, Merrill, Ameritrade, Interactive Brokers/IBKR, Webull, Public.com, Wealthfront, Betterment, Firstrade, Ally Invest | everywhere, Telegram — except the files listed in `scripts/privacy_exceptions.txt` (the broker MCP's server and tool names, the guardrail's own lists) |
+| `money-market` | SPAXX, FDRXX, FZFXX, SPRXX, FZDXX, FCASH, SWVXX, VMFXX, VMRXX | everywhere, Telegram. The account's own core fund lives in `TRD_HOME/core-symbols.txt`, never in the repo |
 
 Placeholders that never count as an account number: `TEST-ACCT-*`,
 `X00-000000`, `USERNAME`, `CHANGE_ME`, a run of one repeated digit (`00000000`)
 and the start of `1234567890…`.
 
-**Firm names in code only warn.** The code already uses them (`trd import
-fidelity`, `docs/broker-mcp.md`, account names in examples); renaming is a
-pending owner decision. `--tree` and long `--staged` runs print one summary line
-for them instead of one line each.
+**Firm names block in code too** (SB-1427). The rename of 2026-10-24 took the
+brokerage out of command names, modules, identifiers, docs, tests and fixtures;
+what remains is the broker MCP's server name, tool names and URL, which have to
+match the server, and the guardrail's own lists. Those files are listed in
+`scripts/privacy_exceptions.txt` with the reason. A stock's issuer in the
+curated universe is a company being traded, not a custodian, and is listed too.
 
-**Casing in prose.** In a commit message, PR text or branch name, lowercase
-`fidelity` is allowed — it is the ordinary word (`trd engine fidelity`, the
-backtest-fidelity report, branch names cut from ticket titles). `Fidelity` and
-`FIDELITY` are the firm and block. Every other firm blocks in any case. `SOFI`
-in capitals is SoFi Technologies' ticker, a stock the engines may trade, and is
-allowed. In Telegram all of them are case-insensitive except that ticker.
+**Casing.** Every spelling of every firm blocks. The one allowance is `SOFI` in
+capitals: SoFi Technologies' ticker, a stock the engines may trade. In Telegram
+the same.
 
 **Export layouts.** The two Fidelity layouts are the ones trd's importer reads.
 The others (Schwab, Vanguard, Robinhood, E*Trade) were written from memory and

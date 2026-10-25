@@ -298,7 +298,7 @@ trd engine report` still works on it.
 
 | You see | It means | Do |
 |---|---|---|
-| 🔴 *Robinhood login check FAILED* | the MCP sign-in lapsed; nothing can be placed | on the mini: `cd ~/gitrepos/trd && claude`, `/mcp` → robinhood-trading → authenticate. The all-clear follows within the hour |
+| 🔴 *The broker login check FAILED* | the MCP sign-in lapsed; nothing can be placed | on the mini: `cd ~/gitrepos/trd && claude`, `/mcp` → pick the broker's server → authenticate. The all-clear follows within the hour |
 | 🔴 *Trade approvals are OFF* | someone turned approvals off; the runner refuses to place | The broker app → Agent Settings → Safety Controls → approvals on |
 | ⛔ *HALTED by the runner* | an order call didn't match any intent | **decline** anything unexpected in the app, read `~/Library/Logs/trd-live-runner.log`, then `trd engine resume` |
 | ⛔ *HALTED by its loss stop* | −$20 reached (realized + unrealized) | decide deliberately; `trd engine resume` only after looking at why |

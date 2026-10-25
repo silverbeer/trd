@@ -55,9 +55,39 @@ def text(name: str) -> str:
     return (FIX / name).read_text(encoding="utf-8-sig")
 
 
+CORE = frozenset({"CORXX", "CORYY"})  # the fixtures' invented core funds
+
+
+@pytest.fixture(autouse=True)
+def _core_symbols(monkeypatch: pytest.MonkeyPatch) -> None:
+    """What TRD_HOME/core-symbols.txt would hold; the CLI tests read it from the env."""
+    monkeypatch.setenv("TRD_CORE_SYMBOLS", "CORXX,CORYY")
+
+
 @pytest.fixture
 def importer(conn: duckdb.DuckDBPyConnection, provider: FakeProvider) -> ActivityImportService:
-    return ActivityImportService(conn, provider)
+    return ActivityImportService(conn, provider, CORE)
+
+
+def test_without_a_core_fund_the_import_is_refused(conn, provider, tmp_path) -> None:
+    """The activity export never says which rows are the cash fund; guessing a
+    ticker list in the code would name the custodian. No list = refused, with
+    the three ways to give one."""
+    bare = ActivityImportService(conn, provider, frozenset(), core_symbols_path=tmp_path / "c.txt")
+    with pytest.raises(TrdError, match=r"core-symbols|TRD_CORE_SYMBOLS|--core"):
+        bare.run(FIX / "activity.txt", ACCOUNT, create="Managed IRA", dry_run=True)
+
+
+def test_core_symbols_come_from_the_home_file_and_the_env(tmp_path, monkeypatch) -> None:
+    from trd.config import get_settings
+
+    monkeypatch.setenv("TRD_HOME", str(tmp_path))
+    monkeypatch.delenv("TRD_CORE_SYMBOLS", raising=False)
+    assert get_settings().core_symbols == frozenset()
+    (tmp_path / "core-symbols.txt").write_text("# the fund\ncorxx\n\nCORYY  # second\n")
+    assert get_settings().core_symbols == frozenset({"CORXX", "CORYY"})
+    monkeypatch.setenv("TRD_CORE_SYMBOLS", "corzz, CORWW")
+    assert get_settings().core_symbols == frozenset({"CORXX", "CORYY", "CORZZ", "CORWW"})
 
 
 def run(importer: ActivityImportService, name: str = "activity.txt", **kw):
@@ -69,7 +99,7 @@ def run(importer: ActivityImportService, name: str = "activity.txt", **kw):
 
 
 def test_parse_skips_bom_blank_lines_and_footer() -> None:
-    rows = parse_activity(text("activity.txt"))
+    rows = parse_activity(text("activity.txt"), CORE)
     assert len(rows) == 15
     assert rows[0].run_date == date(2025, 8, 1)  # newest first, as written
     assert rows[-1].kind == ActivityKind.TRANSFER
@@ -77,12 +107,12 @@ def test_parse_skips_bom_blank_lines_and_footer() -> None:
 
 
 def test_every_action_class_is_recognised() -> None:
-    kinds = {r.kind for r in parse_activity(text("activity.txt"))}
+    kinds = {r.kind for r in parse_activity(text("activity.txt"), CORE)}
     assert kinds == set(ActivityKind)
 
 
 def test_quoted_and_empty_values_and_negative_sell_quantity() -> None:
-    rows = parse_activity(text("activity.txt"))
+    rows = parse_activity(text("activity.txt"), CORE)
     sell = next(r for r in rows if r.kind == ActivityKind.SELL)
     assert sell.quantity == D(-5)  # quoted "-5"
     assert sell.fees == D("0.05")  # Fees ($) set, Commission ($) empty ""
@@ -94,14 +124,14 @@ def test_quoted_and_empty_values_and_negative_sell_quantity() -> None:
 def test_running_cash_balance_replays_without_a_break() -> None:
     """The custodian's own Cash Balance column agrees with how every row is read —
     including the core money market reinvestment, which moves no cash."""
-    breaks, opening = balance_check(parse_activity(text("activity.txt")))
+    breaks, opening = balance_check(parse_activity(text("activity.txt"), CORE))
     assert breaks == 0
     assert opening == 0
 
 
 def test_unknown_action_refuses_the_whole_file_and_names_the_line() -> None:
     with pytest.raises(TrdError, match=r"line \d+: unknown action 'MYSTERY CORPORATE ACTION"):
-        parse_activity(text("activity_unknown.txt"))
+        parse_activity(text("activity_unknown.txt"), CORE)
 
 
 def test_not_an_activity_export_is_refused() -> None:
@@ -119,7 +149,7 @@ def test_contradictory_signs_are_refused() -> None:
 
 
 def test_rows_land_where_the_rules_say() -> None:
-    writes = plan_rows(parse_activity(text("activity.txt")))
+    writes = plan_rows(parse_activity(text("activity.txt"), CORE))
     by_kind: dict[str, list] = {}
     for w in writes:
         by_kind.setdefault(w.kind, []).append(w)
@@ -140,7 +170,7 @@ def test_rows_land_where_the_rules_say() -> None:
 
 
 def test_identical_rows_on_one_day_get_distinct_keys() -> None:
-    writes = plan_rows(parse_activity(text("activity.txt")))
+    writes = plan_rows(parse_activity(text("activity.txt"), CORE))
     dupes = [w for w in writes if w.on == date(2025, 8, 1) and w.kind == "buy"]
     assert len(dupes) == 2
     assert dupes[0].key.endswith("|0") and dupes[1].key.endswith("|1")
@@ -159,7 +189,7 @@ def test_import_writes_every_class(
     assert account is not None and account.type == AccountType.REAL
 
     held = ReconcileService(conn).held(ACCOUNT)
-    assert held == {"FXAIX": D("20.2"), "FXNAX": D("400.9")}  # never SPAXX
+    assert held == {"FXAIX": D("20.2"), "FXNAX": D("400.9")}  # never CORXX
 
     income = IncomeRepo(conn).list_all(account.id)
     assert sorted((i.kind.value, i.amount) for i in income) == [
@@ -358,7 +388,7 @@ def test_positions_reconcile_mismatch(importer: ActivityImportService) -> None:
 def test_positions_parser_reads_by_header_name() -> None:
     parsed = parse_positions(text("positions.txt"))
     assert parsed.quantities() == {"FXAIX": D("20.2"), "FXNAX": D("400.9")}
-    assert parsed.cash == D("2279.45")  # SPAXX** is cash; '$5,454.00' parses
+    assert parsed.cash == D("2279.45")  # CORXX** is cash; '$5,454.00' parses
     assert parsed.downloaded_at == datetime(2025, 9, 3, 10, 5)
 
 
@@ -518,6 +548,6 @@ def test_backup_carries_the_import_ledger(
     assert data["version"] == 11 and len(data["import_rows"]) == 15
     fresh = connect(tmp_path / "restored.duckdb")
     restore_data(fresh, data)
-    again = ActivityImportService(fresh, FakeProvider()).run(FIX / "activity.txt", ACCOUNT)
+    again = ActivityImportService(fresh, FakeProvider(), CORE).run(FIX / "activity.txt", ACCOUNT)
     assert again.new_writes == 0
     assert CashService(fresh).balance(ACCOUNT).cash == D("2279.45")

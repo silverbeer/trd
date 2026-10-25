@@ -503,7 +503,7 @@ def validate_plan(capital: Decimal, targets: list[AllocTarget], drift: Decimal) 
 
 def validate_cash_yield(cash_yield: CashYield) -> None:
     if not cash_yield.fund.strip():
-        raise TrdError("--cash-fund needs a ticker, e.g. SPAXX.")
+        raise TrdError("--cash-fund needs a ticker.")
     if not 0 <= cash_yield.yield_pct <= MAX_CASH_YIELD_PCT:
         raise TrdError(
             f"--cash-yield is an annual percent and must be 0-{MAX_CASH_YIELD_PCT}, "

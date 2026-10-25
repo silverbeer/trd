@@ -49,7 +49,7 @@ trd sell AAPL 5 [--price ...]         # validates held quantity
 trd import txns.csv                   # bulk-load transactions
 trd import activity ACTIVITY.csv --account managed-ira [--create "Managed IRA"]
               [--positions POSITIONS.csv] [--opening-from-positions] [--opening-price SYM=P]
-              [--source-account NAME|NUMBER] [--dry-run] [--json]
+              [--source-account NAME|NUMBER] [--core SYMBOL] [--dry-run] [--json]
                                       # the custodian's Activity History export (no retail API,
                                       # SB-1418). The file names NO account: --account is
                                       # mandatory, --create makes it (real). YOU BOUGHT /
@@ -57,7 +57,8 @@ trd import activity ACTIVITY.csv --account managed-ira [--create "Managed IRA"]
                                       # cents-rounded Price), YOU SOLD = sell, DIVIDEND RECEIVED
                                       # = income dividend, LONG/SHORT-TERM CAP GAIN = income
                                       # capital_gain. A DRIP is its two rows: income in, buy out.
-                                      # Core money market (SPAXX/FDRXX/FZFXX/SPRXX/FCASH) is
+                                      # Core money market (tickers from TRD_HOME/core-symbols.txt,
+                                      # TRD_CORE_SYMBOLS or --core; refused with none) is
                                       # CASH: its dividend = income cash_sweep, its reinvest/buy/
                                       # sell write nothing. ADVISORY FEE = cash_flow 'fee'; every
                                       # run (dry or not) lists each fee + the total. CONTRIBUTION/
@@ -103,7 +104,7 @@ trd alloc set --account ira --capital 100000 --name ... [--kind "IRA"]
                                       # cash, never added to it); out of the tranche fund share,
                                       # milestone progress and the drift sleeve. propose lists an
                                       # instalment due as 'buy alongside'; show/report track it
-                                      # --cash-fund SPAXX --cash-yield 3.51 [--cash-yield-as-of ISO]
+                                      # --cash-fund TICKER --cash-yield 3.51 [--cash-yield-as-of ISO]
                                       # (set or edit; as-of defaults to today; edit --cash-yield N
                                       # alone re-rates the same fund; --no-cash-yield clears it,
                                       # migration 031): what the uninvested cash earns. show/report
@@ -876,7 +877,7 @@ CI and the send guard: [docs/privacy.md](docs/privacy.md).
   synthetic data — invented figures, public tickers, `TEST-ACCT-*` ids; an export-shaped
   fixture is listed in [tests/fixtures/SYNTHETIC.md](tests/fixtures/SYNTHETIC.md).
 - Commit messages, PR titles/bodies and branch names never carry real figures, account
-  numbers or brokerage names (lowercase `fidelity`, the ordinary word, is allowed).
+  numbers or brokerage names; code and docs carry none either (SB-1427).
 - Every new clone runs `scripts/install-hooks.sh`. `--no-verify` is visible in review; CI
   scans the tree and the PR text regardless. Exceptions go in
   `scripts/privacy_exceptions.txt` with a reason; private terms in

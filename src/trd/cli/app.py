@@ -1967,6 +1967,14 @@ def import_activity(
             help="Account Number or Name to read from a Positions file holding several.",
         ),
     ] = None,
+    core: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--core",
+            help="Ticker of the account's core money-market fund (repeatable). "
+            "Else TRD_HOME/core-symbols.txt or TRD_CORE_SYMBOLS.",
+        ),
+    ] = None,
     dry_run: Annotated[
         bool, typer.Option("--dry-run", help="Print the plan; write nothing.")
     ] = False,
@@ -1987,7 +1995,13 @@ def import_activity(
         if not sep:
             _fail(TrdError(f"--opening-price wants SYMBOL=PRICE, got {spec!r}"))
         prices[symbol.strip().upper()] = _parse_decimal(value, f"opening price for {symbol}")
-    service = ActivityImportService(connect(get_settings().db_path), YFinanceProvider())
+    settings = get_settings()
+    service = ActivityImportService(
+        connect(settings.db_path),
+        YFinanceProvider(),
+        core_symbols=settings.core_symbols | frozenset(c.upper() for c in core or []),
+        core_symbols_path=settings.core_symbols_path,
+    )
     try:
         plan = service.run(
             activity,
@@ -4389,7 +4403,7 @@ PaceStartOpt = Annotated[
 CashFundOpt = Annotated[
     str | None,
     typer.Option(
-        "--cash-fund", help="Core money-market fund the uninvested cash sits in, e.g. SPAXX."
+        "--cash-fund", help="Core money-market fund the uninvested cash sits in (its ticker)."
     ),
 ]
 CashYieldOpt = Annotated[

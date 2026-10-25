@@ -913,23 +913,23 @@ def test_cli_pace_re_paces_existing_targets(cli_env: FakeProvider) -> None:
 
 # ------------------------------------------------------------ cash yield (SB-1417)
 
-SPAXX = CashYield(fund="SPAXX", yield_pct=D("3.51"), as_of=date(2026, 10, 21))
+CORXX = CashYield(fund="CORXX", yield_pct=D("3.51"), as_of=date(2026, 10, 21))
 
 
 def test_the_cash_yield_round_trips_and_clears(conn, provider, ira) -> None:
     assert ira.get(IRA).cash_yield is None
-    assert ira.edit(IRA, cash_yield=SPAXX).cash_yield == SPAXX
-    newer = SPAXX.model_copy(update={"yield_pct": D("3.4"), "as_of": TODAY})
+    assert ira.edit(IRA, cash_yield=CORXX).cash_yield == CORXX
+    newer = CORXX.model_copy(update={"yield_pct": D("3.4"), "as_of": TODAY})
     assert ira.edit(IRA, cash_yield=newer).cash_yield == newer
     assert ira.edit(IRA, clear_cash_yield=True).cash_yield is None
     history = " | ".join(e.what for e in ira.history(IRA))
-    assert "cash yield none → SPAXX at 3.51% (as of 2026-10-21)" in history
+    assert "cash yield none → CORXX at 3.51% (as of 2026-10-21)" in history
     assert "→ none" in history
 
 
 @pytest.mark.parametrize(
     ("fund", "pct", "error"),
-    [("SPAXX", "-0.1", "0-20"), ("SPAXX", "20.5", "0-20"), ("  ", "3.5", "ticker")],
+    [("CORXX", "-0.1", "0-20"), ("CORXX", "20.5", "0-20"), ("  ", "3.5", "ticker")],
 )
 def test_a_cash_yield_out_of_range_is_refused(ira, fund, pct, error) -> None:
     with pytest.raises(TrdError, match=error):
@@ -939,10 +939,10 @@ def test_a_cash_yield_out_of_range_is_refused(ira, fund, pct, error) -> None:
 
 def test_a_new_rate_keeps_the_fund_and_is_dated_today() -> None:
     assert resolve_cash_yield(None, None, None, None, TODAY) is None
-    rate = resolve_cash_yield(SPAXX, None, D("3.4"), None, TODAY)
-    assert rate == CashYield(fund="SPAXX", yield_pct=D("3.4"), as_of=TODAY)
-    assert resolve_cash_yield(None, "spaxx", D("3.51"), None, TODAY) == CashYield(
-        fund="SPAXX", yield_pct=D("3.51"), as_of=TODAY
+    rate = resolve_cash_yield(CORXX, None, D("3.4"), None, TODAY)
+    assert rate == CashYield(fund="CORXX", yield_pct=D("3.4"), as_of=TODAY)
+    assert resolve_cash_yield(None, "corxx", D("3.51"), None, TODAY) == CashYield(
+        fund="CORXX", yield_pct=D("3.51"), as_of=TODAY
     )
     with pytest.raises(TrdError, match="both"):
         resolve_cash_yield(None, None, D("3.51"), None, TODAY)
@@ -950,7 +950,7 @@ def test_a_new_rate_keeps_the_fund_and_is_dated_today() -> None:
 
 def test_monthly_interest_is_all_the_cash_at_the_yield(conn, provider, ira) -> None:
     CashService(conn).record(IRA, CashFlowKind.DEPOSIT, D("40000"), datetime(2026, 10, 24))
-    ira.edit(IRA, cash_yield=SPAXX)
+    ira.edit(IRA, cash_yield=CORXX)
     view = ira.view(IRA, TODAY)
     assert view.cash_monthly_interest == D("40000") * D("3.51") / 100 / 12
     assert round(view.cash_monthly_interest, 2) == D("117.00")
@@ -966,7 +966,7 @@ def test_earned_so_far_is_interest_and_sweeps_not_dividends(conn, provider, ira)
     income.add(account_id, D("12.40"), datetime(2026, 10, 25), IncomeKind.CASH_SWEEP)
     income.add(account_id, D("1.10"), datetime(2026, 10, 26), IncomeKind.INTEREST)
     income.add(account_id, D("5"), datetime(2026, 10, 26), IncomeKind.DIVIDEND)
-    ira.edit(IRA, cash_yield=SPAXX.model_copy(update={"as_of": TODAY}))
+    ira.edit(IRA, cash_yield=CORXX.model_copy(update={"as_of": TODAY}))
     assert ira.view(IRA, TODAY).cash_interest_earned == D("13.50")
     text = report_text(ira, TODAY)
     assert "   earned so far +$13.50" in text.splitlines()
@@ -974,7 +974,7 @@ def test_earned_so_far_is_interest_and_sweeps_not_dividends(conn, provider, ira)
 
 def test_the_report_says_the_cash_is_working(conn, provider, ira) -> None:
     small_account(conn, provider, ira)  # 4,000 cash of 10,060 = 40%
-    ira.edit(IRA, cash_yield=SPAXX.model_copy(update={"as_of": TODAY}))
+    ira.edit(IRA, cash_yield=CORXX.model_copy(update={"as_of": TODAY}))
     lines = report_text(ira, TODAY).splitlines()
     assert (
         "💵 Cash $4,000 (40%) — working in a money market fund at 3.51% ≈ <b>+$12/mo</b>" in lines
@@ -983,16 +983,16 @@ def test_the_report_says_the_cash_is_working(conn, provider, ira) -> None:
         "<i>40% is cash by plan, earning 3.51% in a money market fund while it waits.</i>" in lines
     )
     # The stored fund is a core money-market ticker, and one names the brokerage.
-    assert "SPAXX" not in "\n".join(lines)
+    assert "CORXX" not in "\n".join(lines)
     text = "\n".join(lines)
     assert "earned so far" not in text and "rate as of" not in text and "lags in up" not in text
 
 
 def test_a_stale_rate_asks_to_be_updated(conn, provider, ira) -> None:
     small_account(conn, provider, ira)
-    ira.edit(IRA, cash_yield=SPAXX.model_copy(update={"as_of": date(2026, 9, 22)}))  # 35 days
+    ira.edit(IRA, cash_yield=CORXX.model_copy(update={"as_of": date(2026, 9, 22)}))  # 35 days
     assert "rate as of" not in report_text(ira, TODAY)
-    ira.edit(IRA, cash_yield=SPAXX.model_copy(update={"as_of": date(2026, 9, 1)}))
+    ira.edit(IRA, cash_yield=CORXX.model_copy(update={"as_of": date(2026, 9, 1)}))
     assert (
         "   rate as of Sep 1 — update: trd alloc edit --cash-yield N"
         in report_text(ira, TODAY).splitlines()
@@ -1012,7 +1012,7 @@ def test_the_yield_moves_reserved_cash_under_the_header(conn, provider, moonshot
 
     buy(conn, provider, "SPCX", "0.8", "150")
     provider.add_bars("SPCX", bars((date(2026, 10, 23), "150"), (START, "150")))
-    moonshot.edit(IRA, cash_yield=SPAXX)
+    moonshot.edit(IRA, cash_yield=CORXX)
     lines = alloc_report_message(AllocReportService(moonshot).report(IRA, today=START)).splitlines()
     head = next(i for i, line in enumerate(lines) if line.startswith("💵 Cash"))
     assert "working in a money market fund" in lines[head] and "set aside" not in lines[head]
@@ -1022,16 +1022,16 @@ def test_the_yield_moves_reserved_cash_under_the_header(conn, provider, moonshot
 def test_the_cash_yield_survives_backup_and_restore(conn, provider, ira, tmp_path) -> None:
     from trd.db.connection import connect
 
-    ira.edit(IRA, cash_yield=SPAXX)
+    ira.edit(IRA, cash_yield=CORXX)
     data = json.loads(json.dumps(export_data(conn)))
     assert data["alloc_plans"][0]["cash_yield"] == {
-        "fund": "SPAXX",
+        "fund": "CORXX",
         "yield_pct": "3.5100",
         "as_of": "2026-10-21",
     }
     fresh = connect(tmp_path / "restored.duckdb")
     restore_data(fresh, data)
-    assert AllocService(fresh, provider).get(IRA).cash_yield == SPAXX
+    assert AllocService(fresh, provider).get(IRA).cash_yield == CORXX
     # A v9 file has no cash_yield: it restores with none stated.
     del data["alloc_plans"][0]["cash_yield"]
     data["version"] = 9
@@ -1054,18 +1054,18 @@ def test_cli_cash_yield_set_edit_show_and_clear(cli_env: FakeProvider) -> None:
     assert half.exit_code == 1 and "both" in half.output
     r = runner.invoke(
         app,
-        [*plan, "--cash-fund", "spaxx", "--cash-yield", "3.51", "--cash-yield-as-of", "2026-10-21"],
+        [*plan, "--cash-fund", "corxx", "--cash-yield", "3.51", "--cash-yield-as-of", "2026-10-21"],
     )
     assert r.exit_code == 0, r.output
     r = runner.invoke(app, ["alloc", "show"])
     assert r.exit_code == 0, r.output
     assert (
-        "cash 40,000.00 in SPAXX at 3.51% (as of 2026-10-21) ≈ +117.00/mo · earned so far 0.00"
+        "cash 40,000.00 in CORXX at 3.51% (as of 2026-10-21) ≈ +117.00/mo · earned so far 0.00"
         in " ".join(r.output.split())  # Rich wraps at the test terminal's width
     )
     view = json.loads(runner.invoke(app, ["alloc", "show", "--json"]).output)
     assert view["plan"]["cash_yield"] == {
-        "fund": "SPAXX",
+        "fund": "CORXX",
         "yield_pct": "3.5100",
         "as_of": "2026-10-21",
     }
@@ -1077,7 +1077,7 @@ def test_cli_cash_yield_set_edit_show_and_clear(cli_env: FakeProvider) -> None:
     r = runner.invoke(app, ["alloc", "edit", "--cash-yield", "3.4"])
     assert r.exit_code == 0, r.output
     view = json.loads(runner.invoke(app, ["alloc", "show", "--json"]).output)
-    assert view["plan"]["cash_yield"]["fund"] == "SPAXX"
+    assert view["plan"]["cash_yield"]["fund"] == "CORXX"
     assert D(view["plan"]["cash_yield"]["yield_pct"]) == D("3.4")
     assert view["plan"]["cash_yield"]["as_of"] == date.today().isoformat()
 

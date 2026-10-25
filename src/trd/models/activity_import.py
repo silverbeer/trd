@@ -88,7 +88,7 @@ class PositionRow(BaseModel):
     quantity: Decimal | None
     last_price: Decimal | None
     current_value: Decimal | None
-    core: bool  # 'SPAXX**' and friends: cash, valued, no quantity
+    core: bool  # '<fund>**': the core money market — cash, valued, no quantity
 
 
 class PositionsFile(BaseModel):

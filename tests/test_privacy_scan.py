@@ -220,22 +220,26 @@ def test_a_missing_private_list_is_a_notice_not_a_failure(repo: Path, env) -> No
 # ------------------------------------------------------------------ firm names
 
 
-def test_a_firm_name_blocks_a_message_and_only_warns_in_code(repo: Path, env, tmp_path) -> None:
+def test_a_firm_name_blocks_a_message_and_code_alike(repo: Path, env, tmp_path) -> None:
     message = tmp_path / "MSG"
     message.write_text("feat: import the Fidelity export\n")
     result = scan(repo, env, "--message", str(message))
     assert result.returncode == 1 and "BLOCK [firm-name] commit message:1" in result.stderr
-    stage(repo, "importer.py", "BROKER = 'Robinhood'\n")
+    stage(repo, "importer.py", "BROKER = 'Robinhood'\nFUND = 'SPAXX'\n")
     result = scan(repo, env, "--staged")
-    assert result.returncode == 0
-    assert "WARN [firm-name] importer.py:1" in result.stderr
+    assert result.returncode == 1
+    assert "BLOCK [firm-name] importer.py:1" in result.stderr
+    assert "BLOCK [money-market] importer.py:2" in result.stderr
+    stage(repo, "scripts/privacy_exceptions.txt", "importer.py firm-name names the MCP server\n")
+    result = scan(repo, env, "--staged")
+    assert "[firm-name]" not in result.stderr and "[money-market] importer.py:2" in result.stderr
 
 
 @pytest.mark.parametrize(
     ("text", "blocked"),
     [
-        ("sb-1418-trd-import-fidelity", False),  # lowercase: the ordinary word
-        ("fix: trd engine fidelity on 5m bars", False),
+        ("sb-1418-trd-import-fidelity", True),  # any case, any word order
+        ("fix: trd engine fidelity on 5m bars", True),
         ("FIDELITY positions", True),
         ("robinhood-mcp runbook", True),
         ("BUY SOFI on the breakout", False),  # the ticker, a stock

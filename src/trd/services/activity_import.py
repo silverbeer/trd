@@ -24,7 +24,7 @@ How each row lands, and why:
   cash arriving, then the cash buying shares — and is recorded as exactly those
   two facts, once each: income in, a buy out. Cash nets to zero, the shares are
   a real lot, and nothing is counted twice.
-- The core money market (SPAXX and its kin) IS the account's cash. Its dividend
+- The core money market (the custodian's core fund) IS the account's cash. Its dividend
   is interest on cash (income `cash_sweep`, no instrument); its reinvestment,
   buys and sells are cash staying cash and write nothing.
 - ADVISORY FEE -> cash_flow `fee`. Money out of the account that is a COST, so
@@ -94,9 +94,18 @@ PRICE_PLACES = Decimal("0.00000001")  # txn.price is DECIMAL(24, 8)
 # Shares either side may differ by before a symbol is a mismatch: The custodian
 # states fund quantities to three decimals.
 POSITION_TOLERANCE = Decimal("0.001")
-# the custodian's core money-market funds: the account's cash, never a holding. A
-# Positions export marks the core with a trailing '**' as well.
-CORE_SYMBOLS = frozenset({"SPAXX", "FDRXX", "FZFXX", "SPRXX", "FCASH", "CORE"})
+# The account's core money-market fund is its cash, never a holding. WHICH
+# tickers those are names the custodian, so the set comes from the home
+# (TRD_HOME/core-symbols.txt or TRD_CORE_SYMBOLS, see config.py), never from
+# here; "CORE" is the generic word some exports use. A Positions export marks
+# the core with a trailing '**' as well, so it needs no list.
+GENERIC_CORE = frozenset({"CORE"})
+NO_CORE_SYMBOLS = (
+    "No core money-market fund configured. The activity export does not mark which "
+    "rows are the account's cash fund, so list its ticker(s) in {path} (one per line) "
+    "or TRD_CORE_SYMBOLS=A,B, or pass --core SYMBOL. Rows for that fund are cash: their "
+    "dividends are cash_sweep income, their buys and sells write nothing."
+)
 OPENING_NOTE = "opening balance from the positions export"
 
 ACTIVITY_COLUMNS = (
@@ -150,8 +159,8 @@ def classify_action(action: str) -> ActivityKind | None:
     return None
 
 
-def _is_core(symbol: str | None) -> bool:
-    return symbol is not None and symbol.rstrip("*").upper() in CORE_SYMBOLS
+def _is_core(symbol: str | None, core: frozenset[str]) -> bool:
+    return symbol is not None and symbol.rstrip("*").upper() in (core | GENERIC_CORE)
 
 
 def _money(raw: str | None) -> Decimal | None:
@@ -203,7 +212,7 @@ def _data_lines(lines: Sequence[str], header: int) -> list[tuple[int, str]]:
     return out
 
 
-def parse_activity(text: str) -> list[ActivityRow]:
+def parse_activity(text: str, core: frozenset[str] = frozenset()) -> list[ActivityRow]:
     """An Activity History export -> rows in file order (newest first).
 
     Refuses the whole file if any row is an action this does not know, or one
@@ -229,7 +238,7 @@ def parse_activity(text: str) -> list[ActivityRow]:
             problems.append(f"line {line_no}: unknown action {action!r}")
             continue
         try:
-            row = _activity_row(line_no, raw, action, kind)
+            row = _activity_row(line_no, raw, action, kind, core)
         except ValueError as exc:
             problems.append(f"line {line_no}: {exc}")
             continue
@@ -246,7 +255,9 @@ def parse_activity(text: str) -> list[ActivityRow]:
     return rows
 
 
-def _activity_row(line: int, raw: dict[str, str], action: str, kind: ActivityKind) -> ActivityRow:
+def _activity_row(
+    line: int, raw: dict[str, str], action: str, kind: ActivityKind, core: frozenset[str]
+) -> ActivityRow:
     try:
         run_date = _us_date(raw["Run Date"])
     except ValueError as exc:
@@ -270,7 +281,7 @@ def _activity_row(line: int, raw: dict[str, str], action: str, kind: ActivityKin
         amount=amount,
         cash_balance=_money(raw.get("Cash Balance ($)")),
         settlement_date=_us_date(settle) if settle else None,
-        core=_is_core(symbol),
+        core=_is_core(symbol, core),
     )
 
 
@@ -455,7 +466,7 @@ def write_cash(write: PlannedWrite) -> Decimal:
 #
 # UNTESTED AGAINST A REAL FILE. Written to the custodian's documented Positions
 # layout (Account Number, Account Name, Symbol, Description, Quantity, Last
-# Price, ..., Current Value, ...; the core as 'SPAXX**' with a value and no
+# Price, ..., Current Value, ...; the core as '<fund>**' with a value and no
 # quantity; a 'Pending Activity' row) before a real export was supplied.
 # Columns are read by NAME so a reordering is harmless; check the parsed rows
 # against the first real export before trusting a reconciliation.
@@ -480,7 +491,9 @@ def _downloaded_at(lines: Sequence[str]) -> datetime | None:
     return None
 
 
-def parse_positions(text: str, account: str | None = None) -> PositionsFile:
+def parse_positions(
+    text: str, account: str | None = None, core: frozenset[str] = frozenset()
+) -> PositionsFile:
     """A Positions export -> rows for ONE the custodian account.
 
     A login with several accounts downloads them all into one file; `account`
@@ -519,7 +532,7 @@ def parse_positions(text: str, account: str | None = None) -> PositionsFile:
                         quantity=_money(raw.get("Quantity")),
                         last_price=_money(raw.get("Last Price")),
                         current_value=value,
-                        core=symbol.endswith("**") or _is_core(symbol),
+                        core=symbol.endswith("**") or _is_core(symbol, core),
                     ),
                 )
             )
@@ -578,9 +591,17 @@ class _Context:
 
 
 class ActivityImportService:
-    def __init__(self, conn: duckdb.DuckDBPyConnection, provider: MarketDataProvider) -> None:
+    def __init__(
+        self,
+        conn: duckdb.DuckDBPyConnection,
+        provider: MarketDataProvider,
+        core_symbols: frozenset[str] = frozenset(),
+        core_symbols_path: Path | str = "TRD_HOME/core-symbols.txt",
+    ) -> None:
         self.conn = conn
         self.provider = provider
+        self.core_symbols = frozenset(c.upper() for c in core_symbols)
+        self.core_symbols_path = core_symbols_path
         self.accounts = AccountRepo(conn)
         self.txns = TransactionRepo(conn)
         self.income = IncomeRepo(conn)
@@ -640,8 +661,14 @@ class ActivityImportService:
         opening_prices: dict[str, Decimal],
         source_account: str | None,
     ) -> tuple[ImportPlan, _Context]:
-        rows = parse_activity(activity_text)
-        positions = parse_positions(positions_text, source_account) if positions_text else None
+        if not self.core_symbols:
+            raise TrdError(NO_CORE_SYMBOLS.format(path=self.core_symbols_path))
+        rows = parse_activity(activity_text, self.core_symbols)
+        positions = (
+            parse_positions(positions_text, source_account, self.core_symbols)
+            if positions_text
+            else None
+        )
         existing = self.accounts.get_by_name(account)
         if existing is None and create is None:
             raise UnknownAccountError(account)
