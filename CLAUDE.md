@@ -539,6 +539,14 @@ trd engine replay-match [--days 30] [--start ISO] [--end ISO] [--entry-fill open
                                       # Read-only. ~1 min for 30 days of 5m bars.
                                       # Last 30 days, open entries: gap +0.001R/trade, but only
                                       # 129 of 220 trades match — trade SELECTION still differs
+trd engine backtest --young N [--strategies K,K]
+                                      # the young-listing slice (SB-1434): entries only in the
+                                      # first N sessions of names whose first stored bar comes
+                                      # after the history's horizon (+7 days) — i.e. names that
+                                      # LISTED inside it. Exits run as usual. Prints the slice's
+                                      # names and n. Needs a home synced to ONE depth: a name
+                                      # 'engine add'-ed with 2y looks like a 2-year-old listing.
+                                      # --strategies overrides the rule set for one run
 trd engine backtest --settlement/--no-settlement
                                       # T+1: exit proceeds wait a business day before funding an
                                       # entry ('cash_blocked' counts the skips). Default follows

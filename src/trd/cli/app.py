@@ -3948,6 +3948,23 @@ def engine_backtest(
             "at a time against the same history; the stored config is untouched.",
         ),
     ] = None,
+    young: Annotated[
+        int,
+        typer.Option(
+            "--young",
+            help="Young-listing slice: entries only in the first N sessions of names "
+            "that LISTED inside the stored history (first bar after its horizon). "
+            "Run on a home synced to one depth ('trd sync --years 10'): a name added "
+            "later with 2 years looks like a listing. 0 = off.",
+        ),
+    ] = 0,
+    strategies: Annotated[
+        str | None,
+        typer.Option(
+            "--strategies",
+            help="Comma-separated rule override for this run; the stored config is untouched.",
+        ),
+    ] = None,
     as_json: Annotated[bool, typer.Option("--json", help="Emit the result as JSON.")] = False,
 ) -> None:
     """Replay the engine's rules against stored history. Same rules, same
@@ -3988,6 +4005,10 @@ def engine_backtest(
             scale_out_pct=scale_out,
             params_override=_parse_params(param or []),
             entry_fill=entry_mode,
+            young_sessions=young,
+            strategies=[k.strip() for k in strategies.split(",") if k.strip()]
+            if strategies
+            else None,
             settlement=settlement,
         )
     except TrdError as exc:

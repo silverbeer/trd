@@ -72,6 +72,13 @@ from trd.services.engine import (
 )
 from trd.services.outcomes import excursion, pooled_capture
 
+YOUNG_CAVEAT = (
+    "A listing's first sessions carry what no other stretch of its chart does: IPO "
+    "lockup expiries, a thin float and no analyst "
+    "coverage yet. Only names still listed today were synced, so the young listings "
+    "that failed are missing from the slice — survivorship flatters it more than "
+    "the full-history replay. The regime gate reads SPY/VIX, not the name."
+)
 CAVEAT = (
     "Backtests flatter: today's universe is the names that survived, fills pay no "
     "spread or slippage, entries fill at the signal bar's close, and stored prices "
@@ -222,6 +229,12 @@ class BacktestResult(BaseModel):
     max_drawdown_pct: float
     windows: list[WindowStats] = []
     skipped: list[str] = []
+    # The young-listing slice (SB-1434): entries only in a name's first
+    # `young_sessions` sessions, and only on names whose first stored bar is a
+    # listing rather than the backfill horizon. 0 = off. `young_names` is the
+    # population the slice could trade, with each one's first bar.
+    young_sessions: int = 0
+    young_names: list[tuple[str, date]] = []
     # Exit params this run replaced on the stored config — what a sweep varied.
     overrides: dict[str, float] = {}
     caveat: str = CAVEAT
@@ -423,6 +436,8 @@ def simulate(
     regime_bars: Mapping[str, Sequence[DailyBar]] | None = None,
     daily_by_symbol: Mapping[str, Sequence[DailyBar]] | None = None,
     settlement: bool = False,
+    young_sessions: int = 0,
+    young_after: date | None = None,
 ) -> BacktestResult:
     """Walk history forward and run the live rules at every step.
 
@@ -436,6 +451,11 @@ def simulate(
     `settlement` runs the cash account's T+1 rule: exit proceeds wait for
     `settles_on` before they can fund an entry, the same rule the live scan
     applies through `trd.engine.settlement`, so the two skip the same refills.
+
+    `young_sessions` restricts ENTRIES to the first N sessions of names whose
+    first daily bar falls after `young_after` (the stored history's horizon, so
+    a name that merely predates the backfill is not mistaken for a listing).
+    Exits run as ever: a trade opened young is managed to its own end.
     """
     source = BarSource.stamper(timeframe)
     if entry_fill is EntryFill.OPEN and not source.is_intraday:
@@ -489,6 +509,11 @@ def simulate(
     # 5-minute walk takes ~200k steps, and a scan per step per symbol would
     # dominate the run.
     daily_dates = {s: [b.date for b in bars] for s, bars in daily_series.items()}
+    young = {
+        s: dates_[0]
+        for s, dates_ in daily_dates.items()
+        if young_sessions > 0 and dates_ and (young_after is None or dates_[0] > young_after)
+    }
 
     skipped: list[str] = []
     # The command that would actually deepen *this* engine's series. Sending a
@@ -698,6 +723,10 @@ def simulate(
                 i = index[symbol].get(stamp)
                 if i is None or symbol in open_positions:
                     continue
+                if young_sessions > 0 and (
+                    symbol not in young or bisect_left(daily_dates[symbol], today) >= young_sessions
+                ):
+                    continue
                 if entry_fill is EntryFill.OPEN:
                     # The settled bars, then this bar as a scan sees it a moment
                     # after it opens: every price its open, volume not yet known.
@@ -845,6 +874,8 @@ def simulate(
         max_drawdown_pct=max_drawdown,
         windows=_window_stats(closed, trading_start, last_session),
         skipped=skipped,
+        young_sessions=young_sessions,
+        young_names=sorted(young.items(), key=lambda kv: kv[1]),
     )
 
 
@@ -877,6 +908,8 @@ class BacktestService:
         params_override: dict[str, float] | None = None,
         entry_fill: EntryFill | None = None,
         settlement: bool | None = None,
+        young_sessions: int = 0,
+        strategies: list[str] | None = None,
     ) -> BacktestResult:
         config = self.configs.get()
         if config is None:
@@ -998,9 +1031,19 @@ class BacktestService:
                     )
                 regime_series[symbol] = self.prices.daily_bars(found.id)
 
+        # The young slice's horizon: the first stored session anywhere. A name
+        # whose first bar sits within a week of it predates the backfill, and its
+        # "first 200 sessions" would be an arbitrary stretch of an old chart.
+        if young_sessions < 0:
+            raise TrdError("--young must be positive.")
+        young_after = None
+        if young_sessions > 0:
+            _total, first_stored, _last = self.prices.coverage()
+            young_after = first_stored + timedelta(days=7) if first_stored else None
+
         result = simulate(
             bars_by_symbol,
-            strategies=config.strategies,
+            strategies=strategies or config.strategies,
             position_size=position_size or config.position_size,
             max_positions=config.max_positions,
             max_entries_per_day=config.max_entries_per_day,
@@ -1017,6 +1060,8 @@ class BacktestService:
             regime_bars=regime_series,
             daily_by_symbol=daily_by_symbol or None,
             settlement=settlement,
+            young_sessions=young_sessions,
+            young_after=young_after,
         )
         result.overrides = overrides
         result.skipped = no_history + result.skipped
