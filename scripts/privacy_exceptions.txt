@@ -4,10 +4,6 @@
 # whole file for that rule only; every other rule still applies to it. Adding a
 # line here is reviewed like code — say why the match is not real data.
 
-# An applied migration is never edited (CLAUDE.md). Its header comment names the
-# planned rollover amount; only a private-terms list that contains it flags it.
-src/trd/db/migrations/029_cash_flow_and_alloc.sql:5 private-term applied migration, never edited; the figure is scrubbed everywhere else
-
 # The importer recognises the footer a broker appends; it has to name it.
 src/trd/services/fidelity_import.py export-footer the parser matching the footer, not an export
 

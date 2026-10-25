@@ -136,8 +136,8 @@ a real download.
 line: `path[:line] rule reason`. A path without a line exempts that file for that
 one rule; every other rule still applies. Prefer `path:line`. Adding a line is
 reviewed like code and must say why the match is not real data. Current ones:
-the applied migration 029 (never edited), the importer that matches the footer,
-and the guardrail's own definitions, tests and this document.
+the importer that matches the footer, and the guardrail's own definitions,
+tests and this document.
 
 ## Known history
 
@@ -147,8 +147,9 @@ no values:
 
 - **The planned IRA rollover amount** appears in the diffs of 10 commits between
   `8033356` and `73d58c7`, and in 2 commit messages (`8033356`, `121d19c`). The
-  initial-tranche figure derived from it appears in the same 10 commits. Also in
-  the applied migration 029's comment (documented exception).
+  initial-tranche figure derived from it appears in the same 10 commits. It was
+  also in migration 029's header comment until SB-1422 rewrote the comment — a
+  comment edit changes nothing the migration does, so the never-edit rule holds.
 - **The cash balance used in the cash-yield tests** in 2 commits (`a12c71a`,
   `7ccec22`).
 - **The prior plan's provider and fund name** (a test's deposit note) in 2

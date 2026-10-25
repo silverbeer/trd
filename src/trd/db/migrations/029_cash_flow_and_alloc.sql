@@ -1,8 +1,8 @@
 -- Money moved into or out of an account, and a staged allocation plan for it
--- (SB-1383: the Fidelity Rollover IRA).
+-- (SB-1383: a retirement account funded as cash).
 --
 -- cash_flow. Until this table trd knew only trades and income, so an account's
--- cash was invisible: a $***REMOVED*** rollover that lands as cash and is invested
+-- cash was invisible: a rollover that lands as cash and is invested
 -- over twelve months read as an account worth only what had been bought so far,
 -- and every return measured from the first buy instead of from the day the money
 -- arrived. A deposit is not a trade — it creates no lot — so, like income, it is
