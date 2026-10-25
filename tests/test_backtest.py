@@ -401,6 +401,24 @@ def test_warmup_shortfall_is_named_not_silent():
     assert result.skipped and "trd sync" in result.skipped[0]
 
 
+def test_a_young_name_is_replayed_by_the_rules_it_clears():
+    """SB-1433: 61 bars clears breakout (51) and not momentum (201). The walk
+    gates per rule, so breakout still trades it — and the line says so instead
+    of reading as a name dropped from the run."""
+    result = run({"AAA": breakout_series()}, strategies=["breakout", "momentum"])
+    assert result.open_at_end == 1
+    assert result.skipped == [
+        "AAA: only 61 bars — momentum needs 201; replayed by breakout only "
+        "(run 'trd sync --years 10')"
+    ]
+
+
+def test_a_name_no_rule_clears_says_so():
+    result = run({"AAA": make_bars([100.0] * 30)}, strategies=["breakout", "momentum"])
+    assert "not replayed — no rule clears it" in result.skipped[0]
+    assert "breakout needs 51" in result.skipped[0]
+
+
 def test_windows_slice_trades_by_exit_date():
     """The drift detector: one simulation, regraded over trailing windows. A
     2019 trade shows up in the full column but not the 3y/1y ones."""

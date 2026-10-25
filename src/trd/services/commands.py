@@ -179,16 +179,21 @@ class CommandQueueService:
         # rather than warming up.
         bars = self.sync.backfill_symbol(symbol, years=BACKFILL_YEARS)
         status = self.engine.status()
-        short = dict(status.short_history)
-        depth = short.get(symbol)
+        short = {n.symbol: n for n in status.short_detail}
+        name = short.get(symbol)
         where = f"{config.watchlist} ({status.account})"
         label = _label(instrument)
         prefix = f"added {label} to {where}" if added else f"{label} was already on {where}"
-        if depth is not None:
+        if name is not None and not name.tradable:
             return (
-                f"{prefix} — {depth} {status.bar_unit} bars, below the "
-                f"{status.warmup_bars} its rules need. Not tradable yet; "
+                f"{prefix} — {name.bars} {status.bar_unit} bars, below what every "
+                f"rule needs ({name.rules()}). Not tradable yet; "
                 f"the daily sync will keep filling it in."
+            )
+        if name is not None:
+            return (
+                f"{prefix} — {name.bars} {status.bar_unit} bars: {name.rules()}. "
+                f"The daily sync fills in the rest."
             )
         return f"{prefix} — {bars} bars pulled, ready to trade."
 

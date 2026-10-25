@@ -325,6 +325,22 @@ def test_status_reads_the_published_snapshot_not_the_database(bot, homes):
     assert "CCC(12)" in reply  # warns about names that cannot trade yet
 
 
+def test_status_separates_warming_up_from_not_tradable():
+    """SB-1433: six young names breakout already trades read as dead before."""
+    rules = {"active": ["breakout"], "short": {"momentum": 201, "pullback": 201}}
+    payload = {
+        "short_history": [["CBRS", 113], ["XE", 127], ["ZZZ", 9]],
+        "short_detail": [
+            {"symbol": "CBRS", "bars": 113, **rules},
+            {"symbol": "XE", "bars": 127, **rules},
+            {"symbol": "ZZZ", "bars": 9, "active": [], "short": {"breakout": 51}},
+        ],
+    }
+    lines = format_status(payload).splitlines()
+    assert "⚠ below warm-up, not tradable yet: ZZZ(9)" in lines
+    assert "⏳ CBRS(113), XE(127): breakout active · momentum, pullback need 201" in lines
+
+
 def test_status_before_the_first_scan_says_so(bot):
     bot.handle(message("/status"))
     assert "no snapshot yet" in bot.transport.replies[0]

@@ -46,6 +46,7 @@ from trd.models.alloc import (
     CashFlowKind,
     Proposal,
 )
+from trd.models.engine import describe_short
 from trd.repos import PrepSnapshotRow
 from trd.services.backtest import BacktestResult as EngineBacktestResult
 from trd.services.dashboard import Dashboard, Holding
@@ -2218,17 +2219,18 @@ def engine_status_renderables(status: EngineStatus) -> list[RenderableType]:
         else "none"
     )
     data.add_row("bars", f"{status.bars_total:,}  ·  {span}")
-    if status.short_history:
-        listed = ", ".join(f"{s} ({n})" for s, n in status.short_history[:6])
-        more = f" +{len(status.short_history) - 6} more" if len(status.short_history) > 6 else ""
+    if status.short_detail:
+        for line in describe_short(status.short_detail):
+            data.add_row("[yellow]short[/yellow]", f"[yellow]{line}[/yellow]")
         data.add_row(
-            "[yellow]short[/yellow]",
-            f"[yellow]{listed}{more}[/yellow] — rules need {status.warmup_bars} "
+            "",
+            "[dim]"
             + (
-                f"(run 'trd sync --intraday {status.timeframe}')"
+                f"run 'trd sync --intraday {status.timeframe}'"
                 if status.timeframe != "1d"
-                else "(run 'trd sync --years 10')"
-            ),
+                else "run 'trd sync --years 10'"
+            )
+            + " to deepen history[/dim]",
         )
     else:
         data.add_row("history", f"every symbol clears the {status.warmup_bars}-bar warmup")
