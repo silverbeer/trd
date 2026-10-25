@@ -25,7 +25,7 @@ character and the length (`2…0 (6 chars)`).
 |---|---|---|
 | `.githooks/pre-commit` | `privacy_scan.py --staged` | the ADDED lines of the staged diff, plus every staged file's name and content type |
 | `.githooks/commit-msg` | `privacy_scan.py --message FILE` | the commit message (comment lines and the `--verbose` diff excluded) |
-| `.githooks/pre-push` | `privacy_scan.py --text` | the name of every branch or tag being pushed |
+| `.githooks/pre-push` | `privacy_scan.py --text`, `scan-commits.sh` | the name of every branch or tag being pushed, and the message of every commit the remote does not have yet |
 
 Install on every machine, once per clone — git does not copy hook settings:
 
@@ -45,9 +45,23 @@ installed (the scanner is stdlib-only and imports nothing from trd):
 - `privacy_scan.py --tree` — every tracked file;
 - on a pull request, the PR title, body and head branch through `--text`. They
   reach the shell through `env:`, never `${{ }}` inside `run:`, so a crafted
-  title cannot inject a command.
+  title cannot inject a command;
+- on a pull request, the message of every commit in the PR
+  (`scripts/scan-commits.sh base..head`); on a push to main, the messages
+  pushed. A branch commit that dodged the local hooks is caught here, and so
+  is a squash whose message was edited in the merge dialog.
 
-CI has no private-terms file, so the `private-term` rule only runs locally.
+**The private-terms list in CI** comes only from the repository secret
+`TRD_PRIVATE_TERMS_B64` (the file, base64). Setting it is an owner decision:
+the terms leave this machine, encrypted at rest and masked in logs, and the
+scanner prints a rule and a location, never a value. Without the secret the
+`private-term` rule is skipped with a notice and every shape rule still runs.
+
+**Repository settings** (`scripts/repo-settings.sh`, idempotent): squash and
+merge commits carry the PR title only (`BLANK` message), because the merge
+dialog's text is editable by hand and nothing scans the result; `privacy` and
+`test` are both required checks on `main`; admins are not exempt. Branch
+protection needs the repo public or a paid plan.
 
 ## 3. Telegram send guard (every message)
 
@@ -151,19 +165,19 @@ tests and this document.
 ## Known history
 
 Scrubbing the tree does not scrub history, and nothing here rewrites it. Audit
-of `git log --all` at SB-1421 (264 commits); counts and commit ranges only —
-no values:
+of `git log --all` at SB-1421, re-measured 2026-10-24 for the repo privacy
+audit (266 commits); counts and commit ranges only — no values:
 
-- **The planned IRA rollover amount** appears in the diffs of 10 commits between
+- **The planned IRA rollover amount** appears in the diffs of 12 commits between
   `8033356` and `73d58c7`, and in 2 commit messages (`8033356`, `121d19c`). The
-  initial-tranche figure derived from it appears in the same 10 commits. It was
+  initial-tranche figure derived from it appears in 8 of them. It was
   also in migration 029's header comment until SB-1422 rewrote the comment — a
   comment edit changes nothing the migration does, so the never-edit rule holds.
 - **The cash balance used in the cash-yield tests** in 2 commits (`a12c71a`,
   `7ccec22`).
 - **The prior plan's provider and fund name** (a test's deposit note) in 2
   commits (`8033356`, `121d19c`).
-- **A real macOS username** in k3s `hostPath` placeholders in 17 commits between
+- **A real macOS username** in k3s `hostPath` placeholders in 19 commits between
   `fe67025` and `53f2388`. Never in a commit message.
 - **Two 9-digit numbers used as broker account numbers** in
   `tests/test_rh_stream.py`, possibly real, in 2 commits (`186acf2`, `dafd03f`).
@@ -179,8 +193,19 @@ no values:
   synthetic fixtures.
 - No database, CSV, spreadsheet, `.env`, key or `trd backup` file has ever been
   committed.
+- **Pull request bodies** on GitHub carried real figures (a deposit, worth,
+  gain, milestone amounts, portfolio values, a broker cash balance) and a real
+  account name in at least ten PRs. PR text is GitHub metadata, not git: a
+  history rewrite does not touch it, and GitHub keeps a body's edit history.
+- **Deleted branches are still public.** GitHub keeps every PR's head commit
+  reachable at `refs/pull/N/head`, so a branch commit and its squash both
+  stay readable after the branch is deleted.
 
-Whether to rewrite history (and force-push a public repo) is an owner decision.
+The owner's decision (2026-10-24, audit report kept off-repo): rewrite history
+in a throwaway clone with `git filter-repo`, then delete and re-create the
+GitHub repository rather than scrub PR bodies one by one — the only way to
+drop the PR bodies, their edit history and the `refs/pull/*` commits together.
+Re-run `scripts/repo-settings.sh` on the new repository.
 
 ## Firm names in Telegram are redacted, not refused
 

@@ -1,7 +1,10 @@
 #!/bin/sh
-# A branch name is pushed metadata too (SB-1421, docs/privacy.md). git feeds
-# one line per ref: <local ref> <local sha> <remote ref> <remote sha>.
+# Pushed metadata is public metadata (SB-1421, SB-1428, docs/privacy.md): the
+# name of every ref being pushed, and the MESSAGE of every commit the remote
+# does not have yet. git feeds one line per ref:
+#   <local ref> <local sha> <remote ref> <remote sha>
 root=$(git rev-parse --show-toplevel) || exit 1
+zero=0000000000000000000000000000000000000000
 status=0
 while read -r local_ref local_sha remote_ref remote_sha; do
     for ref in "$local_ref" "$remote_ref"; do
@@ -13,5 +16,12 @@ while read -r local_ref local_sha remote_ref remote_sha; do
         printf '%s\n' "$name" \
             | python3 "$root/scripts/privacy_scan.py" --text --label "ref $ref" || status=1
     done
+    [ "$local_sha" = "$zero" ] && continue  # a delete pushes no commits
+    if [ "$remote_sha" = "$zero" ]; then
+        # a new branch: everything the remote has no ref for yet
+        sh "$root/scripts/scan-commits.sh" "$local_sha" --not --remotes || status=1
+    else
+        sh "$root/scripts/scan-commits.sh" "$remote_sha..$local_sha" || status=1
+    fi
 done
 exit $status

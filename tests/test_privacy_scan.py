@@ -285,6 +285,7 @@ def test_the_hooks_block_a_commit_and_a_branch_name(repo: Path, env, tmp_path) -
     shutil.copytree(REPO / ".githooks", repo / ".githooks")
     (repo / "scripts").mkdir()
     shutil.copy(SCANNER, repo / "scripts" / "privacy_scan.py")
+    shutil.copy(REPO / "scripts" / "scan-commits.sh", repo / "scripts" / "scan-commits.sh")
     git(repo, "config", "core.hooksPath", ".githooks")
 
     stage(repo, "export.csv", ACTIVITY_HEADER + "\n")
@@ -320,6 +321,62 @@ def test_the_hooks_block_a_commit_and_a_branch_name(repo: Path, env, tmp_path) -
         ["git", "push", "-q", "origin", "main"], cwd=repo, capture_output=True, text=True, env=env
     )
     assert ok.returncode == 0, ok.stderr
+
+    # SB-1428: a message that dodged commit-msg (--no-verify, another machine) is
+    # caught on push, on a clean branch name, and the finding names the commit.
+    git(repo, "checkout", "-q", "-b", "feat/clean")
+    stage(repo, "README.md", "hello again\n")
+    git(repo, "commit", "-q", "--no-verify", "-m", "docs: Schwab rollover notes", env=env)
+    bad_push = subprocess.run(
+        ["git", "push", "-q", "origin", "feat/clean"],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+    assert bad_push.returncode != 0 and "[firm-name] commit " in bad_push.stderr, bad_push.stderr
+    git(repo, "commit", "-q", "--amend", "-m", "docs: more notes", env=env)
+    good_push = subprocess.run(
+        ["git", "push", "-q", "origin", "feat/clean"],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+    assert good_push.returncode == 0, good_push.stderr
+
+
+def test_scan_commits_reads_every_message_in_a_range(repo: Path, env) -> None:
+    script = REPO / "scripts" / "scan-commits.sh"
+    (repo / "scripts").mkdir()
+    shutil.copy(SCANNER, repo / "scripts" / "privacy_scan.py")
+    stage(repo, "a.txt", "one\n")
+    git(repo, "commit", "-q", "--no-verify", "-m", "one", env=env)
+    base = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=repo, capture_output=True, text=True, check=True
+    ).stdout.strip()
+    stage(repo, "b.txt", "two\n")
+    git(
+        repo,
+        "commit",
+        "-q",
+        "--no-verify",
+        "-m",
+        "two: moved cash to the Vanguard account",
+        env=env,
+    )
+    stage(repo, "c.txt", "three\n")
+    git(repo, "commit", "-q", "--no-verify", "-m", "three: fine", env=env)
+    result = subprocess.run(
+        ["sh", str(script), f"{base}..HEAD"], cwd=repo, capture_output=True, text=True, env=env
+    )
+    assert result.returncode == 1
+    assert result.stderr.count("BLOCK [firm-name] commit ") == 1
+    assert "Vanguard" not in result.stderr
+    clean = subprocess.run(
+        ["sh", str(script), f"{base}..{base}"], cwd=repo, capture_output=True, text=True, env=env
+    )
+    assert clean.returncode == 0 and "no commits in range" in clean.stderr
 
 
 # ------------------------------------------------------------------ SB-1429: shapes that got past

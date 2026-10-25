@@ -19,14 +19,32 @@ jobs:
       - run: uv run ty check
       - run: uv run pytest
 
-  # The repo is public: no real account data in the tree, the PR text or the
-  # branch name (SB-1421, docs/privacy.md). stdlib only — runs before uv sync.
-  # PR fields reach the shell through env, never ${{ }} inside `run:`, so a
-  # crafted title cannot inject a command.
+  # The repo is public: no real account data in the tree, the PR text, the
+  # branch name or any commit message (SB-1421, SB-1428, docs/privacy.md).
+  # stdlib only — runs before uv sync. PR fields reach the shell through env,
+  # never ${{ }} inside `run:`, so a crafted title cannot inject a command.
+  # The owner's private-terms list reaches the runner only as the secret
+  # TRD_PRIVATE_TERMS_B64 (base64 of the file); without it the private-term
+  # rule is skipped with a notice and every shape rule still runs. The scanner
+  # prints a rule and a location, never a matched value, so the terms cannot
+  # land in a log.
   privacy:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Private terms from the secret, if set
+        env:
+          TERMS_B64: ${{ secrets.TRD_PRIVATE_TERMS_B64 }}
+        run: |
+          if [ -n "$TERMS_B64" ]; then
+            printf '%s' "$TERMS_B64" | base64 -d > "$RUNNER_TEMP/private-terms.txt"
+            echo "TRD_PRIVATE_TERMS=$RUNNER_TEMP/private-terms.txt" >> "$GITHUB_ENV"
+            echo "private terms: $(grep -c . "$RUNNER_TEMP/private-terms.txt") term(s)"
+          else
+            echo "private terms: none (secret not set)"
+          fi
       - name: Scan every tracked file
         run: python3 scripts/privacy_scan.py --tree
       - name: Scan the PR title, body and branch name
@@ -41,3 +59,20 @@ jobs:
           printf '%s\n' "$PR_BODY" | python3 scripts/privacy_scan.py --text --label "PR body" || status=1
           printf '%s\n' "$PR_BRANCH" | python3 scripts/privacy_scan.py --text --label "branch" || status=1
           exit $status
+      - name: Scan every commit message in the PR
+        if: github.event_name == 'pull_request'
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        run: sh scripts/scan-commits.sh "$BASE..$HEAD"
+      - name: Scan the commit messages pushed to main
+        if: github.event_name == 'push'
+        env:
+          BEFORE: ${{ github.event.before }}
+          AFTER: ${{ github.sha }}
+        run: |
+          if git cat-file -e "$BEFORE^{commit}" 2>/dev/null; then
+            sh scripts/scan-commits.sh "$BEFORE..$AFTER"
+          else
+            sh scripts/scan-commits.sh -1 "$AFTER"
+          fi
