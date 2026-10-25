@@ -88,13 +88,13 @@ trd income ls [--account N] [--json]  # cash a holding PAID you, as opposed to t
                                       # credit the plan with all of it. A REINVESTED dividend
                                       # (DRIP) is an ordinary 'trd buy' — recorded here too it is
                                       # counted twice. 'trd learn income · total-return'
-trd cash deposit 100000 --account ***REMOVED*** [--date ISO] [--note ...]
+trd cash deposit 100000 --account ira [--date ISO] [--note ...]
 trd cash withdraw AMOUNT --account N | trd cash ls --account N [--json]
                                       # money moved into/out of an account (migration 029). Not a
                                       # trade: no lot. cash = deposits - withdrawals - fees - buys
                                       # + sells + income. ls labels kind 'fee' "advisory fee". Only the alloc views read it so far; portfolio /
                                       # equity / dashboard returns are still trade-based
-trd alloc set --account ***REMOVED*** --capital 100000 --name ... [--kind "Rollover IRA"]
+trd alloc set --account ira --capital 100000 --name ... [--kind "IRA"]
               [--brokerage Fidelity] -t IVV=45 -t IXUS=20 -t QQQM=25 -t SMH=5 -t CASH=5 [--drift 5]
                                       # --pace SPCX=24 [--pace-start ISO] (set or edit): a PACED
                                       # target (SB-1388, migration 030) — its weight of capital is
@@ -146,7 +146,7 @@ trd watch add NVDA [--list ai]        # follow a symbol (creates list if needed)
 trd watch rm NVDA [--list ai]
 trd watch ls [ai]                     # quote board: price, day Δ%, 52w pos, vol/avg, next earnings
 trd earnings [--days 14]              # upcoming earnings across everything tracked
-trd exit set ABBV --account ***REMOVED*** --stop 221 [--target 244.81] [--note ...]
+trd exit set ABBV --account paper-agent --stop 221 [--target 244.81] [--note ...]
                                       # stop/target exit trigger on a holding (one per account+symbol)
 trd exit ls|check|rm [--account NAME]  # ls = all triggers vs latest close; check = only breaches
                                       # rule fires on a daily CLOSE beyond the level (run trd sync)

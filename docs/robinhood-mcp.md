@@ -148,7 +148,7 @@ The payoff. Read the broker in a session, write a snapshot, then diff it against
 what trd believes it holds:
 
 ```bash
-trd engine reconcile ~/.trd/broker-2026-08-03.json --account ***REMOVED***
+trd engine reconcile ~/.trd/broker-2026-08-03.json --account paper-agent
 ```
 
 The read and the diff are deliberately separate. Reading a brokerage is
@@ -163,7 +163,7 @@ same reason all market data goes through `MarketDataProvider`.
 {
   "as_of": "2026-08-03T14:22:00-04:00",
   "source": "robinhood",
-  "account": "***REMOVED***",
+  "account": "paper-agent",
   "cash": "1204.11",
   "unsettled": "0.00",
   "positions": [

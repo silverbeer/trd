@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# The Rollover IRA's daily performance message (SB-1384), from launchd on the
+# The IRA's daily performance message (SB-1384), from launchd on the
 # mini, weekdays after the close (deploy/io.silverbeer.trd.alloc-report.plist).
 #
 # `trd alloc report` opens the database READ-ONLY and stores no quotes: the

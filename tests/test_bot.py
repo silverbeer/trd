@@ -305,7 +305,7 @@ def test_a_failed_reply_does_not_lose_the_queued_command(bot, homes):
 
 
 STATUS_JSON = """
-{"build": "0.1.9", "account": "***REMOVED***", "timeframe": "1d", "universe": ["AAA", "BBB"],
+{"build": "0.1.9", "account": "TEST-ACCT-AGENT", "timeframe": "1d", "universe": ["AAA", "BBB"],
  "open_positions": 2, "max_positions": 5, "closed_trades": 11,
  "realized": "120.50", "unrealized": "-30.25", "net_pnl": "90.25",
  "committed": "2000.00", "risk_at_stop": "180.00",
@@ -318,7 +318,7 @@ def test_status_reads_the_published_snapshot_not_the_database(bot, homes):
     (homes[0].home / "status.json").write_text(STATUS_JSON)
     bot.handle(message("/status swing"))
     reply = bot.transport.replies[0]
-    assert "***REMOVED***" in reply
+    assert "TEST-ACCT-AGENT" in reply
     assert "realized +120.50" in reply
     assert "NET +90.25" in reply  # all three, never the total alone
     assert "at risk +180.00" in reply

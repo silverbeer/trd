@@ -1,6 +1,6 @@
 """An account's cash, and a staged allocation plan for it (SB-1383).
 
-Built for the Fidelity Rollover IRA: a lump sum that lands as cash and is
+Built for an IRA funded by a rollover: a lump sum that lands as cash and is
 invested in tranches over a year, by hand, at the broker. trd records what was
 done and measures it. It never places anything, and never assumes a planned
 tranche happened: a milestone is complete when the account's recorded buys say
@@ -16,7 +16,7 @@ annualised) appears only once the first deposit is 30 days old, the same floor
 every other XIRR in trd uses. A time-weighted return needs a valuation history
 this does not keep yet, so it is not offered.
 
-A PACED target (SB-1388) — the ***REMOVED*** moonshot — sits outside the tranches: its
+A PACED target (SB-1388) — a single-name moonshot — sits outside the tranches: its
 weight of the capital is earmarked and bought in monthly instalments on its own
 clock. Until bought, that earmark is cash, reported as reserved and never added
 to the cash it is part of. Its buys do not count toward any milestone, and it is

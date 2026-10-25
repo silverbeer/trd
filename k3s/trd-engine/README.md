@@ -120,8 +120,8 @@ Three things it refuses, each on purpose:
 
   ```bash
   TRD_HOME=~/.trd-live trd init
-  TRD_HOME=~/.trd-live trd account add ***REMOVED***          # real, not --type simulation
-  TRD_HOME=~/.trd-live trd engine init --live --account ***REMOVED*** --capital 100 \
+  TRD_HOME=~/.trd-live trd account add live-cash          # real, not --type simulation
+  TRD_HOME=~/.trd-live trd engine init --live --account live-cash --capital 100 \
       --size 20 --max 5 --symbols "$SYMS" --strategies "$STRATS"
   TRD_HOME=~/.trd-live trd sync --full
   TRD_HOME=~/.trd-live trd engine guard                 # the hard caps it starts with
@@ -636,7 +636,7 @@ live and which bot it belongs to, `send` posts a message, `whoami` is above:
 ```bash
 ./scripts/telegram.sh check
 token source: 1Password (op://Personal/Telegram Bot Tokens/trd-engine-bot)
-ok — @trd_engine_bot (id 8959767886)
+ok — @trd_engine_bot (id <bot id>)
 ```
 
 The token is resolved from `$TELEGRAM_BOT_TOKEN`, then 1Password, then the cluster

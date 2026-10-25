@@ -31,3 +31,6 @@ coverage.json
 .gemini/
 .kiro/
 GEMINI.md
+
+# agent worktrees are never part of the tree
+.claude/worktrees/

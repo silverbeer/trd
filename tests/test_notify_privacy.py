@@ -167,7 +167,7 @@ def test_the_ira_report_passes(conn: duckdb.DuckDBPyConnection, provider: FakePr
         AllocTarget(symbol="SMH", weight=D(5)),
         AllocTarget(symbol=CASH, weight=D(5)),
     ]
-    service.create("ira", "Rollover IRA Growth Plan", D("100000"), targets)
+    service.create("ira", "IRA Growth Plan", D("100000"), targets)
     CashService(conn).record("ira", CashFlowKind.DEPOSIT, D("100000"), datetime(2026, 10, 24))
     service.schedule("ira", start, D(60000), D(10000), 3, 4)
     # The stored fund is the brokerage's own core fund; the report must not say so.

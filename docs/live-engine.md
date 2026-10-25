@@ -23,7 +23,7 @@ live runner") and the tickets SB-1325 (go/no-go) and SB-1373–1382.
 |---|---|
 | Rules | swing's: `breakout`, `macd_cross`, `momentum`, `pullback` on daily bars, same 137 names |
 | Size | `--capital 100 --size 20 --max 5` — five $20 positions, fractional shares |
-| Account | `***REMOVED***` in `~/.trd-live` = the Robinhood agentic account. Anything else in that account is idle and **not** the engine's |
+| Account | `live-cash` in `~/.trd-live` = the Robinhood agentic account. Anything else in that account is idle and **not** the engine's |
 | Paper twin | `swing20` (`~/.trd-swing20`): identical config on paper. The daily report compares them — this is how live fills are judged |
 | Human gate | Robinhood trade approvals **ON**. Nothing executes until you tap Approve |
 
@@ -132,12 +132,12 @@ SYMS=$(jq -r '.universe | join(",")' <<<"$TWIN")
 STRATS=$(jq -r '.strategies | join(",")' <<<"$TWIN")
 
 TRD_HOME=~/.trd-live trd init
-TRD_HOME=~/.trd-live trd engine init --live --account ***REMOVED*** \
+TRD_HOME=~/.trd-live trd engine init --live --account live-cash \
     --capital 100 --size 20 --max 5 --symbols "$SYMS" --strategies "$STRATS"
 TRD_HOME=~/.trd-live trd sync --full
 ```
 
-`engine init --live` creates the `***REMOVED***` real account. If swing20 runs with a
+`engine init --live` creates the `live-cash` real account. If swing20 runs with a
 non-default earnings blackout or regime gate (`trd engine status` shows them),
 pass the same values — a twin that differs in a gate is not a twin.
 
@@ -349,7 +349,7 @@ RH_DRY_RUN=1 ~/.trd-runner/bin/live-runner.sh   # a review-only pass
   tolerance and every guard has fired in a test. N is undecided (20 suggested).
   Until then the phone tap stays.
 - **Your portfolio view.** Live trades live in `~/.trd-live`, not the iCloud
-  `trd.duckdb` (`***REMOVED***`), so they do not show in `trd portfolio` yet.
+  `trd.duckdb` (`paper-agent`), so they do not show in `trd portfolio` yet.
 - **The idle surplus.** The engine's $100 is enforced by trd (ledger + caps), not by
   Robinhood: the broker would accept a sixth $20 buy.
 - **How long a Robinhood sign-in lasts.** Being measured: every hourly login

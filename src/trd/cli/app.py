@@ -4538,9 +4538,7 @@ def alloc_set(
     pace: PaceOpt = None,
     pace_start: PaceStartOpt = None,
     name: Annotated[str | None, typer.Option("--name", help="Plan name.")] = None,
-    kind: Annotated[
-        str | None, typer.Option("--kind", help="Account kind, e.g. 'Rollover IRA'.")
-    ] = None,
+    kind: Annotated[str | None, typer.Option("--kind", help="Account kind, e.g. 'IRA'.")] = None,
     brokerage: Annotated[str | None, typer.Option("--brokerage", help="e.g. Fidelity.")] = None,
     drift: Annotated[
         str, typer.Option("--drift", help="Drift alert threshold, percentage points.")

@@ -1,4 +1,4 @@
-"""The Rollover IRA's allocation plan (SB-1383).
+"""An IRA's allocation plan (SB-1383).
 
 What is worth pinning: that a plan cannot claim money was invested that was not
 (milestones are read from recorded buys), that a schedule which does not add up
@@ -43,7 +43,7 @@ from trd.services.portfolio import PortfolioService
 
 runner = CliRunner()
 D = Decimal
-IRA = "***REMOVED***"
+IRA = "TEST-ACCT-IRA"
 START = date(2026, 10, 26)
 TODAY = date(2026, 10, 27)
 TARGETS = [
@@ -63,10 +63,10 @@ def ira(conn: duckdb.DuckDBPyConnection, provider: FakeProvider) -> AllocService
     service = AllocService(conn, provider)
     service.create(
         IRA,
-        "Fidelity Rollover IRA Growth Plan",
+        "Retirement Growth Plan",
         D("100000"),
         TARGETS,
-        account_kind="Rollover IRA",
+        account_kind="IRA",
         brokerage="Fidelity",
     )
     return service
@@ -366,7 +366,7 @@ def test_cli_end_to_end(cli_env: FakeProvider) -> None:
             "--name",
             "Growth Plan",
             "--kind",
-            "Rollover IRA",
+            "IRA",
             "--brokerage",
             "Fidelity",
             "-t",
@@ -444,7 +444,7 @@ def test_the_report_leads_with_the_day_and_names_its_returns(conn, provider, ira
     buy(conn, provider, "IVV", "40", "600")
     text = report_text(ira, date(2026, 10, 27))
     lines = text.splitlines()
-    assert lines[0] == "📈 <b>Fidelity Rollover IRA Growth Plan</b> · Tue Oct 27"
+    assert lines[0] == "📈 <b>Retirement Growth Plan</b> · Tue Oct 27"
     assert lines[2] == "⚪ <b>FLAT DAY  +$240.00 (+0.24%)</b>"
     assert (
         "💰 Worth <b>$100,240.00</b> — up $240.00 (+0.24%) since funding on "
