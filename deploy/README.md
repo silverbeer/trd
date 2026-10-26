@@ -28,10 +28,15 @@ running anything live.
 `sunday-prep.sh` runs, in order:
 
 1. `trd sync` — refresh quotes / daily bars / earnings.
-2. `trd sunday-prep --snapshot` — build the briefing and write
+2. `trd sunday-prep --snapshot --notify` — build the briefing, write
    `$TRD_HOME/prep/<date>.json` (structured, for Claude/automation) and
-   `<date>.md` (human-readable). Because `TRD_HOME` is an iCloud folder, the
-   snapshot syncs to all your Macs.
+   `<date>.md` (human-readable), and send it as one Telegram message to the
+   private alert chat (SB-1436) — the same chat as the allocation report, never
+   the channel. The token and chat ids come from `~/.config/trd/live.env`; without
+   that file the snapshot is still written and the log says it was not sent.
+
+It runs the live runner's venv (`~/.trd-runner/venv/bin/trd`, refreshed by
+`deploy/live-runner.sh install` on every deploy), not a `uv tool` copy on PATH.
 
 ## Install (on the mini)
 

@@ -170,6 +170,8 @@ trd sunday-prep [--json] [--snapshot] [--date ISO]   # alias 'trd prep'
                                       # earnings, sector leadership, VIX, SPY/QQQ/IWM levels, themes,
                                       # watchlist, risks. Deterministic narrative; --snapshot writes
                                       # TRD_HOME/prep/<date>.{json,md} (the scheduled mini job uses this)
+                                      # --notify: one Telegram message (HTML, phone-first) to the PRIVATE
+                                      # alert chat — the Sunday 18:05 job sends it (deploy/sunday-prep.sh)
 trd learn [TERM]                      # investing dictionary: every term + exact formula trd uses
                                       # incl. engine terms (r-multiple, expectancy, survivorship);
                                       # indicator/strategy/exit entries generate from the registries

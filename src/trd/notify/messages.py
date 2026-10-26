@@ -48,6 +48,7 @@ from trd.services.daily_report import DailyReport, EngineDay, ExitEvent, TwinDiv
 from trd.services.engine import ScanFill, ScanResult
 from trd.services.live_report import LivePosition, LiveReport
 from trd.services.review import EnginePack, ReviewResult
+from trd.services.sunday_prep import FuturesQuote, KeyLevel, SectorMove, SundayPrepBriefing
 
 
 def _money(value: float | Decimal | None) -> str:
@@ -1432,3 +1433,151 @@ def alloc_report_message(report: AllocReport) -> str:
     if glossary:
         lines += ["", "<i>" + _h(". ".join(glossary)) + ".</i>"]
     return "\n".join(lines)
+
+
+# --------------------------------------------------------------- sunday prep
+
+# Telegram refuses a message over 4,096 characters. The briefing is cut to fit
+# by dropping its least load-bearing sections first, never by truncating a line.
+TELEGRAM_MAX_CHARS = 4096
+PREP_EARNINGS_PER_DAY = 6
+
+
+def _prep_mood(change: Decimal | None) -> str:
+    if change is None:
+        return "▫️"
+    if change >= Decimal("0.25"):
+        return "🟢"
+    if change <= Decimal("-0.25"):
+        return "🔴"
+    return "⚪️"
+
+
+def _prep_vix(band: str) -> str:
+    head = band.split(" ")[0]
+    return {
+        "low": "😴",
+        "low-to-normal": "🙂",
+        "normal": "😐",
+        "elevated": "😬",
+        "extreme": "😱",
+    }.get(head, "❔")
+
+
+def _prep_quote(q: FuturesQuote) -> str:
+    change = f"{q.change_pct:+.2f}%" if q.change_pct is not None else "—"
+    flag = " ⚠️" if q.unusual else ""
+    return f"{_prep_mood(q.change_pct)} {_h(q.label)} <b>{change}</b>{flag}"
+
+
+def _prep_level(level: KeyLevel) -> str:
+    if level.price is None:
+        return f"<b>{_h(level.symbol)}</b> —"
+    trend = ""
+    if level.sma200 is not None:
+        trend = " ✅ above 200d" if level.price > level.sma200 else " ⚠️ below 200d"
+    sma50 = ""
+    if level.sma50:
+        gap = (level.price / level.sma50 - 1) * 100
+        sma50 = f" · {abs(gap):.1f}% {'over' if gap >= 0 else 'under'} 50d"
+    return f"<b>{_h(level.symbol)}</b> {level.price:,.2f}{sma50}{trend}"
+
+
+def sunday_prep_message(briefing: SundayPrepBriefing) -> str:
+    """The week-ahead briefing as one Telegram HTML message (SB-1436).
+
+    Phone first: the tone sentence, then what moves the open (futures, oil,
+    gold, VIX), the dated events and earnings by day, who led and lagged, where
+    SPY/QQQ/IWM sit against their averages, then themes, a watchlist and the
+    risks. The markdown snapshot keeps every row and every 'why'; this keeps
+    what is worth reading on a Sunday evening. Every string from the provider or
+    the calendar is escaped. Market data only — no holding or account appears.
+    """
+    b = briefing
+    head = [
+        f"🗓 <b>Week ahead</b> · {b.week_start:%b %-d} → {b.week_end:%b %-d}",
+        "",
+        f"<i>{_h(b.tone)}</i>",
+    ]
+
+    market = ["", "🌙 <b>Futures</b>"]
+    market += [_prep_quote(q) for q in b.futures]
+    if b.commodities:
+        market += ["", "🛢 <b>Commodities</b>", *(_prep_quote(q) for q in b.commodities)]
+    vol = b.volatility
+    vix = f"{vol.vix:.2f}" if vol.vix is not None else "—"
+    market += ["", f"{_prep_vix(vol.band)} <b>VIX {vix}</b> · {_h(vol.band)}", _h(vol.note)]
+
+    events: list[str] = []
+    if b.econ_events:
+        events = ["", "📅 <b>Big events</b>"]
+        for e in b.econ_events:
+            when = f"{e.date:%a} {_h(e.time_et)}".strip()
+            events.append(f"• <b>{when}</b> — {_h(e.name)}")
+
+    earnings: list[str] = []
+    if b.earnings:
+        earnings = ["", f"💼 <b>Earnings</b> · {len(b.earnings)} notable"]
+        by_day: dict[str, list[str]] = {}
+        for item in sorted(b.earnings, key=lambda i: i.date):
+            by_day.setdefault(f"{item.date:%a}", []).append(_h(item.symbol))
+        for day, symbols in by_day.items():
+            more = len(symbols) - PREP_EARNINGS_PER_DAY
+            shown = " · ".join(symbols[:PREP_EARNINGS_PER_DAY]) + (f" +{more}" if more > 0 else "")
+            earnings.append(f"<b>{day}</b> {shown}")
+
+    def _moves(rows: list[SectorMove]) -> str:
+        return " · ".join(
+            f"{_h(m.name)} {m.week_pct:+.2f}%" if m.week_pct is not None else _h(m.name)
+            for m in rows
+        )
+
+    sectors: list[str] = []
+    if b.sector_leaders or b.sector_laggards:
+        sectors = ["", "🏁 <b>Last week's sectors</b>"]
+        if b.sector_leaders:
+            sectors.append(f"🏆 {_moves(b.sector_leaders)}")
+        if b.sector_laggards:
+            sectors.append(f"🐢 {_moves(b.sector_laggards)}")
+
+    levels: list[str] = []
+    if b.key_levels:
+        levels = ["", "📏 <b>Key levels</b>", *(_prep_level(level) for level in b.key_levels)]
+
+    themes: list[str] = []
+    if b.themes:
+        themes = ["", "🎯 <b>Themes</b>"]
+        themes += [f"• <b>{_h(t.title)}</b> — {_h(t.why)}" for t in b.themes]
+
+    # Earnings names are listed by day above and the key-level ETFs have their
+    # own lines; the watchlist adds the rest.
+    shown = {level.symbol for level in b.key_levels}
+    watch_items = [
+        w
+        for w in b.watchlist
+        if not w.catalyst.lower().startswith("earnings") and w.symbol not in shown
+    ]
+    watch: list[str] = []
+    if watch_items:
+        watch = ["", "👀 <b>On the watchlist</b>"]
+        watch += [f"• <b>{_h(w.symbol)}</b> — {_h(w.rationale)}" for w in watch_items]
+        watch.append("<i>Candidates to study, not recommendations.</i>")
+
+    risks: list[str] = []
+    if b.risks:
+        risks = ["", "⚠️ <b>Risks</b>", *(f"• {_h(r)}" for r in b.risks)]
+
+    close = ["", f"🧭 <b>{_h(b.prompt_question)}</b>"]
+
+    # Least load-bearing first: what to drop when the week is too busy to fit.
+    optional = [watch, themes, sectors, levels]
+    while True:
+        text = "\n".join(
+            [*head, *market, *events, *earnings, *sectors, *levels, *themes, *watch, *risks, *close]
+        )
+        if len(text) <= TELEGRAM_MAX_CHARS or not any(optional):
+            return text
+        for section in optional:
+            if section:
+                section.clear()
+                break

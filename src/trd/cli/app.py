@@ -106,6 +106,7 @@ from trd.notify.messages import (
     live_report_message,
     review_message,
     strip_html,
+    sunday_prep_message,
 )
 from trd.notify.telegram import LIVE_LABEL, TelegramNotifier
 from trd.notify.telegram import from_env as notify_from_env
@@ -1030,9 +1031,19 @@ def sunday_prep(
         str | None,
         typer.Option("--date", help="Reference date (ISO); defaults to today."),
     ] = None,
+    notify: Annotated[
+        bool,
+        typer.Option(
+            "--notify",
+            help="Send the briefing to your private Telegram chat (the alert chat, "
+            "never the channel).",
+        ),
+    ] = False,
 ) -> None:
     """Sunday Prep: a structured week-ahead briefing — futures, macro events, earnings,
-    sector leadership, volatility, key levels, themes, a watchlist, and risks."""
+    sector leadership, volatility, key levels, themes, a watchlist, and risks.
+    --notify sends it as one Telegram message to the private alert chat
+    (TRD_LIVE_ALERT_CHAT_ID, else the first TRD_BOT_ALLOWED_USER_IDS)."""
     if history > 0:
         rows = PrepHistoryService(connect(get_settings().db_path)).history(history)
         if not rows:
@@ -1059,6 +1070,19 @@ def sunday_prep(
         PrepHistoryService(connect(get_settings().db_path)).save(briefing)
         path = _write_prep_markdown(briefing)
         console.print(f"[dim]Saved to DuckDB + {path}[/dim]")
+    if notify:
+        refused: list[str] = []
+        notifier = alert_notifier_from_env(error=refused.append)
+        if notifier is None:
+            _fail(TrdError(refused[0] if refused else "No TELEGRAM_BOT_TOKEN set."))
+            return
+        try:
+            notifier.send(sunday_prep_message(briefing), html=True)
+        except TrdError as exc:  # NotifyError: delivery failed, token never shown
+            _fail(exc)
+            return
+        if not as_json:
+            console.print("[dim]Sent to your private Telegram chat.[/dim]")
 
 
 account_app = typer.Typer(

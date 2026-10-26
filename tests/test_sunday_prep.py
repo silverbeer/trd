@@ -176,3 +176,122 @@ def test_markdown_snapshot_renders(briefing) -> None:
     assert "**Commodities**" in md
     assert "### 10. Weekly Mindset" in md
     assert briefing.prompt_question in md
+
+
+# ------------------------------------------------------------- telegram (SB-1436)
+
+
+@pytest.fixture
+def no_private_terms(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("TRD_PRIVATE_TERMS", str(tmp_path / "absent.txt"))
+
+
+def test_telegram_message_carries_every_section(briefing, no_private_terms) -> None:
+    from trd.notify.messages import TELEGRAM_MAX_CHARS, sunday_prep_message
+    from trd.notify.privacy import guard
+
+    text = sunday_prep_message(briefing)
+    assert text.startswith("🗓 <b>Week ahead</b> · Jun 15 → Jun 19")
+    for head in (
+        "Futures",
+        "Commodities",
+        "VIX 12.00",
+        "Big events",
+        "Earnings",
+        "sectors",
+        "Key levels",
+        "Themes",
+        "Risks",
+    ):
+        assert head in text, head
+    assert "<b>Wed</b> NVDA" in text and "<b>Thu</b> AAPL" in text  # earnings by day
+    assert "MSFT" not in text  # outside the week
+    assert "Russell" in text and "⚠️" in text  # the outsized futures move is flagged
+    assert "✅ above 200d" in text  # rising index proxies
+    assert briefing.prompt_question in text
+    assert len(text) <= TELEGRAM_MAX_CHARS
+    guard(text)
+
+
+def test_telegram_message_escapes_provider_text(briefing) -> None:
+    from trd.notify.messages import sunday_prep_message
+
+    briefing.tone = "risk <on> & rising"
+    assert "<i>risk &lt;on&gt; &amp; rising</i>" in sunday_prep_message(briefing)
+
+
+def test_telegram_message_fits_by_dropping_whole_sections(briefing) -> None:
+    """A busy week drops the watchlist, then the themes — never a cut line, and
+    never the risks or the events."""
+    from trd.notify.messages import TELEGRAM_MAX_CHARS, sunday_prep_message
+    from trd.services.sunday_prep import Theme as PrepTheme
+
+    briefing.themes = [PrepTheme(title=f"theme {i}", why="x" * 300) for i in range(12)]
+    text = sunday_prep_message(briefing)
+    assert len(text) <= TELEGRAM_MAX_CHARS
+    assert "Themes" not in text and "On the watchlist" not in text
+    assert "Risks" in text and "Big events" in text
+
+
+def test_telegram_message_with_no_data() -> None:
+    from trd.notify.messages import sunday_prep_message
+
+    text = sunday_prep_message(SundayPrepService(FakeProvider()).build(SUNDAY))
+    assert "VIX —" in text and "Futures" in text
+
+
+def test_cli_notify_sends_to_the_private_chat(
+    cli_env, prep_provider, monkeypatch, no_private_terms
+) -> None:
+    import json
+
+    from typer.testing import CliRunner
+
+    import trd.cli.app as cli
+    from trd.cli.app import app
+
+    monkeypatch.setattr(cli, "YFinanceProvider", lambda: prep_provider)
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "t")
+    monkeypatch.setenv("TELEGRAM_CHAT_ID", "-100channel")
+    monkeypatch.delenv("TRD_LIVE_ALERT_CHAT_ID", raising=False)
+    monkeypatch.setenv("TRD_BOT_ALLOWED_USER_IDS", "4242")
+    sent: list[dict] = []
+
+    class _Response:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    def fake(req, timeout):
+        sent.append(json.loads(req.data))
+        return _Response()
+
+    monkeypatch.setattr("trd.notify.telegram.urllib.request.urlopen", fake)
+    result = CliRunner().invoke(app, ["sunday-prep", "--date", "2026-06-14", "--notify"])
+    assert result.exit_code == 0, result.output
+    assert len(sent) == 1 and sent[0]["chat_id"] == "4242"  # never the channel
+    assert sent[0]["text"].startswith("🗓 <b>Week ahead</b>")
+
+
+def test_cli_notify_refuses_without_a_private_chat(cli_env, prep_provider, monkeypatch) -> None:
+    from typer.testing import CliRunner
+
+    import trd.cli.app as cli
+    from trd.cli.app import app
+
+    monkeypatch.setattr(cli, "YFinanceProvider", lambda: prep_provider)
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "t")
+    monkeypatch.setenv("TELEGRAM_CHAT_ID", "-100channel")
+    monkeypatch.delenv("TRD_LIVE_ALERT_CHAT_ID", raising=False)
+    monkeypatch.delenv("TRD_BOT_ALLOWED_USER_IDS", raising=False)
+
+    def never(*_a, **_k):
+        raise AssertionError("reached the network")
+
+    monkeypatch.setattr("trd.notify.telegram.urllib.request.urlopen", never)
+    result = CliRunner().invoke(app, ["sunday-prep", "--date", "2026-06-14", "--notify"])
+    assert result.exit_code != 0
