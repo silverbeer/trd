@@ -577,6 +577,11 @@ trd engine apply-queue [--notify]     # apply the commands the Telegram bot queu
                                       # them. Runs before the scan, so a name added from chat is in
                                       # the universe for the very next pass. --notify answers
                                       # whoever typed it, in their own chat
+                                      # A rate-limited provider (Yahoo 429) leaves the command
+                                      # QUEUED for the next pass, up to 6 tries, with one "⏳ still
+                                      # queued" reply (SB-1437). Each home's drain runs on its own
+                                      # minute (swing :00, day :02, swing20 :04, live :06) so four
+                                      # engines don't ask about the same new name in one second
 trd engine daily-report [--json] [--date ISO] [--engines swing=/a,day=/b] [--window 30]
                       [--notify]
                                       # post-market report, both engines in ONE message. Leads with

@@ -85,6 +85,16 @@ class SymbolNotFoundError(ProviderError):
     """
 
 
+class RateLimitedError(ProviderError):
+    """The provider refused for now — Yahoo's 429 — as opposed to failing.
+
+    Not a verdict on the symbol and not an outage: four engines draining the chat
+    queue in the same second each asked Yahoo about the same new name, and the
+    last one in was told to come back later. A caller that can wait (the chat
+    queue) keeps the request and tries again; everyone else sees a ProviderError.
+    """
+
+
 class NotifyError(TrdError):
     """A notifier could not deliver. Never fatal — a scan that traded successfully
     must not fail because a chat message didn't send."""
