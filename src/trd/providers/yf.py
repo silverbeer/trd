@@ -8,8 +8,9 @@ from typing import Any, cast
 
 import pandas as pd
 import yfinance as yf
+from yfinance.exceptions import YFRateLimitError
 
-from trd.errors import ProviderError, SymbolNotFoundError
+from trd.errors import ProviderError, RateLimitedError, SymbolNotFoundError
 from trd.models import DailyBar, EarningsDate, InstrumentInfo, InstrumentType, IntradayBar, Quote
 
 # What yfinance will actually serve, and how far back it serves it. Asking for a
@@ -39,6 +40,21 @@ def _quote_workers() -> int:
     except ValueError:
         return 8
     return max(1, min(value, 32))
+
+
+def _failed(what: str, symbol: str, exc: Exception) -> ProviderError:
+    """The ProviderError for an upstream exception, kept distinct when it is a 429.
+
+    yfinance raises YFRateLimitError for it; the message is checked as well
+    because a rate limit surfacing through another path reads the same and means
+    the same. No retry or sleep here on purpose: this provider is the scan's too,
+    and a backoff inside a five-minute scan would stall every name behind it. The
+    caller that can afford to wait decides to.
+    """
+    message = f"{what} failed for {symbol}: {exc}"
+    if isinstance(exc, YFRateLimitError) or "Too Many Requests" in str(exc):
+        return RateLimitedError(message)
+    return ProviderError(message)
 
 
 _QUOTE_TYPE_MAP = {
@@ -152,7 +168,7 @@ class YFinanceProvider:
         try:
             info = yf.Ticker(symbol).get_info()
         except Exception as exc:
-            raise ProviderError(f"Info fetch failed for {symbol}: {exc}") from exc
+            raise _failed("Info fetch", symbol, exc) from exc
         if not info or info.get("quoteType") in (None, "NONE"):
             raise SymbolNotFoundError(f"Symbol {symbol} not found")
         return InstrumentInfo(
@@ -175,7 +191,7 @@ class YFinanceProvider:
                 start=start.isoformat(), end=end.isoformat(), interval="1d", auto_adjust=False
             )
         except Exception as exc:
-            raise ProviderError(f"History fetch failed for {symbol}: {exc}") from exc
+            raise _failed("History fetch", symbol, exc) from exc
         bars: list[DailyBar] = []
         for ts, row in df.iterrows():
             close = _dec(row.get("Close"))
@@ -236,7 +252,7 @@ class YFinanceProvider:
                 start=start.isoformat(), end=end.isoformat(), interval=interval, auto_adjust=False
             )
         except Exception as exc:
-            raise ProviderError(f"Intraday fetch failed for {symbol}: {exc}") from exc
+            raise _failed("Intraday fetch", symbol, exc) from exc
         if df is None or df.empty:
             return []
         bars: list[IntradayBar] = []

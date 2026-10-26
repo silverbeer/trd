@@ -25,7 +25,7 @@ from pathlib import Path
 import duckdb
 from pydantic import BaseModel
 
-from trd.errors import NotTradableError, ProviderError, TrdError
+from trd.errors import NotTradableError, ProviderError, RateLimitedError, TrdError
 from trd.models import Instrument
 from trd.providers.base import MarketDataProvider
 from trd.services.engine import EngineService
@@ -41,6 +41,11 @@ DONE_DIR = "done"
 # looks exactly like a rule that never fires.
 BACKFILL_YEARS = 2
 
+# How many passes a rate-limited command is kept for. Outside the session a pass
+# is a ten-minute queue tick, so six is an hour of Yahoo telling us to wait —
+# past that it is not a collision any more, and the command is reported failed.
+MAX_RATE_LIMITED_ATTEMPTS = 6
+
 
 class CommandKind:
     ADD = "add"
@@ -55,6 +60,9 @@ class QueuedCommand(BaseModel):
     symbol: str
     user_id: int
     queued_at: datetime
+    # Passes this command was rate-limited on. Written back by the drain, never
+    # by the bot.
+    attempts: int = 0
 
 
 @dataclass(frozen=True)
@@ -64,6 +72,13 @@ class AppliedCommand:
     command: QueuedCommand
     ok: bool
     message: str
+    # Rate-limited and left in the queue for the next pass. Only the first
+    # deferral is worth a chat message; the later ones would be one every tick.
+    deferred: bool = False
+
+    @property
+    def announce(self) -> bool:
+        return not self.deferred or self.command.attempts == 0
 
 
 def _queue_path(home: Path) -> Path:
@@ -119,6 +134,13 @@ def _retire(path: Path) -> None:
         path.replace(done / path.name)
 
 
+def _rewrite(path: Path, command: QueuedCommand) -> None:
+    """Write a command back under its own name — same tmp-then-rename as enqueue."""
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(command.model_dump_json())
+    tmp.replace(path)
+
+
 class CommandQueueService:
     """Applies queued chat commands. Runs inside the scan's process, which is the
     only thing holding the database open."""
@@ -139,8 +161,12 @@ class CommandQueueService:
                 # Already applied on an earlier pass and redelivered since.
                 _retire(path)
                 continue
-            results.append(self.apply(command))
-            _retire(path)
+            result = self.apply(command)
+            results.append(result)
+            if result.deferred:
+                _rewrite(path, command.model_copy(update={"attempts": command.attempts + 1}))
+            else:
+                _retire(path)
         return results
 
     def apply(self, command: QueuedCommand) -> AppliedCommand:
@@ -150,6 +176,23 @@ class CommandQueueService:
             if command.kind == CommandKind.REMOVE:
                 return AppliedCommand(command, True, self.remove(command.symbol))
             return AppliedCommand(command, False, f"unknown command {command.kind!r}")
+        except RateLimitedError as exc:
+            # Yahoo's "come back later" is not an answer about the symbol. Four
+            # engines drain in the same minute and ask about the same new name,
+            # so one of them is routinely the request too many; retiring the
+            # command there left that engine without the name for good.
+            tries = command.attempts + 1
+            if tries >= MAX_RATE_LIMITED_ATTEMPTS:
+                return AppliedCommand(
+                    command, False, f"{exc} — gave up after {tries} tries; send it again later."
+                )
+            return AppliedCommand(
+                command,
+                False,
+                f"{command.symbol}: the data provider is rate limiting us. Still queued — "
+                f"retrying on the next pass (up to {MAX_RATE_LIMITED_ATTEMPTS} tries).",
+                deferred=True,
+            )
         except TrdError as exc:
             return AppliedCommand(command, False, str(exc))
 

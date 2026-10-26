@@ -12,7 +12,13 @@ from typing import Any
 import duckdb
 import pytest
 
-from trd.errors import NotifyError, NotTradableError, ProviderError, SymbolNotFoundError
+from trd.errors import (
+    NotifyError,
+    NotTradableError,
+    ProviderError,
+    RateLimitedError,
+    SymbolNotFoundError,
+)
 from trd.models import DailyBar
 from trd.notify.bot import (
     BotConfigError,
@@ -27,6 +33,7 @@ from trd.notify.bot import (
 from trd.repos import EnginePositionRepo, InstrumentRepo
 from trd.services import EngineService
 from trd.services.commands import (
+    MAX_RATE_LIMITED_ATTEMPTS,
     CommandQueueService,
     QueuedCommand,
     enqueue,
@@ -579,6 +586,67 @@ def test_a_drained_command_is_not_applied_twice(queue_env):
 
     enqueue(home, update_id=1, kind="add", symbol="PLTR", user_id=ME)  # redelivered
     assert service.drain(home) == []
+
+
+def test_a_rate_limited_add_stays_queued_and_says_so_once(queue_env, monkeypatch):
+    """Four engines drain in the same minute and ask Yahoo about the same new
+    name; the request too many gets a 429. That is "later", not "no" — the
+    command stays queued and only its first deferral is worth a message."""
+    service, engine, home, provider = queue_env
+    provider.add_symbol("SKHY", price="50")
+    provider.add_bars("SKHY", bars(300, base=40))
+    real = provider.get_info
+    limited = {"on": True}
+
+    def get_info(symbol: str):
+        if limited["on"]:
+            raise RateLimitedError(f"Info fetch failed for {symbol}: Too Many Requests")
+        return real(symbol)
+
+    monkeypatch.setattr(provider, "get_info", get_info)
+    enqueue(home, update_id=7, kind="add", symbol="SKHY", user_id=ME)
+
+    first = service.drain(home)
+    assert [(a.ok, a.deferred, a.announce) for a in first] == [(False, True, True)]
+    assert "Still queued" in first[0].message
+    assert [c.attempts for c in pending(home)] == [1]
+
+    second = service.drain(home)
+    assert [(a.deferred, a.announce) for a in second] == [(True, False)]
+    assert "SKHY" not in [i.symbol for i in engine.universe()]
+
+    limited["on"] = False
+    third = service.drain(home)
+    assert [a.ok for a in third] == [True]
+    assert "SKHY" in [i.symbol for i in engine.universe()]
+    assert pending(home) == []
+
+
+def test_a_rate_limit_that_never_lifts_is_reported_failed(queue_env, monkeypatch):
+    service, _, home, provider = queue_env
+
+    def get_info(symbol: str):
+        raise RateLimitedError(f"Info fetch failed for {symbol}: Too Many Requests")
+
+    monkeypatch.setattr(provider, "get_info", get_info)
+    enqueue(home, update_id=8, kind="add", symbol="SKHY", user_id=ME)
+    results = [service.drain(home)[0] for _ in range(MAX_RATE_LIMITED_ATTEMPTS)]
+
+    assert all(r.deferred for r in results[:-1])
+    assert not results[-1].deferred and results[-1].announce
+    assert "gave up" in results[-1].message
+    assert pending(home) == []
+
+
+def test_the_provider_keeps_a_429_distinct() -> None:
+    from yfinance.exceptions import YFRateLimitError
+
+    from trd.providers.yf import _failed
+
+    assert isinstance(_failed("Info fetch", "SKHY", YFRateLimitError()), RateLimitedError)
+    assert isinstance(_failed("Info fetch", "X", Exception("Too Many Requests")), RateLimitedError)
+    plain = _failed("Info fetch", "X", Exception("connection reset"))
+    assert isinstance(plain, ProviderError) and not isinstance(plain, RateLimitedError)
 
 
 def test_an_empty_queue_drains_to_nothing(queue_env):

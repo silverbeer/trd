@@ -2392,6 +2392,7 @@ def engine_apply_queue(
                     "kind": r.command.kind,
                     "symbol": r.command.symbol,
                     "ok": r.ok,
+                    "deferred": r.deferred,
                     "message": r.message,
                 }
                 for r in results
@@ -2408,8 +2409,10 @@ def engine_apply_queue(
     token = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip() if notify else ""
     for result in results:
         mark = "[green]✓[/green]" if result.ok else "[red]✗[/red]"
+        if result.deferred:
+            mark = "[yellow]…[/yellow]"
         console.print(f"{mark} {result.message}")
-        if not token:
+        if not token or not result.announce:
             continue
         # Back to whoever typed it, not to TELEGRAM_CHAT_ID: that is the fills
         # channel, and a one-way broadcast is the wrong place to answer a
@@ -2417,7 +2420,8 @@ def engine_apply_queue(
         # user id, so the queued command already carries the address.
         try:
             TelegramNotifier(token, str(result.command.user_id)).send(
-                f"[{label}] {'✅' if result.ok else '⚠️'} {result.message}"
+                f"[{label}] {'✅' if result.ok else '⏳' if result.deferred else '⚠️'} "
+                f"{result.message}"
             )
         except TrdError as exc:
             # Same rule as the scan: the command is applied and recorded. An

@@ -88,6 +88,7 @@ if [[ "$DAY_MODE" == true ]]; then
     ENGINE_NAME="${ENGINE_NAME:-trd-day}"
     ENGINE_HOME="${ENGINE_HOME:-$HOME/.trd-day}"
     ENGINE_LABEL="day"
+    QUEUE_MINUTE=2
     SCAN_NOTIFY=1
     MODE_FLAG=" --day"
     # Load-bearing: an engine seeded without this is a swing engine wearing a day
@@ -102,6 +103,7 @@ elif [[ "$SWING20_MODE" == true ]]; then
     ENGINE_NAME="${ENGINE_NAME:-trd-swing20}"
     ENGINE_HOME="${ENGINE_HOME:-$HOME/.trd-swing20}"
     ENGINE_LABEL="swing20"
+    QUEUE_MINUTE=4
     SCAN_NOTIFY=0
     MODE_FLAG=" --swing20"
     # The swing engine's strategies and universe are deliberately NOT read here:
@@ -123,11 +125,13 @@ elif [[ "$LIVE_MODE" == true ]]; then
     ENGINE_NAME="${ENGINE_NAME:-trd-live}"
     ENGINE_HOME="${ENGINE_HOME:-$HOME/.trd-live}"
     ENGINE_LABEL="💵 live"
+    QUEUE_MINUTE=6
     SCAN_NOTIFY=1
     MODE_FLAG=" --live"
     INIT_FLAGS=()
 else
     ENGINE_NAME="${ENGINE_NAME:-trd-engine}"
+    QUEUE_MINUTE=0
     # The engine's own database. Deliberately NOT your real trd database: this
     # one holds a paper account and its universe's price history, nothing else.
     ENGINE_HOME="${ENGINE_HOME:-$HOME/.trd-engine}"
@@ -464,12 +468,17 @@ echo -e "${GREEN}✅ Applied${NC} (${ENGINE_NAME}-scan, hostPath → ${ENGINE_HO
 # The queue drain, deployed with its engine because it is per-home: it applies
 # the commands typed in chat when the scan is not running, which is every hour
 # the market is closed. Same rewrite, same reasons.
+#
+# Each home drains on its own minute of the ten (QUEUE_MINUTE: swing 0, day 2,
+# swing20 4, live 6). On one shared */10 every engine asked Yahoo about a name
+# added from chat in the same second, and the fourth was rate limited (SB-1437).
 sed -E \
     -e "s#path: /Users/[^[:space:]]+#path: ${ENGINE_HOME}#" \
+    -e "s#schedule: \"\*/10 \* \* \* \*\"#schedule: \"${QUEUE_MINUTE}-59/10 * * * *\"#" \
     -e "s#name: trd-engine-queue#name: ${ENGINE_NAME}-queue#" \
     -e "s#value: trd-engine\$#value: ${ENGINE_LABEL}#" \
     k3s/trd-engine/apply-queue-cronjob.yaml | kubectl apply -f -
-echo -e "${GREEN}✅ Applied${NC} (${ENGINE_NAME}-queue, every 10 min outside the session)"
+echo -e "${GREEN}✅ Applied${NC} (${ENGINE_NAME}-queue, every 10 min from :0${QUEUE_MINUTE}, outside the session)"
 
 # The live engine's own post-market message, position by position (SB-1406).
 # Per-home like the queue drain, so it ships with --live and mounts that home only.
