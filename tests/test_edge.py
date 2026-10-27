@@ -15,6 +15,7 @@ from decimal import Decimal
 from typer.testing import CliRunner
 
 from trd.cli.app import app
+from trd.db.connection import connect
 from trd.engine.bars import BarSource
 from trd.models import EngineSignal, IntradayBar
 from trd.services.edge import eligible_bars, measure_edge, summarize
@@ -138,8 +139,10 @@ def test_random_entries_respect_the_engines_entry_window() -> None:
     assert {bars[i].ts.date() for i in pool} == {SESSIONS[3].date()}
 
 
-def test_cli_without_a_database_answers_with_a_json_error(tmp_path) -> None:
-    os.environ["TRD_HOME"] = str(tmp_path / "nowhere")
+def test_cli_with_an_empty_database_answers_with_a_json_error(tmp_path) -> None:
+    home = tmp_path / "fresh"
+    connect(home / "trd.duckdb").close()
+    os.environ["TRD_HOME"] = str(home)
     try:
         result = runner.invoke(app, ["engine", "edge", "--json"])
     finally:

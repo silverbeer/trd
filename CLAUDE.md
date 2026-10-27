@@ -16,6 +16,8 @@ uv run ty check             # type checking
 
 ```bash
 trd init                              # create ~/.trd/trd.duckdb + 'main' account
+                                      # only init/restore create a home: any other command
+                                      # refuses an explicit TRD_HOME with no trd.duckdb (SB-1366)
 trd account add ira                   # one account per brokerage (--type simulation for paper)
 trd account ls
 trd sync [--full] [--require-current] [--json]

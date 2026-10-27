@@ -39,3 +39,16 @@ def _core_symbols(home: Path) -> frozenset[str]:
 def get_settings() -> Settings:
     home = Path(os.environ.get("TRD_HOME", str(Path.home() / ".trd")))
     return Settings(home=home, core_symbols=_core_symbols(home))
+
+
+def missing_explicit_home() -> Path | None:
+    """The TRD_HOME path when it is set and its database does not exist, else None.
+
+    Only an explicit TRD_HOME: the default ~/.trd is where a first `trd init`
+    lands, and nothing else points there by mistake.
+    """
+    raw = os.environ.get("TRD_HOME")
+    if not raw:
+        return None
+    home = Path(raw)
+    return None if (home / "trd.duckdb").is_file() else home

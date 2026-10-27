@@ -75,10 +75,10 @@ from trd.cli.render import (
     sunday_prep_renderables,
     sweep_renderables,
 )
-from trd.config import DEFAULT_ACCOUNT, get_settings
+from trd.config import DEFAULT_ACCOUNT, get_settings, missing_explicit_home
 from trd.db.connection import connect, connect_read_only
 from trd.engine.bars import DAILY
-from trd.errors import TrdError
+from trd.errors import MissingHomeError, TrdError
 from trd.models import (
     AccountType,
     BrokerSnapshot,
@@ -296,13 +296,33 @@ JsonOpt = Annotated[
 ]
 
 
+# The only commands allowed to create a home. Every other command opening a
+# missing one would create it too (connect makes the file and migrates it), and
+# the empty database it leaves reads as a fresh install, not a wrong path.
+_CREATES_HOME = frozenset({"init", "restore"})
+
+
 @app.callback()
-def _reset_output_mode() -> None:
+def _reset_output_mode(ctx: typer.Context) -> None:
     """Typer runs this before every command. Resets the JSON flag so one
     invocation's mode cannot leak into the next — which happens whenever the app
-    is driven in-process rather than as a fresh subprocess, as the tests do."""
+    is driven in-process rather than as a fresh subprocess, as the tests do.
+
+    Also refuses an explicit TRD_HOME that has no database (SB-1366), before any
+    command can connect and create one there.
+    """
     global _json_mode
     _json_mode = False
+    if ctx.invoked_subcommand in _CREATES_HOME or ctx.resilient_parsing:
+        return
+    # Help for a subcommand is printed after this callback, so it must not be refused.
+    if "--help" in sys.argv[1:]:
+        return
+    missing = missing_explicit_home()
+    if missing is not None:
+        # Raised, not _fail()ed: main() renders it, in JSON when argv asks for it,
+        # the same way it renders a lock raised while connecting.
+        raise MissingHomeError(str(missing))
 
 
 def _json_requested() -> bool:
