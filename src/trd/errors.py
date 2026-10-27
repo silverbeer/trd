@@ -106,3 +106,15 @@ class DatabaseBusyError(TrdError):
             "Database is busy — another trd command is using it. "
             "Wait a moment and try again (DuckDB allows one writer at a time)."
         )
+
+
+class MissingHomeError(TrdError):
+    """TRD_HOME names a home that is not there. Never answered by creating one:
+    a typo or an unmounted share would otherwise read as a fresh install."""
+
+    def __init__(self, path: str) -> None:
+        super().__init__(
+            f"TRD_HOME points at {path}, which has no trd.duckdb. Check the path "
+            "(a typo, or an unmounted or unsynced drive). Only 'trd init' or "
+            "'trd restore' creates a home."
+        )

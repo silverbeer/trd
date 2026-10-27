@@ -161,7 +161,11 @@ def cli_env(
     """
     import trd.cli.app as cli
 
-    monkeypatch.setenv("TRD_HOME", str(tmp_path / "home"))
+    home = tmp_path / "home"
+    # An existing home, as `trd init` leaves it: the CLI refuses an explicit
+    # TRD_HOME with no database (SB-1366).
+    connect(home / "trd.duckdb").close()
+    monkeypatch.setenv("TRD_HOME", str(home))
     monkeypatch.setattr(cli, "YFinanceProvider", lambda: provider)
     return provider
 
