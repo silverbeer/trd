@@ -3515,6 +3515,15 @@ def engine_cash(
         typer.Option("--set", help="Turn the ledger on (or re-base it) at this capital."),
     ] = None,
     off: Annotated[bool, typer.Option("--off", help="Turn the settled-cash ledger off.")] = False,
+    bridge: Annotated[
+        str | None,
+        typer.Option(
+            "--bridge",
+            help="Spare settled cash in the broker account, beyond capital, that may "
+            "front sale proceeds still settling.",
+        ),
+    ] = None,
+    no_bridge: Annotated[bool, typer.Option("--no-bridge", help="Clear the bridge.")] = False,
     as_json: JsonOpt = False,
 ) -> None:
     """Settled cash: what this engine may spend now, and what is waiting on T+1.
@@ -3523,10 +3532,18 @@ def engine_cash(
     fund a buy until they do. With a capital set, scans and backtests skip any
     entry the settled cash cannot pay for. --set and --off change the capital
     only; every other part of the config is carried over untouched.
+
+    --bridge N says the broker account holds N of spare settled cash beyond the
+    capital. An entry may then spend settled + min(N, unsettled): the bridge fronts
+    proceeds already on their way and never more, so worth and return still read
+    the capital alone. trd cannot see the broker's cash; this is your word for it.
     """
     _use_json(as_json)
     if set_to is not None and off:
         _fail(TrdError("Give --set or --off, not both."))
+        return
+    if bridge is not None and no_bridge:
+        _fail(TrdError("Give --bridge or --no-bridge, not both."))
         return
     service = _engine_service()
     try:
@@ -3534,6 +3551,10 @@ def engine_cash(
             service.set_capital(_parse_decimal(set_to, "capital"))
         elif off:
             service.set_capital(None)
+        if bridge is not None:
+            service.set_bridge(_parse_decimal(bridge, "bridge"))
+        elif no_bridge:
+            service.set_bridge(None)
         cash = service.cash()
     except TrdError as exc:
         _fail(exc)
@@ -3968,6 +3989,15 @@ def engine_backtest(
             "capital ('trd engine cash'), off otherwise.",
         ),
     ] = None,
+    bridge: Annotated[
+        str | None,
+        typer.Option(
+            "--bridge",
+            help="Override the settlement bridge for this run: spare cash that may "
+            "front proceeds still settling. Default: the engine's own ('trd engine cash'); "
+            "0 replays with none.",
+        ),
+    ] = None,
     scale_out: Annotated[
         float | None,
         typer.Option(
@@ -4058,6 +4088,7 @@ def engine_backtest(
             if strategies
             else None,
             settlement=settlement,
+            bridge=_parse_decimal(bridge, "bridge") if bridge is not None else None,
         )
     except TrdError as exc:
         _fail(exc)

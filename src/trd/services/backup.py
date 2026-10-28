@@ -28,7 +28,7 @@ from trd.errors import TrdError
 from trd.models import EngineMode, SizingMode
 from trd.repos.engine import DEFAULT_EARNINGS_BLACKOUT_DAYS
 
-BACKUP_VERSION = 11
+BACKUP_VERSION = 12
 # v1 predates exit triggers and the engine; v2 keyed engine signals by bar date and
 # dropped the engine config fields added after it; v3 predates the point-in-time
 # earnings archive; v4 predates recorded income; v5 predates live-engine order
@@ -50,8 +50,10 @@ BACKUP_VERSION = 11
 # fund the tranches try to fill. v10: the plan's stated cash yield (SB-1417) — old
 # code would restore the plan with its cash reported as idle. v11: the broker
 # import ledger (SB-1418) — a restore that dropped it would let the next import of
-# the same export write every row a second time.
-SUPPORTED_VERSIONS = (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11)
+# the same export write every row a second time. v12: the engine's settlement
+# bridge (SB-1445) — old code would restore a live engine that waits out T+1 on
+# every refill its owner set spare cash aside to cover.
+SUPPORTED_VERSIONS = (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12)
 
 
 class BackupStats(BaseModel):
@@ -239,7 +241,7 @@ def export_data(conn: duckdb.DuckDBPyConnection) -> dict:
         """
         SELECT a.name, c.watchlist, c.position_size, c.max_positions, c.strategies, c.exit_params,
                c.earnings_blackout_days, c.sizing_mode, c.timeframe, c.max_entries_per_day,
-               c.capital, c.mode
+               c.capital, c.mode, c.bridge
         FROM engine_config c JOIN account a ON a.id=c.account_id
         ORDER BY c.id DESC LIMIT 1
         """
@@ -263,6 +265,8 @@ def export_data(conn: duckdb.DuckDBPyConnection) -> dict:
             "capital": str(r[10]) if r[10] is not None else None,
             # NULL is a pre-027 engine, which is paper by definition.
             "mode": r[11] or EngineMode.PAPER.value,
+            # None is no bridge; a string so the money stays Decimal.
+            "bridge": str(r[12]) if r[12] is not None else None,
         }
 
     # Signals are keyed by (symbol, strategy, bar_ts) — the same natural key the
@@ -863,8 +867,8 @@ def restore_data(conn: duckdb.DuckDBPyConnection, data: dict) -> BackupStats:
             """INSERT INTO engine_config
                  (account_id, watchlist, position_size, max_positions, strategies, exit_params,
                   earnings_blackout_days, sizing_mode, timeframe, max_entries_per_day, capital,
-                  mode)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                  mode, bridge)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             [
                 account_id[config["account"]],
                 config["watchlist"],
@@ -885,6 +889,8 @@ def restore_data(conn: duckdb.DuckDBPyConnection, data: dict) -> BackupStats:
                 Decimal(config["capital"]) if config.get("capital") is not None else None,
                 # Every backup before SB-1374 is a paper engine: live did not exist.
                 EngineMode(config.get("mode") or EngineMode.PAPER.value).value,
+                # Every backup before SB-1445 carries no bridge: none existed.
+                Decimal(config["bridge"]) if config.get("bridge") is not None else None,
             ],
         )
 

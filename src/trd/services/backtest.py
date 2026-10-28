@@ -223,6 +223,8 @@ class BacktestResult(BaseModel):
     # many ranked entries were skipped for want of settled cash. 0 when off.
     settlement: bool = False
     cash_blocked: int = 0
+    # The settlement bridge the replay ran with (SB-1445). None = none.
+    bridge: Decimal | None = None
     equity: list[EquityPoint]
     start_value: Decimal
     end_value: Decimal
@@ -436,6 +438,7 @@ def simulate(
     regime_bars: Mapping[str, Sequence[DailyBar]] | None = None,
     daily_by_symbol: Mapping[str, Sequence[DailyBar]] | None = None,
     settlement: bool = False,
+    bridge: Decimal | None = None,
     young_sessions: int = 0,
     young_after: date | None = None,
 ) -> BacktestResult:
@@ -451,6 +454,8 @@ def simulate(
     `settlement` runs the cash account's T+1 rule: exit proceeds wait for
     `settles_on` before they can fund an entry, the same rule the live scan
     applies through `trd.engine.settlement`, so the two skip the same refills.
+    `bridge` lets spare cash front up to that much of the proceeds still pending,
+    as the live ledger's `buying_power` does (SB-1445).
 
     `young_sessions` restricts ENTRIES to the first N sessions of names whose
     first daily bar falls after `young_after` (the stored history's horizon, so
@@ -782,7 +787,9 @@ def simulate(
                 if plan is None:
                     continue
                 price = prefix[-1].close
-                if settlement and price * plan.quantity > cash:
+                if settlement and price * plan.quantity > cash + min(
+                    bridge or Decimal(0), sum(pending.values(), Decimal(0))
+                ):
                     # Same place the live scan refuses it: sized, then checked
                     # against settled cash alone. Counted, like the other blocks.
                     cash_blocked += 1
@@ -868,6 +875,7 @@ def simulate(
         regime_blocked=regime_blocked,
         settlement=settlement,
         cash_blocked=cash_blocked,
+        bridge=bridge if settlement else None,
         equity=equity,
         start_value=start_value,
         end_value=equity[-1].value if equity else start_value,
@@ -908,6 +916,7 @@ class BacktestService:
         params_override: dict[str, float] | None = None,
         entry_fill: EntryFill | None = None,
         settlement: bool | None = None,
+        bridge: Decimal | None = None,
         young_sessions: int = 0,
         strategies: list[str] | None = None,
     ) -> BacktestResult:
@@ -923,6 +932,10 @@ class BacktestService:
             capital = config.capital
         if settlement is None:
             settlement = config.capital is not None
+        # Inherited like the capital: a replay that waited out T+1 on refills the
+        # live engine's bridge pays for would be comparing two different books.
+        if bridge is None:
+            bridge = config.bridge
         if fill is None:
             fill = default_fill(config.timeframe)
 
@@ -1060,6 +1073,7 @@ class BacktestService:
             regime_bars=regime_series,
             daily_by_symbol=daily_by_symbol or None,
             settlement=settlement,
+            bridge=bridge,
             young_sessions=young_sessions,
             young_after=young_after,
         )

@@ -155,6 +155,10 @@ class EngineDay(BaseModel):
     capital: Decimal | None = None
     cash_settled: Decimal | None = None
     cash_unsettled: Decimal | None = None
+    # The settlement bridge (SB-1445): spare broker cash that may front proceeds
+    # still settling. 0 = none; buying power is settled + its share of unsettled.
+    cash_bridge: Decimal | None = None
+    cash_buying_power: Decimal | None = None
     open_intents: int = 0
     awaiting_approval: int = 0
     halted: bool = False
@@ -451,6 +455,8 @@ def engine_day(
         capital=config.capital if config.is_live else None,
         cash_settled=status.cash_settled if config.is_live else None,
         cash_unsettled=status.cash_unsettled if config.is_live else None,
+        cash_bridge=status.cash_bridge if config.is_live else None,
+        cash_buying_power=status.cash_buying_power if config.is_live else None,
         open_intents=status.open_intents,
         awaiting_approval=status.awaiting_approval,
         halted=status.halted,

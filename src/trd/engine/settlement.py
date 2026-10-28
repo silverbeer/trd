@@ -45,9 +45,17 @@ def settles_on(trade_date: date) -> date:
 class CashLedger(BaseModel):
     """An engine account's cash as of one day.
 
-    `settled` is what may be spent now. `unsettled` is sale proceeds still waiting
-    to settle, broken out by settle date in `pending`, oldest first. Their sum
-    with `settled` is the account's cash; only `settled` is buying power.
+    `settled` is the engine's own settled cash. `unsettled` is sale proceeds still
+    waiting to settle, broken out by settle date in `pending`, oldest first. Their
+    sum is the engine's cash.
+
+    `bridge` is spare settled cash the owner keeps in the broker account beyond
+    the capital (SB-1445). It may front proceeds already on their way and nothing
+    more, so `buying_power` is `settled + min(bridge, unsettled)`: the engine
+    never spends money it has not made, only a day sooner. A buy the bridge pays
+    for takes `settled` below zero; that deficit is `bridged`, and the proceeds
+    settling the next business day pay it back. With no bridge, buying power is
+    `settled` alone, exactly as before.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -56,6 +64,20 @@ class CashLedger(BaseModel):
     settled: Decimal
     unsettled: Decimal
     pending: list[tuple[date, Decimal]] = []
+    bridge: Decimal = Decimal(0)
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def bridged(self) -> Decimal:
+        """How much of the bridge is fronting unsettled proceeds right now."""
+        return max(Decimal(0), -self.settled)
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def buying_power(self) -> Decimal:
+        """What the next entry may spend: settled cash plus the bridge's share of
+        proceeds still settling. Can never exceed settled + unsettled."""
+        return self.settled + min(self.bridge, self.unsettled)
 
     # computed_field, not a plain property: it is part of `engine cash --json`.
     @computed_field  # type: ignore[prop-decorator]
@@ -65,8 +87,9 @@ class CashLedger(BaseModel):
         return self.pending[0] if self.pending else None
 
     def spend(self, amount: Decimal) -> "CashLedger":
-        """The ledger after a buy in this same pass — settled cash only, because
-        unsettled proceeds are exactly what a cash account may not spend."""
+        """The ledger after a buy in this same pass. It comes out of settled cash,
+        below zero when the bridge fronts it — unsettled proceeds themselves are
+        exactly what a cash account may not spend, so they are left untouched."""
         return self.model_copy(update={"settled": self.settled - amount})
 
     def shortfall(self, symbol: str, cost: Decimal) -> str:
@@ -76,6 +99,11 @@ class CashLedger(BaseModel):
         settle date is what tells a reader this is the T+1 rule and it ends.
         """
         head = f"{symbol}: ${cost:,.2f} needed, ${self.settled:,.2f} settled"
+        if self.bridge > 0:
+            head += (
+                f" + ${min(self.bridge, self.unsettled):,.2f} bridged"
+                f" (${self.bridge:,.2f} bridge, ${self.bridged:,.2f} in use)"
+            )
         nxt = self.next_settle
         if nxt is None:
             return f"{head} — nothing pending settlement (cash account)"
@@ -83,14 +111,16 @@ class CashLedger(BaseModel):
         return f"{head} — ${amount:,.2f} from earlier exits settles {when} (T+1, cash account)"
 
 
-def ledger(capital: Decimal, flows: Iterable[Flow], today: date) -> CashLedger:
+def ledger(
+    capital: Decimal, flows: Iterable[Flow], today: date, bridge: Decimal | None = None
+) -> CashLedger:
     """The ledger as of `today`, from a starting capital and every trade since.
 
     A buy costs `quantity x price + fees` on its trade date — the cash leaves at
     once. A sell brings in `quantity x price - fees`, settled once
     `settles_on(trade date) <= today` and pending until then. A partial exit is
     just a sell. Flows dated after `today` are not part of an as-of view and are
-    ignored.
+    ignored. `bridge` only changes what may be spent, never the arithmetic here.
     """
     settled = capital
     pending: dict[date, Decimal] = {}
@@ -112,6 +142,7 @@ def ledger(capital: Decimal, flows: Iterable[Flow], today: date) -> CashLedger:
         settled=settled,
         unsettled=sum((amount for _, amount in ordered), Decimal(0)),
         pending=ordered,
+        bridge=bridge or Decimal(0),
     )
 
 
@@ -122,10 +153,18 @@ FUNDING_TOLERANCE = Decimal("0.01")
 
 
 def unsettled_funding(
-    capital: Decimal, prior: Iterable[Flow], trade_date: date, cost: Decimal
+    capital: Decimal,
+    prior: Iterable[Flow],
+    trade_date: date,
+    cost: Decimal,
+    bridge: Decimal | None = None,
 ) -> date | None:
     """When the unsettled cash a buy spent settles, or None if settled cash paid
     for all of it.
+
+    Settled cash includes the bridge: at the broker it is the owner's own settled
+    cash, so a buy it fronted was paid for in full and selling it the same day is
+    no violation. Only the part beyond engine-settled cash and the bridge counts.
 
     `prior` is every flow before the buy, in order. The good-faith-violation test
     hangs off this: a cash account that sells a position before the cash which
@@ -135,7 +174,7 @@ def unsettled_funding(
     so loudly if that ever stops being true.
     """
     before = ledger(capital, prior, trade_date)
-    short = cost - before.settled
+    short = cost - before.settled - min(bridge or Decimal(0), before.unsettled)
     if short <= FUNDING_TOLERANCE:
         return None
     covered = Decimal(0)

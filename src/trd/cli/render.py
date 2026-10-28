@@ -1961,7 +1961,7 @@ def engine_backtest_renderables(
         + (
             f"\nT+1 settlement on: {result.cash_blocked} entr"
             f"{'y' if result.cash_blocked == 1 else 'ies'} skipped waiting for proceeds "
-            "to settle"
+            "to settle" + (f" (bridge {fmt_money(result.bridge)})" if result.bridge else "")
             if result.settlement
             else ""
         )
@@ -2046,14 +2046,21 @@ def engine_cash_renderables(cash: CashLedger | None) -> list[RenderableType]:
     table.add_row("unsettled", fmt_money(cash.unsettled))
     for when, amount in cash.pending:
         table.add_row(f"  settles {when}", fmt_money(amount))
-    return [
-        table,
-        Text(
+    if cash.bridge > 0:
+        table.add_row("bridge", fmt_money(cash.bridge))
+        table.add_row("  in use", fmt_money(cash.bridged))
+        table.add_row("[bold]buying power[/bold]", f"[bold]{fmt_money(cash.buying_power)}[/bold]")
+        note = (
+            "Buying power is settled cash plus the bridge's share of proceeds still "
+            "settling: spare broker cash fronts a refill, and the next settle pays it "
+            "back. The broker's own buying power is the authority — 'trd learn settlement'."
+        )
+    else:
+        note = (
             "Settled is buying power. Sale proceeds settle one business day after the "
-            "trade and cannot fund an entry before then — 'trd learn settlement'.",
-            style="dim",
-        ),
-    ]
+            "trade and cannot fund an entry before then — 'trd learn settlement'."
+        )
+    return [table, Text(note, style="dim")]
 
 
 def engine_status_renderables(status: EngineStatus) -> list[RenderableType]:
@@ -2184,6 +2191,12 @@ def engine_status_renderables(status: EngineStatus) -> list[RenderableType]:
         )
         if status.cash_next_settle is not None:
             cash += f"  ·  next settles {status.cash_next_settle}"
+        if status.cash_bridge:
+            cash += (
+                f"  ·  bridge {fmt_money(status.cash_bridge)} "
+                f"({fmt_money(status.cash_bridged)} in use)  ·  "
+                f"[bold]{fmt_money(status.cash_buying_power)} buying power[/bold]"
+            )
         book.add_row("cash", cash + f" [dim](of {fmt_money(status.capital)} capital)[/dim]")
     book.add_row("committed", fmt_money(status.committed))
     # Committed capital reads as the exposure, and it is not: every position has

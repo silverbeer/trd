@@ -65,6 +65,10 @@ class EngineConfig(BaseModel):
     capital: Decimal | None = None
     # Paper fills its own trades; live writes order intents for a real account.
     mode: EngineMode = EngineMode.PAPER
+    # Spare settled cash the owner keeps in the broker account beyond `capital`,
+    # which may front sale proceeds still settling (see trd.engine.settlement).
+    # None is no bridge. Never part of capital: worth and return ignore it.
+    bridge: Decimal | None = None
 
     @computed_field  # type: ignore[prop-decorator]
     @property
@@ -527,6 +531,11 @@ class EngineStatus(BaseModel):
     cash_settled: Decimal | None = None
     cash_unsettled: Decimal | None = None
     cash_next_settle: date | None = None
+    # The settlement bridge: configured, in use now, and what an entry may spend
+    # (settled + the bridge's share of unsettled). None with no ledger.
+    cash_bridge: Decimal | None = None
+    cash_bridged: Decimal | None = None
+    cash_buying_power: Decimal | None = None
     # Paper or live, and how many order intents are still open (live only: a
     # paper engine never writes one).
     mode: EngineMode = EngineMode.PAPER

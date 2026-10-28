@@ -28,7 +28,8 @@ DEFAULT_EARNINGS_BLACKOUT_DAYS = 3
 
 _CONFIG_COLS = (
     "id, account_id, watchlist, position_size, max_positions, strategies, exit_params, "
-    "earnings_blackout_days, sizing_mode, timeframe, max_entries_per_day, capital, mode"
+    "earnings_blackout_days, sizing_mode, timeframe, max_entries_per_day, capital, mode, "
+    "bridge"
 )
 _SIGNAL_COLS = "id, run_id, instrument_id, strategy, bar_ts, fired_at, price, score, reason, acted"
 _POSITION_COLS = (
@@ -75,6 +76,9 @@ def _row_to_config(row: tuple) -> EngineConfig:
         # NULL is every engine created before migration 027, and all of them are
         # paper: live mode did not exist to be configured.
         mode=EngineMode(row[12]) if row[12] is not None else EngineMode.PAPER,
+        # NULL is no bridge: every engine before migration 033, and any engine
+        # never given one. Entries then need settled cash alone, as before.
+        bridge=row[13],
     )
 
 
@@ -164,6 +168,7 @@ class EngineConfigRepo:
         max_entries_per_day: int = 0,
         capital: Decimal | None = None,
         mode: EngineMode = EngineMode.PAPER,
+        bridge: Decimal | None = None,
     ) -> EngineConfig:
         self.conn.execute("DELETE FROM engine_config WHERE account_id = ?", [account_id])
         row = self.conn.execute(
@@ -171,8 +176,8 @@ class EngineConfigRepo:
             INSERT INTO engine_config
                 (account_id, watchlist, position_size, max_positions, strategies, exit_params,
                  earnings_blackout_days, sizing_mode, timeframe, max_entries_per_day, capital,
-                 mode)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 mode, bridge)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             RETURNING {_CONFIG_COLS}
             """,
             [
@@ -188,6 +193,7 @@ class EngineConfigRepo:
                 max_entries_per_day,
                 capital,
                 mode.value,
+                bridge,
             ],
         ).fetchone()
         assert row is not None
