@@ -215,7 +215,7 @@ def test_the_backup_version_refuses_to_be_read_by_older_code() -> None:
     silently, losing every dividend rather than refusing."""
     from trd.services.backup import BACKUP_VERSION, SUPPORTED_VERSIONS
 
-    assert BACKUP_VERSION == 11  # v11 added the broker import ledger (SB-1418)
+    assert BACKUP_VERSION == 12  # v12 added the settlement bridge (SB-1445)
     assert 4 in SUPPORTED_VERSIONS and 5 in SUPPORTED_VERSIONS  # older files still read
 
 

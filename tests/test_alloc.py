@@ -317,7 +317,7 @@ def test_deposits_and_the_plan_survive_backup_and_restore(conn, provider, ira, t
     ira.schedule(IRA, START, D(60000), D(10000), 3, 4)
     ira.cancel(IRA, 4)
     data = json.loads(json.dumps(export_data(conn)))
-    assert data["version"] == 11
+    assert data["version"] == 12
 
     from trd.db.connection import connect
 

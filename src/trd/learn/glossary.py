@@ -748,19 +748,31 @@ _ENTRIES: list[GlossaryEntry] = [
             "proceeds still in flight, and selling one the day it was bought is fine. The "
             "live exit path checks anyway and records a GOOD-FAITH VIOLATION RISK warning "
             "if a position's buy ever spent cash that settles after today — it should "
-            "never fire, and it says so loudly if it does."
+            "never fire, and it says so loudly if it does.\n\n"
+            "A settlement bridge (trd engine cash --bridge N) is spare settled cash you keep "
+            "in the broker account beyond the capital, so a refill need not wait a day. It "
+            "fronts proceeds already on their way and nothing more: buying power is settled "
+            "plus the smaller of the bridge and what is still settling, so the engine never "
+            "spends money it has not made — only a day sooner. The bridged part is your own "
+            "settled cash at the broker, so the buy was paid for in full and selling it the "
+            "same day is no violation. Worth and return still read the capital alone. trd "
+            "never sees the broker's cash: the bridge is your word for it, and keeping that "
+            "much spare in the account is on you."
         ),
         formula=(
             "settle date = next weekday after the trade date\n"
             "settled     = capital - sum(buys: qty x price + fees)\n"
             "              + sum(sells settled by today: qty x price - fees)\n"
             "unsettled   = sum(sells not yet settled: qty x price - fees)\n"
-            "entry taken only if  plan qty x price <= settled"
+            "buying power = settled + min(bridge, unsettled)   (bridge 0 = none)\n"
+            "entry taken only if  plan qty x price <= buying power"
         ),
         example=(
             "$1,000 capital, fully invested. Friday a $500 position stops out at $480: "
             "settled stays $0, $480 unsettled, settles Monday. A signal Friday afternoon is "
-            "logged but not taken; Monday the $480 is spendable."
+            "logged but not taken; Monday the $480 is spendable. With a $500 bridge, "
+            "buying power Friday is $0 + min($500, $480) = $480 and the signal is taken; "
+            "settled reads -$480 (all bridged) until Monday's proceeds pay it back."
         ),
         related=["position-sizing", "risk-at-stop", "backtest", "kill-switch"],
         used_in=["trd engine cash", "trd engine status", "trd engine scan", "trd engine backtest"],

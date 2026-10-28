@@ -360,6 +360,15 @@ trd engine cash [--set AMOUNT | --off] [--json]
                                       # --set refuses a capital below what the account's history
                                       # already spent: the ledger replays every fill from it, so
                                       # a cash-account book wants a fresh engine home
+                                      # --bridge N | --no-bridge (SB-1445, migration 033): spare
+                                      # settled cash in the broker account beyond capital. Entry
+                                      # buying power = settled + min(N, unsettled): fronts proceeds
+                                      # already on their way, never more, so settled may read
+                                      # negative until they land. NOT capital — worth/return
+                                      # ignore it. trd can't see broker cash; N is your word.
+                                      # A bridged buy is no GFV (owner's own settled cash). --off
+                                      # clears it. Backup v12. backtest --bridge N (0 = none)
+                                      # overrides; default inherits like capital
 trd engine status [--json]            # what this engine is + whether it's healthy: build, DB, rule set,
                                       # capacity, bar depth, last scan. No network — answers when yfinance doesn't
                                       # also: realized / unrealized / NET (all three, never the total alone)

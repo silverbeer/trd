@@ -545,7 +545,7 @@ def test_backup_carries_the_import_ledger(
 
     run(importer)
     data = json.loads(json.dumps(export_data(conn), default=str))
-    assert data["version"] == 11 and len(data["import_rows"]) == 15
+    assert data["version"] == 12 and len(data["import_rows"]) == 15
     fresh = connect(tmp_path / "restored.duckdb")
     restore_data(fresh, data)
     again = ActivityImportService(fresh, FakeProvider(), CORE).run(FIX / "activity.txt", ACCOUNT)

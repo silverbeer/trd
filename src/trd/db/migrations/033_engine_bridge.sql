@@ -1,0 +1,15 @@
+-- The settlement bridge (SB-1445): buying power the owner keeps in the broker
+-- account beyond the engine's capital, so a refill does not wait out T+1.
+--
+-- The ledger (026) knows only `capital`, and trd never reads broker cash, so
+-- after an exit every entry waits a business day for the proceeds to settle —
+-- even when the account holds spare settled cash put there to cover exactly that.
+-- Raising `capital` to admit it works, and quietly changes the engine's worth
+-- and return denominator. The bridge is the other number: it may front sale
+-- proceeds already on their way, min(bridge, unsettled), and nothing more — the
+-- engine never spends money it has not made, only spends it a day early.
+--
+-- NULL is no bridge, which is every engine before this column: a scan that
+-- started spending cash nobody told it about would be the surprise 026 refused.
+-- Added bare: DuckDB rejects ADD COLUMN with a constraint.
+ALTER TABLE engine_config ADD COLUMN bridge DECIMAL(18,6);

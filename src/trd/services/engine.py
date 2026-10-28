@@ -576,7 +576,7 @@ class EngineService:
             (t.executed_at.date(), t.side, t.quantity, t.price, t.fees)
             for t in self.txns.list_chronological(account.id)
         ]
-        cash = ledger(config.capital, flows, today)
+        cash = ledger(config.capital, flows, today, config.bridge)
         # An open buy intent has no txn yet, but the broker will take its cash the
         # moment it fills. Reserved here, so the next scan cannot hand the same
         # settled dollars to a second order. A paper engine never writes one.
@@ -631,6 +631,43 @@ class EngineService:
             config.max_entries_per_day,
             capital,
             config.mode,
+            # The bridge fronts proceeds the ledger tracks; with the ledger off it
+            # has nothing to front, and must not come back on with a new capital.
+            config.bridge if capital is not None else None,
+        )
+
+    def set_bridge(self, bridge: Decimal | None) -> EngineConfig:
+        """Set the settlement bridge, or clear it with None (SB-1445).
+
+        The bridge is spare settled cash the owner keeps in the broker account
+        beyond the capital. trd never reads that account, so this number is the
+        owner's word for it: the scan may front up to this much of the proceeds
+        still settling, and the broker's own buying power stays the authority.
+        Rewrites ONLY the bridge, the same way set_capital rewrites only the
+        capital. Needs the ledger on — with no capital nothing is settling.
+        """
+        if bridge is not None and bridge <= 0:
+            raise TrdError("Bridge must be positive. Use --no-bridge to clear it.")
+        config = self.config()
+        if bridge is not None and config.capital is None:
+            raise TrdError(
+                "The cash ledger is off, so there is nothing settling to bridge. "
+                "Set a capital first: 'trd engine cash --set AMOUNT'."
+            )
+        return self.configs.upsert(
+            config.account_id,
+            config.watchlist,
+            config.position_size,
+            config.max_positions,
+            list(config.strategies),
+            dict(config.exit_params),
+            config.earnings_blackout_days,
+            config.sizing_mode,
+            config.timeframe,
+            config.max_entries_per_day,
+            config.capital,
+            config.mode,
+            bridge,
         )
 
     # ------------------------------------------------------- guardrails (live)
@@ -1116,7 +1153,9 @@ class EngineService:
                 and txn.executed_at == position.opened_at
             ):
                 cost = txn.quantity * txn.price + txn.fees
-                settles = unsettled_funding(config.capital, prior, txn.executed_at.date(), cost)
+                settles = unsettled_funding(
+                    config.capital, prior, txn.executed_at.date(), cost, config.bridge
+                )
                 if settles is None or settles <= today:
                     return None
                 return (
@@ -1472,7 +1511,7 @@ class EngineService:
         # committed capital floats, so only the plan knows what this entry costs.
         # Fees are zero on every fill the engine records today.
         cost = plan.quantity * bars[-1].close
-        if cash is not None and cost > cash.settled:
+        if cash is not None and cost > cash.buying_power:
             result.skipped.append(cash.shortfall(instrument.symbol, cost))
             return None
         return plan
@@ -1803,6 +1842,9 @@ class EngineService:
             cash_settled=cash.settled if cash is not None else None,
             cash_unsettled=cash.unsettled if cash is not None else None,
             cash_next_settle=nxt[0] if nxt is not None else None,
+            cash_bridge=cash.bridge if cash is not None else None,
+            cash_bridged=cash.bridged if cash is not None else None,
+            cash_buying_power=cash.buying_power if cash is not None else None,
             mode=config.mode,
             open_intents=len(in_flight),
             open_buy_intents=sum(1 for i in in_flight if i.side == Side.BUY),

@@ -24,6 +24,7 @@ live runner") and the tickets SB-1325 (go/no-go) and SB-1373–1382.
 | Rules | swing's: `breakout`, `macd_cross`, `momentum`, `pullback` on daily bars, same 137 names |
 | Size | `--capital 100 --size 20 --max 5` — five $20 positions, fractional shares |
 | Account | `live-cash` in `~/.trd-live` = the broker's agentic account. Anything else in that account is idle and **not** the engine's |
+| Bridge | optional, `trd engine cash --bridge N` (SB-1445): spare settled cash you keep in the account beyond the capital, so a refill after an exit need not wait out T+1. An entry may spend settled + min(N, proceeds still settling) — it fronts money already on its way, never more, and is never capital (worth and return ignore it). trd cannot see the broker's cash: keep at least N spare there, or the broker rejects the order |
 | Paper twin | `swing20` (`~/.trd-swing20`): identical config on paper. The daily report compares them — this is how live fills are judged |
 | Human gate | Broker trade approvals **ON**. Nothing executes until you tap Approve |
 

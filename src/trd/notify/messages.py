@@ -528,6 +528,17 @@ def _live_section(
             f"{_money(engine.cash_settled)} settled",
             f"{_money(engine.cash_unsettled)} unsettled (T+1)",
         ),
+        *(
+            [
+                (
+                    "  bridge",
+                    _money(engine.cash_bridge),
+                    f"spare broker cash; buying power {_money(engine.cash_buying_power)}",
+                )
+            ]
+            if engine.cash_bridge
+            else []
+        ),
         (
             "orders",
             f"{engine.open_intents} open",
@@ -927,6 +938,31 @@ def _distance(value: Decimal | None, ahead: str, crossed: str) -> str:
     return f"{crossed} {abs(float(value)):.1f}%"
 
 
+def _buying_power_line(day: EngineDay) -> str:
+    """What the live engine may spend next, and where that number comes from.
+
+    With a bridge (SB-1445) the engine's settled cash can read near zero, or below
+    it, while the spare broker cash fronts the sales still settling — so the line
+    leads with what an entry may actually spend and names the bridge.
+    """
+    if day.cash_bridge:
+        return (
+            f"<i>Buying power {_lusd(day.cash_buying_power, signed=False)} — "
+            f"{_lusd(day.cash_settled)} settled + up to "
+            f"{_lusd(day.cash_bridge, signed=False)} bridge fronting "
+            f"{_lusd(day.cash_unsettled, signed=False)} from sales still settling</i>"
+        )
+    return (
+        f"<i>Buying power {_lusd(day.cash_settled, signed=False)}"
+        + (
+            f" (+{_lusd(day.cash_unsettled, signed=False)} from sales, settles next business day)"
+            if day.cash_unsettled
+            else ""
+        )
+        + "</i>"
+    )
+
+
 def live_report_message(report: LiveReport, label: str | None = None) -> str:
     """The live engine's post-market message, as Telegram HTML.
 
@@ -956,13 +992,7 @@ def live_report_message(report: LiveReport, label: str | None = None) -> str:
         f"({_lpc(day.live_return_pct)}) on the {_lusd(day.capital, signed=False)} you started with",
         f"<i>{_lusd(day.realized_all)} locked in from sold trades · "
         f"{_lusd(day.unrealized)} on positions still open</i>",
-        f"<i>Buying power {_lusd(day.cash_settled, signed=False)}"
-        + (
-            f" (+{_lusd(day.cash_unsettled, signed=False)} from sales, settles next business day)"
-            if day.cash_unsettled
-            else ""
-        )
-        + "</i>",
+        _buying_power_line(day),
     ]
     if day.open_intents or day.awaiting_approval:
         lines.append(
