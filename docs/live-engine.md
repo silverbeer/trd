@@ -332,12 +332,13 @@ sell` refuses engine-held symbols on purpose. Prefer letting the engine exit
 
 ```bash
 export TRD_HOME=~/.trd-live
+trd engine perf            # worth session by session from the capital, vs SPY
 trd engine status          # health, cash, halt, caps, intents
 trd engine intents         # every order request and what became of it
 trd engine positions       # open trades: entry, stop, target, R
 trd engine live-report     # the 16:20 message, printed here (no --notify)
 trd engine outbox          # what the runner would place right now
-trd engine cash            # settled vs unsettled
+trd engine cash            # settled vs unsettled, bridge, buying power
 trd engine report          # per-strategy scorecard
 RH_DRY_RUN=1 ~/.trd-runner/bin/live-runner.sh   # a review-only pass
 ```

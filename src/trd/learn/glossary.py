@@ -778,6 +778,35 @@ _ENTRIES: list[GlossaryEntry] = [
         used_in=["trd engine cash", "trd engine status", "trd engine scan", "trd engine backtest"],
     ),
     GlossaryEntry(
+        key="engine-performance",
+        term="Engine performance (worth from capital)",
+        category=Category.ENGINE,
+        definition=(
+            "What an engine is worth at each session's close, counted from the cash it "
+            "started with. Its cash is fully on record — the capital, minus every buy, plus "
+            "every sale — so worth is that cash plus whatever it held, marked at the close.\n\n"
+            "A sale swaps shares for the same dollars, so it never moves worth. That is the "
+            "difference from trd equity, which values holdings alone: on the day an engine "
+            "takes profit, the shares leave the curve and the cash never arrives in it, so a "
+            "winning day reads as a deep drawdown.\n\n"
+            "Booked is P&L locked in by sells (FIFO); still open is the rest. SPY is shown "
+            "from the close before the first fill, so both start from the same line. Today's "
+            "row is marked at the latest stored bar until the close sync replaces it."
+        ),
+        formula=(
+            "cash  = capital - sum(buys: qty x price + fees) + sum(sells: qty x price - fees)\n"
+            "worth = cash + sum(held qty x close that session)\n"
+            "since start = worth - capital   (and / capital for %)\n"
+            "drawdown    = worth / running peak (capital included) - 1"
+        ),
+        example=(
+            "$100 capital buys five $20 positions: cash $0, worth $100. They rise to $110: "
+            "worth $110. Four are sold for $88: cash $88, one left worth $22, worth still $110."
+        ),
+        related=["settlement", "equity-curve", "max-drawdown"],
+        used_in=["trd engine performance", "trd equity"],
+    ),
+    GlossaryEntry(
         key="kill-switch",
         term="Kill switch and hard caps (live engine)",
         category=Category.ENGINE,
