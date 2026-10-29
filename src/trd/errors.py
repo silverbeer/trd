@@ -108,6 +108,21 @@ class DatabaseBusyError(TrdError):
         )
 
 
+class SchemaBehindError(TrdError):
+    """A read-only connection found a database older than this build. It cannot
+    migrate it, and the first query to touch a new column would otherwise die
+    as a raw DuckDB binder error (SB-1453)."""
+
+    def __init__(self, path: str, pending: list[str]) -> None:
+        self.pending = pending
+        super().__init__(
+            f"The database at {path} is behind this build ({len(pending)} migration"
+            f"{'' if len(pending) == 1 else 's'} pending: {', '.join(pending)}). "
+            "This command only reads, so it cannot update it. Run any ordinary trd "
+            "command against the same home once (e.g. 'trd engine status') and retry."
+        )
+
+
 class MissingHomeError(TrdError):
     """TRD_HOME names a home that is not there. Never answered by creating one:
     a typo or an unmounted share would otherwise read as a fresh install."""
