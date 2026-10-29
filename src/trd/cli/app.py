@@ -39,6 +39,7 @@ from trd.cli.render import (
     engine_guard_renderables,
     engine_intents_table,
     engine_monitor_view,
+    engine_performance_renderables,
     engine_positions_table,
     engine_report_table,
     engine_runs_table,
@@ -163,6 +164,7 @@ from trd.services.engine import (
     ScanResult,
     scan_events,
 )
+from trd.services.engine_performance import engine_performance
 from trd.services.exit_whatif import ExitWhatIfService, parse_variants
 from trd.services.indicators import seed_defaults
 from trd.services.live_report import live_report
@@ -691,6 +693,12 @@ def equity(
         return
     for renderable in equity_curve_renderables(curve):
         console.print(renderable)
+    if curve.engine_account:
+        console.print(
+            "[yellow]This is an engine account: the curve above values holdings only, so "
+            "every sale's cash drops out of it. 'trd engine performance' is its worth "
+            "from the capital.[/yellow]"
+        )
 
 
 @app.command()
@@ -2875,6 +2883,47 @@ def _report_targets(spec: str | None) -> list[tuple[str, Path]]:
     # TRD_ENGINE_LABEL, or a neutral name — deliberately not label_from_env(),
     # whose day/swing fallback reads the rule set, which is not open yet here.
     return [(os.environ.get("TRD_ENGINE_LABEL", "").strip() or "engine", get_settings().home)]
+
+
+@engine_app.command("performance")
+def engine_performance_cmd(
+    days: Annotated[
+        int, typer.Option("--days", help="Show only sessions in the last N days (0 = all).")
+    ] = 0,
+    as_json: JsonOpt = False,
+) -> None:
+    """How this engine is doing, session by session, from its capital.
+
+    Worth = the capital replayed through every fill (cash) + what it held at that
+    session's close. Day and since-start change, drawdown from the peak, the
+    P&L booked by each session's sells, and SPY over the same sessions. A sale
+    changes cash and holdings by the same amount, so it never moves worth —
+    unlike 'trd equity', which values holdings alone. Needs a capital ('trd
+    engine cash --set'). READ-ONLY connection, no network: safe mid-session.
+    The summary is lifetime whatever --days shows. Alias: 'trd engine perf'.
+    """
+    _use_json(as_json)
+    db_path = get_settings().db_path
+    conn = None
+    try:
+        if not db_path.exists():
+            raise TrdError(f"No database at {db_path}. Run 'trd init' first.")
+        conn = connect_read_only(db_path)
+        perf = engine_performance(EngineService(conn, YFinanceProvider()))
+    except TrdError as exc:
+        _fail(exc)
+        return
+    finally:
+        if conn is not None:
+            conn.close()
+    if as_json:
+        _emit_json(perf)
+        return
+    for renderable in engine_performance_renderables(perf, days or None):
+        console.print(renderable)
+
+
+engine_app.command("perf", hidden=True)(engine_performance_cmd)  # short alias
 
 
 @engine_app.command("live-report")

@@ -1,4 +1,4 @@
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 
 from rich.console import Group, RenderableType
@@ -55,6 +55,7 @@ from trd.services.dca_detail import PlanDetail
 from trd.services.dca_projection import BacktestResult, ForecastResult
 from trd.services.edge import EdgeGroup, EdgeReport, Measure
 from trd.services.engine import ScanResult
+from trd.services.engine_performance import EnginePerformance
 from trd.services.equity_curve import EquityCurve
 from trd.services.exit_whatif import WhatIfArm, WhatIfResult
 from trd.services.history import HistoryResult
@@ -3458,3 +3459,106 @@ def proposal_renderables(p: Proposal) -> list[RenderableType]:
         "--set SYMBOL=AMOUNT. Record what you actually bought with 'trd buy'.[/dim]"
     )
     return [*out, Text.from_markup("\n".join(lines))]
+
+
+def engine_performance_renderables(
+    perf: EnginePerformance, days: int | None = None
+) -> list[RenderableType]:
+    """An engine's worth session by session, then the lifetime summary.
+
+    The table is what moved; the summary is where that leaves the money. The
+    summary is lifetime whatever `days` trims from the table, because a return
+    quoted over a window the reader did not choose is a different number.
+    """
+    sessions = perf.sessions
+    if days is not None:
+        cutoff = date.today() - timedelta(days=days)
+        sessions = [s for s in sessions if s.date >= cutoff]
+    table = Table(
+        title=f"Engine performance — {perf.account} ({perf.mode}) · ${perf.capital:,.2f} capital",
+        title_justify="left",
+    )
+    table.add_column("Session")
+    table.add_column("Worth", justify="right")
+    table.add_column("Day", justify="right")
+    table.add_column("Day %", justify="right")
+    table.add_column("Since start", justify="right")
+    table.add_column(perf.benchmark, justify="right")
+    table.add_column("Drawdown", justify="right")
+    table.add_column("Booked", justify="right")
+    table.add_column("Trades", justify="right")
+    table.add_column("Held")
+    for s in sessions:
+        trades = " ".join(
+            part
+            for part in (f"{s.buys}B" if s.buys else "", f"{s.sells}S" if s.sells else "")
+            if part
+        )
+        table.add_row(
+            f"{s.date:%a %m-%d}" + (" [yellow]*[/yellow]" if s.provisional else ""),
+            fmt_money(s.worth),
+            fmt_signed(s.day_change),
+            fmt_signed_pct(s.day_change_pct),
+            fmt_signed_pct(s.since_start_pct),
+            fmt_signed_pct(s.benchmark_since_start_pct),
+            f"{s.drawdown_pct:.1f}%" if s.drawdown_pct < 0 else "[dim]peak[/dim]",
+            fmt_signed(s.realized) if s.sells else "[dim]—[/dim]",
+            trades or "[dim]—[/dim]",
+            " ".join(s.held),
+        )
+
+    summary = Table(show_header=False, box=None, title="Since the start", title_justify="left")
+    summary.add_column(style="dim")
+    summary.add_column(justify="right")
+    summary.add_column(style="dim")
+    summary.add_row("started", f"{perf.started}", "first fill")
+    summary.add_row(
+        "worth", f"[bold]{fmt_money(perf.worth)}[/bold]", "cash + holdings at the close"
+    )
+    summary.add_row(
+        "return",
+        f"{fmt_signed(perf.net)}  {fmt_signed_pct(perf.return_pct)}",
+        f"{perf.benchmark} {fmt_signed_pct(perf.benchmark_return_pct)} over the same sessions",
+    )
+    summary.add_row("  booked", fmt_signed(perf.realized), "from sells — cash, done")
+    summary.add_row("  still open", fmt_signed(perf.unrealized), "positions not sold yet")
+    summary.add_row(
+        "closed trades",
+        f"{perf.won} won · {perf.lost} lost",
+        f"{perf.won / (perf.won + perf.lost) * 100:.0f}% win rate" if perf.won + perf.lost else "",
+    )
+    summary.add_row(
+        "max drawdown",
+        f"{perf.max_drawdown_pct:.2f}%",
+        "worst fall from a peak, capital included",
+    )
+    if perf.best is not None and perf.worst is not None:
+        summary.add_row(
+            "best / worst day",
+            f"{fmt_signed(perf.best.day_change)} / {fmt_signed(perf.worst.day_change)}",
+            f"{perf.best.date:%m-%d} / {perf.worst.date:%m-%d}",
+        )
+    out: list[RenderableType] = [table, summary]
+    if any(s.provisional for s in sessions):
+        out.append(
+            Text(
+                "* today: marked at the latest stored bar — final after the close sync (16:05).",
+                style="yellow",
+            )
+        )
+    if perf.unpriced:
+        out.append(
+            Text(
+                f"Left out: sessions holding {', '.join(perf.unpriced)} with no stored close "
+                "('trd sync').",
+                style="yellow",
+            )
+        )
+    out.append(
+        Text(
+            "Worth = capital replayed through every fill + holdings at the close, so a sale "
+            "never moves it. 'trd learn engine-performance'.",
+            style="dim",
+        )
+    )
+    return out

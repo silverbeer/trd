@@ -629,6 +629,17 @@ trd engine daily-report [--json] [--date ISO] [--engines swing=/a,day=/b] [--win
                                       # Every term used carries its definition in the message: the
                                       # report is read by someone learning the vocabulary, so R,
                                       # expectancy and 'at risk' are glossed where they appear
+trd engine performance [--days N] [--json]   # alias 'trd engine perf' (SB-1447)
+                                      # an engine's worth session by session FROM ITS CAPITAL:
+                                      # cash (capital replayed through every fill) + holdings at
+                                      # that session's close — a sale never moves it. Day $/%,
+                                      # since start, SPY from the close before the first fill,
+                                      # drawdown from the peak, P&L booked by each session's
+                                      # sells; lifetime summary (booked vs open, W/L, max DD,
+                                      # best/worst day) whatever --days shows. Today's row is
+                                      # provisional until the close sync. Needs a capital.
+                                      # READ-ONLY, no network. 'trd equity' on an engine account
+                                      # values holdings only (sales drop out) and says so
 trd engine live-report [--date ISO] [--notify] [--json]
                                       # the LIVE engine's own post-market message (SB-1406):
                                       # account (capital, worth, return — same definitions as

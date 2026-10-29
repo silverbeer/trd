@@ -21,6 +21,7 @@ from trd.models import AccountType, Income, Transaction
 from trd.models.alloc import CashFlow
 from trd.repos import AccountRepo, InstrumentRepo, PriceRepo, TransactionRepo
 from trd.repos.alloc import CashFlowRepo
+from trd.repos.engine import EngineConfigRepo
 from trd.repos.income import IncomeRepo
 from trd.services.cashflow import cash_flows
 from trd.services.fifo import fifo_position
@@ -48,6 +49,9 @@ class EquityCurve(BaseModel):
     pl_pct: float | None  # end value vs end cost basis (unrealized)
     xirr: float | None
     unpriced: list[str] = []  # symbols with no price history in range
+    # The account an engine with a capital trades. Its cash is on record, and
+    # this curve ignores it — 'trd engine performance' is the one to read.
+    engine_account: bool = False
 
     @property
     def start_date(self) -> date:
@@ -244,7 +248,14 @@ class EquityCurveService:
                 ],
             ),
             unpriced=sorted(set(unpriced)),
+            engine_account=account_id is not None and self._is_engine_account(account_id),
         )
+
+    def _is_engine_account(self, account_id: int) -> bool:
+        """Whether an engine with a capital trades this account — its cash is
+        on record, so its worth has a better answer than this curve."""
+        config = EngineConfigRepo(self.conn).get()
+        return config is not None and config.account_id == account_id and config.capital is not None
 
     @staticmethod
     def _xirr(
