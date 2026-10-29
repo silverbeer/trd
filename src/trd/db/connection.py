@@ -4,7 +4,7 @@ from pathlib import Path
 
 import duckdb
 
-from trd.errors import DatabaseBusyError
+from trd.errors import DatabaseBusyError, SchemaBehindError
 
 MIGRATIONS_DIR = Path(__file__).parent / "migrations"
 
@@ -56,21 +56,42 @@ def connect_read_only(db_path: Path) -> duckdb.DuckDBPyConnection:
     connection rather than promised by the code above it.
 
     No migrations, because it could not run them: a database behind this build
-    raises when the missing table is read, and the caller says which command
-    would bring it forward. Same lock retry as `connect`, since a scan holding
-    the writer lock keeps readers out too.
+    is refused here with SchemaBehindError, before any query can trip over a
+    column it lacks (SB-1453). Same lock retry as `connect`, since a scan
+    holding the writer lock keeps readers out too.
     """
     waits = _backoff()
     for attempt in range(len(waits) + 1):
         try:
-            return duckdb.connect(str(db_path), read_only=True)
+            conn = duckdb.connect(str(db_path), read_only=True)
         except duckdb.IOException as exc:
             if "lock" not in str(exc).lower():
                 raise
             if attempt == len(waits):
                 raise DatabaseBusyError() from exc
             time.sleep(waits[attempt])
+            continue
+        pending = pending_migrations(conn)
+        if pending:
+            conn.close()
+            raise SchemaBehindError(str(db_path), pending)
+        return conn
     raise AssertionError("unreachable")  # pragma: no cover
+
+
+def pending_migrations(conn: duckdb.DuckDBPyConnection) -> list[str]:
+    """This build's migration files the database has not applied, oldest first.
+    Reads only, so it works on a read-only connection. A migration the database
+    has and this build lacks (a newer build wrote it) is not pending."""
+    known = conn.execute(
+        "SELECT count(*) FROM information_schema.tables WHERE table_name = 'schema_migrations'"
+    ).fetchone()
+    applied = (
+        {row[0] for row in conn.execute("SELECT filename FROM schema_migrations").fetchall()}
+        if known and known[0]
+        else set()
+    )
+    return [f.name for f in sorted(MIGRATIONS_DIR.glob("*.sql")) if f.name not in applied]
 
 
 def apply_migrations(conn: duckdb.DuckDBPyConnection) -> list[str]:
