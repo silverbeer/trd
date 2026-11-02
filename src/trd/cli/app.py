@@ -303,6 +303,30 @@ JsonOpt = Annotated[
 # the empty database it leaves reads as a fresh install, not a wrong path.
 _CREATES_HOME = frozenset({"init", "restore"})
 
+# Commands that read SEVERAL homes, named by --engines or TRD_BOT_ENGINES, and
+# never the one TRD_HOME points at unless neither is given. Their pods mount the
+# homes elsewhere and inherit the image's TRD_HOME=/data, which is empty there:
+# refusing on it before the command could read --engines took the post-market
+# report and the nightly review down for every session from 2026-10-29 (SB-1506).
+# They check TRD_HOME themselves, on the one path that falls back to it
+# (_report_targets). Keyed by group, because only the group's own callback can
+# see which of its commands is about to run.
+_MULTI_HOME = {
+    "engine": frozenset({"daily-report", "review-pack", "review", "agenda", "watchdog"}),
+    "bot": frozenset({"serve", "check"}),
+}
+
+
+def _refuse_missing_home() -> None:
+    # Help for a subcommand is printed after the callbacks, so it must not be refused.
+    if "--help" in sys.argv[1:]:
+        return
+    missing = missing_explicit_home()
+    if missing is not None:
+        # Raised, not _fail()ed: main() renders it, in JSON when argv asks for it,
+        # the same way it renders a lock raised while connecting.
+        raise MissingHomeError(str(missing))
+
 
 @app.callback()
 def _reset_output_mode(ctx: typer.Context) -> None:
@@ -317,14 +341,27 @@ def _reset_output_mode(ctx: typer.Context) -> None:
     _json_mode = False
     if ctx.invoked_subcommand in _CREATES_HOME or ctx.resilient_parsing:
         return
-    # Help for a subcommand is printed after this callback, so it must not be refused.
-    if "--help" in sys.argv[1:]:
+    if ctx.invoked_subcommand in _MULTI_HOME:
+        return  # decided by that group's callback, which knows the command
+    _refuse_missing_home()
+
+
+def _group_home_check(group: str, ctx: typer.Context) -> None:
+    if ctx.resilient_parsing or ctx.invoked_subcommand in _MULTI_HOME[group]:
         return
-    missing = missing_explicit_home()
-    if missing is not None:
-        # Raised, not _fail()ed: main() renders it, in JSON when argv asks for it,
-        # the same way it renders a lock raised while connecting.
-        raise MissingHomeError(str(missing))
+    _refuse_missing_home()
+
+
+@engine_app.callback()
+def _engine_home_check(ctx: typer.Context) -> None:
+    """Refuses a missing TRD_HOME for every engine command that reads one."""
+    _group_home_check("engine", ctx)
+
+
+@bot_app.callback()
+def _bot_home_check(ctx: typer.Context) -> None:
+    """serve/check read only the homes in TRD_BOT_ENGINES; any later bot command is guarded."""
+    _group_home_check("bot", ctx)
 
 
 def _json_requested() -> bool:
@@ -2880,6 +2917,9 @@ def _report_targets(spec: str | None) -> list[tuple[str, Path]]:
     targets = engines_from_env(env)
     if targets:
         return [(t.name, t.home) for t in targets]
+    # Falling back to TRD_HOME: the root callback skipped these commands, so the
+    # missing-home refusal is made here, on the only path that reads it.
+    _refuse_missing_home()
     # TRD_ENGINE_LABEL, or a neutral name — deliberately not label_from_env(),
     # whose day/swing fallback reads the rule set, which is not open yet here.
     return [(os.environ.get("TRD_ENGINE_LABEL", "").strip() or "engine", get_settings().home)]
