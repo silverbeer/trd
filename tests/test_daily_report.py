@@ -484,6 +484,52 @@ def test_cli_falls_back_to_this_home_when_no_engines_are_named(
     assert "solo" in result.output
 
 
+def _empty_explicit_home(tmp_path, monkeypatch: pytest.MonkeyPatch):
+    """The report pod: the image's TRD_HOME=/data, empty, homes mounted elsewhere."""
+    data = tmp_path / "data"
+    data.mkdir()
+    monkeypatch.setenv("TRD_HOME", str(data))
+    monkeypatch.delenv("TRD_BOT_ENGINES", raising=False)
+    return data
+
+
+@pytest.mark.parametrize("command", [["engine", "daily-report"], ["engine", "review"]])
+def test_named_engines_run_with_an_empty_explicit_home(
+    cli_env: FakeProvider, tmp_path, monkeypatch: pytest.MonkeyPatch, command
+) -> None:
+    """SB-1506: the missing-home guard ran before --engines was read and refused
+    every post-market report and nightly review from 2026-10-29."""
+    swing = _home(tmp_path, "swing", cli_env)
+    data = _empty_explicit_home(tmp_path, monkeypatch)
+    result = runner.invoke(app, [*command, "--engines", f"swing={swing}"])
+    assert result.exit_code == 0, result.output
+    assert list(data.iterdir()) == []
+
+
+def test_engines_from_the_environment_run_with_an_empty_explicit_home(
+    cli_env: FakeProvider, tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    swing = _home(tmp_path, "swing", cli_env)
+    _empty_explicit_home(tmp_path, monkeypatch)
+    monkeypatch.setenv("TRD_BOT_ENGINES", f"swing={swing}")
+    result = runner.invoke(app, ["engine", "daily-report"])
+    assert result.exit_code == 0, result.output
+
+
+def test_no_engines_named_falls_back_to_the_home_and_still_refuses_a_missing_one(
+    cli_env: FakeProvider, tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    data = _empty_explicit_home(tmp_path, monkeypatch)
+    for command in (["engine", "daily-report"], ["engine", "status"]):
+        result = runner.invoke(app, command)
+        # Raised from a callback (main() renders it) or _fail()ed inside the
+        # command: the same refusal either way.
+        assert result.exit_code != 0, command
+        said = result.output + str(result.exception or "")
+        assert "has no trd.duckdb" in said, (command, said)
+    assert list(data.iterdir()) == []
+
+
 # ------------------------------------------------------------- today's trades
 
 
