@@ -112,6 +112,7 @@ from trd.notify.messages import (
 from trd.notify.telegram import LIVE_LABEL, TelegramNotifier
 from trd.notify.telegram import from_env as notify_from_env
 from trd.providers import YFinanceProvider
+from trd.providers.quote_cache import quote_cache_from_env
 from trd.repos import AccountRepo
 from trd.repos.review_snapshot import ReviewSnapshotRepo, ReviewSnapshotRow
 from trd.services import (
@@ -284,7 +285,16 @@ def _prefetched_quotes(symbols_of) -> dict:
         service.conn.close()
     if not symbols:
         return {}
-    return service._quotes(symbols)
+    # Scan pods share one quote cache (SB-1509): the four engines' universes
+    # overlap almost entirely, and quoting each separately, in the same second,
+    # is what drew the provider's rate limit. Unset anywhere else.
+    cache = quote_cache_from_env()
+    if cache is None:
+        return service._quotes(symbols)
+    quotes, stats = cache.get_quotes(symbols, service._quotes)
+    # stderr: stdout carries the scan's JSON/NDJSON document.
+    err_console.print(stats.line(), highlight=False, soft_wrap=True)
+    return quotes
 
 
 # Whether this invocation speaks JSON. Set by the command, read by the error
