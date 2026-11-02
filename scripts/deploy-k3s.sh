@@ -267,9 +267,13 @@ echo ""
 #   - TRD_ENGINE_LABEL -> ${ENGINE_LABEL}, so pushed fills and chat replies name
 #                   their sender with the word the bot and the report use.
 #   - TRD_SCAN_NOTIFY  -> ${SCAN_NOTIFY}; the line after the name is the value.
+# Shared by every engine's scan (SB-1509). Created here because the mount is
+# type Directory and a missing path would fail the scan pod.
+QUOTE_CACHE_DIR="${QUOTE_CACHE_DIR:-$HOME/.trd-quote-cache}"
 render_manifest() {
     sed -E \
-        -e "s#path: /Users/[^[:space:]]+#path: ${ENGINE_HOME}#" \
+        -e "s#path: /Users/[^[:space:]]*\.trd-quote-cache\$#path: ${QUOTE_CACHE_DIR}#" \
+        -e "s#path: /Users/[^[:space:]]*\.trd-engine\$#path: ${ENGINE_HOME}#" \
         -e "s#name: trd-engine-scan#name: ${ENGINE_NAME}-scan#" \
         -e "s#component: engine#component: ${ENGINE_NAME}#" \
         -e "s#value: trd-engine\$#value: ${ENGINE_LABEL}#" \
@@ -462,8 +466,9 @@ fi
 
 echo -e "${YELLOW}⚙️  Applying manifests...${NC}"
 kubectl apply -f k3s/trd-engine/namespace.yaml
+mkdir -p "$QUOTE_CACHE_DIR"
 render_manifest | kubectl apply -f -
-echo -e "${GREEN}✅ Applied${NC} (${ENGINE_NAME}-scan, hostPath → ${ENGINE_HOME})"
+echo -e "${GREEN}✅ Applied${NC} (${ENGINE_NAME}-scan, hostPath → ${ENGINE_HOME}, quote cache → ${QUOTE_CACHE_DIR})"
 
 # The queue drain, deployed with its engine because it is per-home: it applies
 # the commands typed in chat when the scan is not running, which is every hour

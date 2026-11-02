@@ -60,6 +60,13 @@ spec:
                 # replies (apply-queue --notify) are unaffected.
                 - name: TRD_SCAN_NOTIFY
                   value: "1"
+                # One quote fetch per symbol per pass across every engine
+                # (SB-1509). The engines' universes overlap almost entirely and
+                # all scan on the same minute; quoted separately that was ~4x
+                # the requests, in one burst, and drew Yahoo 429s. Fails open:
+                # a missing dir or a held lock means fetching directly.
+                - name: TRD_QUOTE_CACHE
+                  value: /quote-cache
               envFrom:
                 # Telegram credentials. Optional by design: without this secret the
                 # scan still runs and just logs that it sent nothing.
@@ -86,6 +93,8 @@ spec:
               volumeMounts:
                 - name: trd-home
                   mountPath: /data
+                - name: quote-cache
+                  mountPath: /quote-cache
           volumes:
             # The DuckDB file lives on the node so you can read it from the host:
             #   TRD_HOME=~/.trd-engine trd engine report
@@ -93,4 +102,11 @@ spec:
             - name: trd-home
               hostPath:
                 path: /Users/USERNAME/.trd-engine
+                type: Directory
+            # Shared by every engine's scan. The deploy script creates it, and
+            # it is Directory (never DirectoryOrCreate) for the same reason the
+            # homes are: a dead share must fail the mount, not be papered over.
+            - name: quote-cache
+              hostPath:
+                path: /Users/USERNAME/.trd-quote-cache
                 type: Directory

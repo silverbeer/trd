@@ -736,6 +736,13 @@ Unattended runs live in two places — use one, never both (DuckDB is single-wri
   `engine-backup.json` into iCloud. The publisher pairs with *either* runner because it
   only copies files and never opens the database.
 
+Every engine's scan mounts one shared **quote cache** (`~/.trd-quote-cache` →
+`/quote-cache`, `TRD_QUOTE_CACHE`, SB-1509): a pass takes a file lock, serves quotes a
+sibling fetched in the last 60s and fetches only the rest. The four universes overlap
+~4x and all scan on the same minute — quoted separately that was 616 fetches a pass for
+163 symbols, in one burst, and drew Yahoo 429s. Fails open (no dir, lock timeout, bad
+file = fetch directly). Each scan logs `quote-cache: N cached, M fetched` to stderr.
+
 The post-market report is its own CronJob (`k3s/trd-engine/daily-report-cronjob.yaml`,
 `./scripts/deploy-k3s.sh --report`): 16:16 ET on weekdays, mounting *every* engine home
 and sending one message. Deployed once, not per engine — one message covering all is
