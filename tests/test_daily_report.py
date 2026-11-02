@@ -525,7 +525,8 @@ def test_no_engines_named_falls_back_to_the_home_and_still_refuses_a_missing_one
         # Raised from a callback (main() renders it) or _fail()ed inside the
         # command: the same refusal either way.
         assert result.exit_code != 0, command
-        said = result.output + str(result.exception or "")
+        # Whitespace-normalised: Rich wraps the message at the terminal width.
+        said = " ".join((result.output + str(result.exception or "")).split())
         assert "has no trd.duckdb" in said, (command, said)
     assert list(data.iterdir()) == []
 
