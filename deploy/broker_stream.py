@@ -126,14 +126,32 @@ def rh_calls(stream: dict[str, Any], name: str | None = None) -> list[dict[str, 
 def auth_problem(stream: dict[str, Any]) -> str | None:
     """Why the session could not use the broker, or None if it could."""
     status = stream["mcp_status"]
-    if status is None:
+    if status in (None, "pending") and _answered(stream):
+        # The init event is written before the server finishes connecting.
+        # 'pending' there is a startup race, not a lapsed login, when the broker
+        # then answered calls: on 2026-11-02 a session whose init said pending
+        # placed an order, and the runner still called the pass auth_failed —
+        # 18 of those that day, none a real sign-out (SB-1508).
+        pass
+    elif status is None:
         return "robinhood-trading MCP not loaded in the session"
-    if status != "connected":
+    elif status != "connected":
         return f"robinhood-trading MCP status: {status}"
     for call in rh_calls(stream):
         if call["is_error"] and AUTH_PATTERN.search(call["text"]):
             return f"{call['name'].removeprefix(PREFIX)}: {call['text'][:160]}"
     return None
+
+
+def _answered(stream: dict[str, Any]) -> bool:
+    """Did the broker answer at least one call without an error?"""
+    return any(c["answered"] and not c["is_error"] for c in rh_calls(stream))
+
+
+def never_connected(stream: dict[str, Any]) -> bool:
+    """The session started before the server connected and made no broker call
+    at all, so running it again is safe: nothing was asked of the broker."""
+    return stream["mcp_status"] == "pending" and not rh_calls(stream)
 
 
 def _find(value: Any, key: str) -> Any:
@@ -338,7 +356,9 @@ def probe(stream: dict[str, Any]) -> dict[str, Any]:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=(__doc__ or "").splitlines()[0])
-    parser.add_argument("command", choices=["args", "probe", "review", "placed", "snapshot"])
+    parser.add_argument(
+        "command", choices=["args", "probe", "review", "placed", "snapshot", "retry"]
+    )
     parser.add_argument("--stream")
     parser.add_argument("--specs")
     parser.add_argument("--account", default="")
@@ -354,6 +374,9 @@ def main(argv: list[str] | None = None) -> int:
         out: Any = [args_for(s, opts.account, opts.tool) for s in specs]
     else:
         stream = load(opts.stream)
+        if opts.command == "retry":
+            # Exit 0 = run the session again (see never_connected); prints nothing.
+            return 0 if never_connected(stream) else 1
         if opts.command == "probe":
             out = probe(stream)
         elif opts.command == "review":
