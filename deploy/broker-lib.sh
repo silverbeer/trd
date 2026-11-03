@@ -77,11 +77,27 @@ rh_window() {
 # Loads ONLY local settings (the project's `ask` cannot prompt with nobody there)
 # plus the runner's own allow/deny list. No `timeout` on macOS: perl's alarm
 # kills a session that hangs waiting on a browser sign-in it can never finish.
+#
+# A session whose server was still connecting and that made no broker call at
+# all is run once more after RH_RETRY_WAIT seconds (SB-1508): the MCP is often
+# 'pending' at startup in a headless session, and failing the pass on that cost
+# four buys on 2026-11-02 — each went stale before a later pass got through.
+# Retrying is safe only because nothing was asked of the broker the first time.
 rh_session() {
     local out="$1" prompt="$2"
     shift 2
     local tools
     tools=$(IFS=,; echo "$*")
+    _rh_session_once "$out" "$prompt" "$tools"
+    if "$RH_PY" "$RH_LIB_DIR/broker_stream.py" retry --stream "$out" 2>/dev/null; then
+        rh_log "broker MCP still connecting and no call made — retrying the session once"
+        sleep "${RH_RETRY_WAIT:-15}"
+        _rh_session_once "$out" "$prompt" "$tools"
+    fi
+}
+
+_rh_session_once() {
+    local out="$1" prompt="$2" tools="$3"
     (cd "$TRD_REPO" && env -u CLAUDECODE perl -e "alarm $RH_CLAUDE_TIMEOUT; exec @ARGV" \
         claude -p "$prompt" \
         --model "$RH_MODEL" \
@@ -103,7 +119,12 @@ rh_note_login() {
     [[ -n "$prev" && -n "$last" ]] || { prev=OK; last=0; }
     now=$(date +%s)
     if [[ "$status" == FAIL ]]; then
-        if [[ "$kind" == approvals_off ]]; then
+        if [[ "$kind" == auth && "$detail" == *"status: pending"* ]]; then
+            # Not a sign-out: the server never finished connecting, even on the
+            # retry. It has always cleared on its own (SB-1508), so the advice
+            # is to wait, not to log in again.
+            what="The broker's MCP did not connect in time, even on a retry, so this pass placed nothing. This usually clears on its own within a pass or two. If it is still failing in an hour: on the mini, cd ~/gitrepos/trd, run claude, type /mcp and check robinhood-trading."
+        elif [[ "$kind" == approvals_off ]]; then
             what="Trade approvals are OFF on the broker's agent account, so the live runner will not place orders. Turn them back on: broker app → Agent Settings → Safety Controls."
         else
             what="The live engine cannot place orders until Robinhood is signed in again. On the mini: cd ~/gitrepos/trd, run claude, type /mcp, pick robinhood-trading, authenticate."
