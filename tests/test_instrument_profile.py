@@ -177,3 +177,67 @@ def test_a_backup_from_before_the_profile_still_restores(tmp_path: Path, conn):
     stored = _stored(fresh, "VRT")
     assert stored.sector == "Industrials"
     assert stored.industry is None
+
+
+# ------------------------------------------------- SB-1510: one info call per add
+
+
+def _no_info(monkeypatch, provider) -> list[str]:
+    calls: list[str] = []
+
+    def refuse(symbol: str) -> InstrumentInfo:
+        calls.append(symbol)
+        raise ProviderError("Too Many Requests")
+
+    monkeypatch.setattr(provider, "get_info", refuse)
+    return calls
+
+
+def test_a_queued_add_with_the_bots_profile_never_asks_the_provider(
+    tmp_path, service, conn, provider, monkeypatch
+):
+    """The bot resolved the name once; four engines draining it must not each
+    ask Yahoo's info endpoint again in the same minute."""
+    from trd.services.commands import enqueue, pending
+
+    provider.add_symbol("VRT", price="100")
+    provider.add_bars("VRT", _bars(300))
+    info = InstrumentInfo.model_validate({"symbol": "VRT", "name": "Vertiv Holdings Co", **PROFILE})
+    enqueue(tmp_path, update_id=1, kind="add", symbol="VRT", user_id=1, info=info)
+    calls = _no_info(monkeypatch, provider)
+
+    [result] = service.drain(tmp_path)
+
+    assert result.ok, result.message
+    assert calls == []
+    assert pending(tmp_path) == []
+    assert _stored(conn, "VRT").sector == "Industrials"
+
+
+def test_a_queue_file_written_before_the_profile_field_still_applies(tmp_path, service, provider):
+    from trd.services.commands import QUEUE_DIR, pending
+
+    (tmp_path / QUEUE_DIR).mkdir()
+    (tmp_path / QUEUE_DIR / f"{7:020d}.json").write_text(
+        '{"update_id": 7, "kind": "add", "symbol": "AAA", "user_id": 1,'
+        ' "queued_at": "2026-11-02T10:00:00"}'
+    )
+    [command] = pending(tmp_path)
+    assert command.info is None
+
+
+def test_an_etf_re_add_does_not_re_profile_a_sector_it_will_never_have(
+    service, conn, provider, monkeypatch
+):
+    """Empty sector is the complete answer for an ETF; treating it as a gap
+    re-asked the most rate-limited endpoint on every add."""
+    provider.add_symbol("GRWX", price="30", name="Example Large-Cap Growth ETF")
+    provider.add_bars("GRWX", _bars(300))
+    provider.infos["GRWX"] = provider.infos["GRWX"].model_copy(update={"type": InstrumentType.ETF})
+    service.add("GRWX")
+    calls = _no_info(monkeypatch, provider)
+
+    message = service.add("GRWX")
+
+    assert calls == []
+    assert "already" in message

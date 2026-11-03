@@ -26,7 +26,7 @@ import duckdb
 from pydantic import BaseModel
 
 from trd.errors import NotTradableError, ProviderError, RateLimitedError, TrdError
-from trd.models import Instrument
+from trd.models import Instrument, InstrumentInfo, InstrumentType
 from trd.providers.base import MarketDataProvider
 from trd.services.engine import EngineService
 from trd.services.sync import SyncService
@@ -63,6 +63,11 @@ class QueuedCommand(BaseModel):
     # Passes this command was rate-limited on. Written back by the drain, never
     # by the bot.
     attempts: int = 0
+    # The provider's profile of the symbol, resolved ONCE by the bot when it
+    # verified the add (SB-1510). Without it every engine's drain asked Yahoo's
+    # info endpoint — its most rate-limited — for the same name in the same
+    # minute, and an ETF add gave up after six tries on three of four engines.
+    info: InstrumentInfo | None = None
 
 
 @dataclass(frozen=True)
@@ -92,6 +97,7 @@ def enqueue(
     symbol: str,
     user_id: int,
     now: datetime | None = None,
+    info: InstrumentInfo | None = None,
 ) -> Path:
     """Write one intent for `home`'s engine to apply. Atomic: tmp then rename, so
     a scan reading the directory mid-write never sees a half-written file."""
@@ -103,6 +109,7 @@ def enqueue(
         symbol=symbol.upper(),
         user_id=user_id,
         queued_at=now or datetime.now(),
+        info=info,
     )
     path = directory / f"{update_id:020d}.json"
     tmp = path.with_suffix(".tmp")
@@ -172,7 +179,7 @@ class CommandQueueService:
     def apply(self, command: QueuedCommand) -> AppliedCommand:
         try:
             if command.kind == CommandKind.ADD:
-                return AppliedCommand(command, True, self.add(command.symbol))
+                return AppliedCommand(command, True, self.add(command.symbol, command.info))
             if command.kind == CommandKind.REMOVE:
                 return AppliedCommand(command, True, self.remove(command.symbol))
             return AppliedCommand(command, False, f"unknown command {command.kind!r}")
@@ -203,7 +210,7 @@ class CommandQueueService:
     # to the universe" would drift, and the one that drifts is the one nobody
     # runs interactively.
 
-    def add(self, symbol: str) -> str:
+    def add(self, symbol: str, info: InstrumentInfo | None = None) -> str:
         config = self.engine.config()
         # Before the watchlist write and before the backfill: an index that lands
         # in the universe is one a price-only rule can fire on. `pullback` and
@@ -211,7 +218,7 @@ class CommandQueueService:
         # daily range — would open a paper position in something with no shares,
         # stopped at 2 x the ATR of a mean-reverting index, and fold its
         # R-multiples into the scorecard beside real trades.
-        instrument = self._profiled(symbol)
+        instrument = self._profiled(symbol, info)
         if not instrument.tradable:
             raise NotTradableError(instrument.symbol)
         added = self.watchlists.add(symbol, config.watchlist)
@@ -240,7 +247,7 @@ class CommandQueueService:
             )
         return f"{prefix} — {bars} bars pulled, ready to trade."
 
-    def _profiled(self, symbol: str) -> Instrument:
+    def _profiled(self, symbol: str, info: InstrumentInfo | None = None) -> Instrument:
         """The instrument, created or re-profiled from the provider as needed.
 
         A name added again is the moment to repair a thin profile: the row was
@@ -248,13 +255,24 @@ class CommandQueueService:
         back without sector or industry often enough that a blank stored once
         would otherwise stay blank. Best effort only — the add is about the
         universe, and a provider error must not refuse it.
+
+        `info` is the profile the bot already resolved; with it, no provider
+        call is made at all. Only a stock is repaired: an ETF or a coin never
+        has a sector, so "thin" there is the complete answer, and treating it
+        as a gap re-asked Yahoo on every add (SB-1510).
         """
         repo = self.watchlists.instruments
         instrument = repo.get_by_symbol(symbol)
         if instrument is None:
-            return repo.insert(self.provider.get_info(symbol))
-        if instrument.sector and instrument.industry:
+            return repo.insert(info or self.provider.get_info(symbol))
+        if (
+            instrument.type != InstrumentType.STOCK
+            or not instrument.tradable
+            or (instrument.sector and instrument.industry)
+        ):
             return instrument
+        if info is not None:
+            return repo.enrich(symbol, info) or instrument
         try:
             return repo.enrich(symbol, self.provider.get_info(symbol)) or instrument
         except ProviderError:
