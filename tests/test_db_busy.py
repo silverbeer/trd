@@ -98,3 +98,44 @@ def test_a_non_lock_error_is_never_retried(tmp_path: Path, monkeypatch: pytest.M
     with pytest.raises(duckdb.IOException, match="disk full"):
         connection.connect(tmp_path / "x.duckdb")
     assert calls["n"] == 1  # retrying a full disk helps nobody
+
+
+def test_wait_seconds_extends_the_backoff(monkeypatch: pytest.MonkeyPatch) -> None:
+    """SB-1507: the report jobs outwait a close sync holding the writer for minutes."""
+    monkeypatch.delenv("TRD_DB_BACKOFF", raising=False)
+    monkeypatch.delenv("TRD_DB_WAIT_SECONDS", raising=False)
+    assert connection._backoff() == connection._BACKOFF_SECONDS
+    monkeypatch.setenv("TRD_DB_WAIT_SECONDS", "600")
+    waits = connection._backoff()
+    assert waits[: len(connection._BACKOFF_SECONDS)] == connection._BACKOFF_SECONDS
+    assert sum(waits) - sum(connection._BACKOFF_SECONDS) == pytest.approx(600)
+    assert max(waits) == connection._WAIT_POLL_SECONDS
+    monkeypatch.setenv("TRD_DB_WAIT_SECONDS", "soon")
+    assert connection._backoff() == connection._BACKOFF_SECONDS
+
+
+def test_read_only_open_waits_out_a_long_writer(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The 16:20 live report failed after ~8s while the close sync held the lock
+    for five minutes. With a wait set, the read-only open rides it out."""
+    db = tmp_path / "x.duckdb"
+    connection.connect(db).close()
+    monkeypatch.setenv("TRD_DB_BACKOFF", "0")
+    monkeypatch.setenv("TRD_DB_WAIT_SECONDS", "300")
+    slept: list[float] = []
+    monkeypatch.setattr(connection.time, "sleep", slept.append)
+    real = duckdb.connect
+    attempts = {"n": 0}
+
+    def busy_for_a_while(path: str, read_only: bool = False):
+        attempts["n"] += 1
+        if attempts["n"] <= 20:
+            raise duckdb.IOException("Could not set lock on file: Conflicting lock is held")
+        return real(path, read_only=read_only)
+
+    monkeypatch.setattr(duckdb, "connect", busy_for_a_while)
+    conn = connection.connect_read_only(db)
+    conn.close()
+    assert attempts["n"] == 21
+    assert sum(slept) == pytest.approx(190)  # 0 + 19 polls of 10s

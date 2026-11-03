@@ -753,7 +753,9 @@ ten-minute grid the queue drain uses, so it is not waiting on the writer lock.
 
 Every home's queue drain (`deploy/queue-entrypoint.sh`) also runs the **close sync**
 (SB-1411): once per weekday on the first tick past 16:05, `trd sync --require-settled`,
-stamped in `TRD_HOME/.close-sync` only on success, retried each tick up to 6 tries. The scan syncs once in the morning and
+stamped in `TRD_HOME/.close-sync` only on success, retried each tick up to 6 tries. The sync holds the
+writer lock for minutes, so the three report jobs set `TRD_DB_WAIT_SECONDS=1800`: their
+open waits it out instead of failing after the default ~8s backoff (SB-1507). The scan syncs once in the morning and
 stores no bar after it, so without this every evening report read the 09:3x bar as the
 close (PANW 355.01 reported, 380.55 actual, 2026-10-23).
 

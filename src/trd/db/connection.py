@@ -16,12 +16,32 @@ MIGRATIONS_DIR = Path(__file__).parent / "migrations"
 _BACKOFF_SECONDS = (0.25, 0.5, 1.0, 2.0, 4.0)
 
 
+# TRD_DB_WAIT_SECONDS: keep waiting for the writer lock this long after the
+# backoff above runs out, polling every _WAIT_POLL_SECONDS (SB-1507). Unset for
+# a scan or a terminal command, where seconds are the right patience. Set on the
+# post-market report jobs: the close sync holds the writer for minutes (16:16 to
+# 16:21 on 2026-11-02, while the 16:20 live report gave up after ~8s), and a
+# report that waits is the day's report, where one that fails is no report.
+_WAIT_POLL_SECONDS = 10.0
+
+
 def _backoff() -> tuple[float, ...]:
-    """Override for tests, which must not actually sleep."""
+    """The pause before each retry. TRD_DB_BACKOFF overrides it for tests, which
+    must not actually sleep; TRD_DB_WAIT_SECONDS appends a longer wait."""
     raw = os.environ.get("TRD_DB_BACKOFF")
-    if raw is None:
-        return _BACKOFF_SECONDS
-    return tuple(float(part) for part in raw.split(",") if part.strip())
+    waits = (
+        _BACKOFF_SECONDS
+        if raw is None
+        else tuple(float(part) for part in raw.split(",") if part.strip())
+    )
+    try:
+        extra = float(os.environ.get("TRD_DB_WAIT_SECONDS") or 0)
+    except ValueError:
+        extra = 0.0
+    if extra <= 0:
+        return waits
+    poll = min(_WAIT_POLL_SECONDS, extra)
+    return waits + (poll,) * max(1, round(extra / poll))
 
 
 def connect(db_path: Path) -> duckdb.DuckDBPyConnection:

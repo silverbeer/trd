@@ -30,7 +30,9 @@ spec:
       # One attempt. The command opens the database read-only and either sends
       # or says why not; retrying into the same answer only adds a second send.
       backoffLimit: 0
-      ttlSecondsAfterFinished: 3600
+      # A day, not an hour: a failed 16:20 job was deleted with its logs
+      # before anyone looked (SB-1507). Successful ones are cheap to keep too.
+      ttlSecondsAfterFinished: 86400
       template:
         metadata:
           labels:
@@ -52,6 +54,12 @@ spec:
                 - live-report
                 - --notify
               env:
+                - name: TRD_DB_WAIT_SECONDS
+                  # Wait out a close sync holding the writer lock (it ran 16:16
+                  # to 16:21 on 2026-11-02 and the 16:20 live report gave up after
+                  # 8s, SB-1507). The sync wants minutes, and its bars are the
+                  # ones this job should read anyway.
+                  value: "1800"
                 - name: TRD_HOME
                   value: /data
                 - name: TZ
