@@ -39,6 +39,7 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from trd.errors import NotifyError, ProviderError, SymbolNotFoundError, TrdError
+from trd.models import InstrumentInfo
 from trd.models.engine import ShortName, describe_short
 from trd.notify.privacy import guard, redact_firms
 from trd.services.commands import QUEUE_DIR, CommandKind, enqueue
@@ -405,7 +406,7 @@ class CommandBot:
         engines: list[EngineTarget],
         allowed_user_ids: set[int],
         state_dir: Path,
-        verify_symbol: Callable[[str], str] | None = None,
+        verify_symbol: Callable[[str], InstrumentInfo] | None = None,
     ) -> None:
         if not engines:
             raise BotConfigError(
@@ -637,7 +638,7 @@ class CommandBot:
         # not resolve it, and refusing there would trap the name in the universe.
         if command.kind == CommandKind.ADD and self.verify_symbol is not None:
             try:
-                name = self.verify_symbol(command.symbol)
+                info = self.verify_symbol(command.symbol)
             except SymbolNotFoundError:
                 return Reply(
                     f"{command.symbol} — no such symbol. Nothing queued; "
@@ -648,11 +649,12 @@ class CommandBot:
                 # network blip must not block a legitimate add, so this queues
                 # and says the check did not happen.
                 _log(f"could not verify {command.symbol}: {exc}")
-                name = ""
+                info = None
             else:
-                _log(f"verified {command.symbol} ({name})")
+                _log(f"verified {command.symbol} ({_describe(info)})")
         else:
-            name = ""
+            info = None
+        name = _describe(info) if info is not None else ""
         written = []
         for engine in command.engines:
             enqueue(
@@ -661,6 +663,9 @@ class CommandBot:
                 kind=command.kind,
                 symbol=command.symbol,
                 user_id=user_id,
+                # Resolved once here, so no engine's drain asks the provider
+                # again (SB-1510).
+                info=info,
             )
             written.append(engine.name)
         verb = "add" if command.kind == CommandKind.ADD else "remove"
@@ -749,7 +754,13 @@ def bot_from_env(env: dict[str, str] | None = None) -> CommandBot:
     )
 
 
-def _yfinance_verifier() -> Callable[[str], str]:
+def _describe(info: InstrumentInfo) -> str:
+    """Name and what kind of company it is, so the reply to /add answers "what
+    did I just add" as well as "did it resolve"."""
+    return " · ".join(p for p in (info.name or info.symbol, info.category) if p)
+
+
+def _yfinance_verifier() -> Callable[[str], InstrumentInfo]:
     """Resolve a ticker to its name, for checking an add before queueing it.
 
     Imported here rather than at module scope so the bot module stays importable
@@ -761,10 +772,4 @@ def _yfinance_verifier() -> Callable[[str], str]:
 
     provider = YFinanceProvider()
 
-    def verify(symbol: str) -> str:
-        # Name and what kind of company it is, so the reply to /add answers
-        # "what did I just add" as well as "did it resolve".
-        info = provider.get_info(symbol)
-        return " · ".join(p for p in (info.name or symbol, info.category) if p)
-
-    return verify
+    return provider.get_info
