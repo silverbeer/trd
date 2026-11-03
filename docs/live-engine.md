@@ -300,6 +300,7 @@ trd engine report` still works on it.
 | You see | It means | Do |
 |---|---|---|
 | 🔴 *The broker login check FAILED* | the MCP sign-in lapsed; nothing can be placed | on the mini: `cd ~/gitrepos/trd && claude`, `/mcp` → pick the broker's server → authenticate. The all-clear follows within the hour |
+| 🔴 *…FAILED* with *did not connect in time* | the broker's MCP was still `pending` after the session started and its retry, so the pass placed nothing. This is not a sign-out (SB-1508) | wait; it clears within a pass or two. Still failing after an hour: `/mcp` as above |
 | 🔴 *Trade approvals are OFF* | someone turned approvals off; the runner refuses to place | The broker app → Agent Settings → Safety Controls → approvals on |
 | ⛔ *HALTED by the runner* | an order call didn't match any intent | **decline** anything unexpected in the app, read `~/Library/Logs/trd-live-runner.log`, then `trd engine resume` |
 | ⛔ *HALTED by its loss stop* | −$20 reached (realized + unrealized) | decide deliberately; `trd engine resume` only after looking at why |

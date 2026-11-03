@@ -117,6 +117,51 @@ def test_probe_ok_off_and_signed_out(tmp_path: Path) -> None:
     assert rh.probe(rh.load(lapsed))["kind"] == "auth"
 
 
+def test_pending_at_startup_is_not_a_sign_out_when_the_broker_answered(tmp_path: Path) -> None:
+    """SB-1508: the init event is written before the server connects. On
+    2026-11-02 a session whose init said 'pending' placed an order, and 18 passes
+    that day were failed as auth_failed on that word alone."""
+    answered = write_stream(
+        tmp_path,
+        [(P + "get_trade_approval_setting", {"account_number": ACCT}, SETTING_ON, False)],
+        status="pending",
+    )
+    stream = rh.load(answered)
+    assert rh.auth_problem(stream) is None
+    assert rh.probe(stream)["status"] == "OK"
+    assert not rh.never_connected(stream)
+
+
+def test_pending_with_no_broker_call_fails_and_is_safe_to_retry(tmp_path: Path) -> None:
+    stream = rh.load(write_stream(tmp_path, [], status="pending"))
+    assert rh.auth_problem(stream) == "robinhood-trading MCP status: pending"
+    assert rh.never_connected(stream)
+    assert rh.main(["retry", "--stream", str(tmp_path / "stream.jsonl")]) == 0
+
+
+def test_a_pending_session_that_called_the_broker_is_never_retried(tmp_path: Path) -> None:
+    """A place call that errored may still have reached the broker: rerunning
+    the session could place the order twice."""
+    path = write_stream(
+        tmp_path,
+        [(P + "place_equity_order", {"symbol": "NVDA"}, "connection reset", True)],
+        status="pending",
+    )
+    stream = rh.load(path)
+    assert rh.auth_problem(stream) == "robinhood-trading MCP status: pending"
+    assert not rh.never_connected(stream)
+    assert rh.main(["retry", "--stream", path]) == 1
+
+
+def test_a_failed_server_is_a_sign_out_even_after_an_answer(tmp_path: Path) -> None:
+    path = write_stream(
+        tmp_path,
+        [(P + "get_trade_approval_setting", {}, SETTING_ON, False)],
+        status="needs-auth",
+    )
+    assert "needs-auth" in (rh.auth_problem(rh.load(path)) or "")
+
+
 # ------------------------------------------------------------------ review
 
 
