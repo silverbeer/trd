@@ -633,3 +633,12 @@ def test_json_carries_the_legs_so_nothing_has_to_re_derive_them(
     assert Decimal(exit_row["exit_price"]) > 0
     assert exit_row["opened_at"] and exit_row["closed_at"]
     assert exit_row["rule"] == "stop"
+
+
+def test_version_runs_with_an_empty_explicit_home(tmp_path, monkeypatch: pytest.MonkeyPatch):
+    """The deploy script asks a bare pod for `trd version`; it opens no database
+    and must not be refused for lacking one (SB-1513)."""
+    data = _empty_explicit_home(tmp_path, monkeypatch)
+    result = CliRunner().invoke(app, ["version"])
+    assert result.exit_code == 0, result.output
+    assert not (data / "trd.duckdb").exists()
