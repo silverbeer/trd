@@ -19,7 +19,7 @@ from trd.errors import (
     RateLimitedError,
     SymbolNotFoundError,
 )
-from trd.models import DailyBar
+from trd.models import DailyBar, InstrumentInfo
 from trd.notify.bot import (
     BotConfigError,
     CommandBot,
@@ -809,10 +809,10 @@ def _verifier(known: dict[str, str]):
     """Stands in for the provider: resolves a ticker to a name, or fails the way
     the real one does."""
 
-    def verify(symbol: str) -> str:
+    def verify(symbol: str) -> InstrumentInfo:
         if symbol not in known:
             raise SymbolNotFoundError(f"Symbol {symbol} not found")
-        return known[symbol]
+        return InstrumentInfo(symbol=symbol, name=known[symbol])
 
     return verify
 
@@ -850,13 +850,17 @@ def test_a_known_symbol_is_queued_and_named(homes, tmp_path):
     reply = bot.transport.replies[0]
     assert "queued: add INTC (Intel Corporation)" in reply
     assert [c.symbol for c in pending(homes[0].home)] == ["INTC"]
+    # Every engine's queue carries the profile, so no drain asks again (SB-1510).
+    for engine in homes:
+        [queued] = pending(engine.home)
+        assert queued.info is not None and queued.info.name == "Intel Corporation"
 
 
 def test_a_provider_outage_still_queues_and_says_so(homes, tmp_path, capsys):
     """Could not ask is not the same as an answer of no. A network blip must not
     block a legitimate add."""
 
-    def unreachable(symbol: str) -> str:
+    def unreachable(symbol: str) -> InstrumentInfo:
         raise ProviderError("Info fetch failed for INTC: connection reset")
 
     bot = _bot_with(homes, tmp_path, unreachable)
