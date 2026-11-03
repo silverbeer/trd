@@ -313,6 +313,12 @@ JsonOpt = Annotated[
 # the empty database it leaves reads as a fresh install, not a wrong path.
 _CREATES_HOME = frozenset({"init", "restore"})
 
+# Commands that open no database at all, so a missing home is no reason to refuse
+# them. `version` runs in a bare pod (TRD_HOME=/data, nothing mounted) for the
+# deploy script's before/after check, which printed nothing useful while the guard
+# refused it (SB-1513).
+_NO_HOME = frozenset({"version"})
+
 # Commands that read SEVERAL homes, named by --engines or TRD_BOT_ENGINES, and
 # never the one TRD_HOME points at unless neither is given. Their pods mount the
 # homes elsewhere and inherit the image's TRD_HOME=/data, which is empty there:
@@ -349,7 +355,7 @@ def _reset_output_mode(ctx: typer.Context) -> None:
     """
     global _json_mode
     _json_mode = False
-    if ctx.invoked_subcommand in _CREATES_HOME or ctx.resilient_parsing:
+    if ctx.invoked_subcommand in _CREATES_HOME | _NO_HOME or ctx.resilient_parsing:
         return
     if ctx.invoked_subcommand in _MULTI_HOME:
         return  # decided by that group's callback, which knows the command
