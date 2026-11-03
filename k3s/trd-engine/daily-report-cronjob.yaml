@@ -39,7 +39,9 @@ spec:
       # database, and the command already reports a per-engine failure in the
       # message rather than exiting non-zero.
       backoffLimit: 0
-      ttlSecondsAfterFinished: 3600
+      # A day, not an hour: a failed 16:20 job was deleted with its logs
+      # before anyone looked (SB-1507). Successful ones are cheap to keep too.
+      ttlSecondsAfterFinished: 86400
       template:
         metadata:
           labels:
@@ -64,6 +66,12 @@ spec:
                 - swing=/engines/swing,day=/engines/day,swing20=/engines/swing20,live=/engines/live
                 - --notify
               env:
+                - name: TRD_DB_WAIT_SECONDS
+                  # Wait out a close sync holding the writer lock (it ran 16:16
+                  # to 16:21 on 2026-11-02 and the 16:20 live report gave up after
+                  # 8s, SB-1507). The sync wants minutes, and its bars are the
+                  # ones this job should read anyway.
+                  value: "1800"
                 - name: TZ
                   value: America/New_York
                 - name: NO_COLOR
