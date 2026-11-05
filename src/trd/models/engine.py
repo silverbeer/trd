@@ -415,6 +415,7 @@ class MarketTemperature(BaseModel):
     # Why the label is what it is, in one line — what a report prints.
     reason: str
 
+    @computed_field  # type: ignore[prop-decorator]
     @property
     def icon(self) -> str:
         return ICONS[self.label]
