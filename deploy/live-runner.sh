@@ -58,6 +58,23 @@ if [[ "${1:-}" == install ]]; then
     echo "$SHA" > "$RUNNER_HOME/VERSION"
     rm -rf "$TMP"
     echo "installed $SHA → $RUNNER_HOME ($("$RUNNER_HOME/venv/bin/trd" version | head -1))"
+    # The IRA report (alloc-report.sh) opens its home READ-ONLY, and a read-only
+    # open refuses a database behind this build (SB-1453). Nothing unattended
+    # writes that home, so a new migration would sit pending and the 16:25 report
+    # would fail every day — it did on 2026-11-03 (SB-1524). Apply it now, while
+    # a person is at the keyboard: one short writer open, which is the only time
+    # this job's database is ever written by the runner.
+    PORTFOLIO="${TRD_PORTFOLIO_HOME:-$HOME/.trd-portfolio}"
+    if [[ -f "$PORTFOLIO/trd.duckdb" ]]; then
+        set +e
+        if TRD_HOME="$PORTFOLIO" "$RUNNER_HOME/venv/bin/trd" account ls --json > /dev/null 2>&1; then
+            echo "migrated $PORTFOLIO to this build"
+        else
+            echo "WARNING: could not open $PORTFOLIO with this build — the IRA report will fail" >&2
+            echo "  try: TRD_HOME=$PORTFOLIO $RUNNER_HOME/venv/bin/trd account ls" >&2
+        fi
+        set -e
+    fi
     exit 0
 fi
 

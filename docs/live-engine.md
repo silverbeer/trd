@@ -301,6 +301,7 @@ trd engine report` still works on it.
 |---|---|---|
 | 🔴 *The broker login check FAILED* | the MCP sign-in lapsed; nothing can be placed | on the mini: `cd ~/gitrepos/trd && claude`, `/mcp` → pick the broker's server → authenticate. The all-clear follows within the hour |
 | 🔴 *…FAILED* with *did not connect in time* | the broker's MCP was still `pending` after the session started and its retry, so the pass placed nothing. This is not a sign-out (SB-1508) | wait; it clears within a pass or two. Still failing after an hour: `/mcp` as above |
+| ⚠️ *Today's IRA report failed* | `deploy/alloc-report.sh` exited non-zero; the report was not sent. With *behind the installed build*, a runner install brought a migration the portfolio home never got (SB-1524) | `deploy/live-runner.sh install` (it now migrates the portfolio home), then `~/.trd-runner/bin/alloc-report.sh` to resend today's |
 | 🔴 *Trade approvals are OFF* | someone turned approvals off; the runner refuses to place | The broker app → Agent Settings → Safety Controls → approvals on |
 | ⛔ *HALTED by the runner* | an order call didn't match any intent | **decline** anything unexpected in the app, read `~/Library/Logs/trd-live-runner.log`, then `trd engine resume` |
 | ⛔ *HALTED by its loss stop* | −$20 reached (realized + unrealized) | decide deliberately; `trd engine resume` only after looking at why |

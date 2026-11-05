@@ -31,4 +31,19 @@ set +a
 "$TRD" alloc report --notify ${ALLOC_ACCOUNT:+--account "$ALLOC_ACCOUNT"} >> "$LOG" 2>&1
 rc=$?
 echo "$(stamp) exit $rc" >> "$LOG"
+if [[ "$rc" != 0 ]]; then
+    # A failed report used to be a line in this log and nothing else: on
+    # 2026-11-03 the report simply did not arrive (SB-1524). Say so, in the same
+    # private chat the report goes to. No log text in the message — the log is
+    # local, and the alert only has to say where to look.
+    hint=""
+    if tail -n 20 "$LOG" | grep -qi "behind"; then
+        hint=" The database is behind the installed build: run deploy/live-runner.sh install."
+    fi
+    # shellcheck disable=SC2034 # read by broker-lib.sh
+    RH_TAG=alloc RH_LOG="$LOG" RH_ENV_FILE="$ENV_FILE"
+    # shellcheck source=deploy/broker-lib.sh
+    . "$(dirname "$0")/broker-lib.sh"
+    rh_load_env && rh_alert "⚠️ Today's IRA report failed (exit $rc) — see $LOG on the mini.$hint"
+fi
 exit "$rc"
