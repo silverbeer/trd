@@ -72,6 +72,8 @@ from trd.cli.render import (
     reconcile_renderables,
     replay_match_renderables,
     review_renderables,
+    rotation_rows_table,
+    rotation_table,
     sunday_prep_markdown,
     sunday_prep_renderables,
     sweep_renderables,
@@ -180,6 +182,7 @@ from trd.services.review import (
     engine_pack,
     review,
 )
+from trd.services.rotation import ROUND_TRIP_COST_PCT, RotationService
 from trd.services.sweep import parse_axes, sweep
 from trd.services.watchdog import (
     DEFAULT_MAX_AGE_MINUTES as WATCHDOG_MAX_AGE,
@@ -2825,6 +2828,50 @@ def engine_edge(
             f"[dim]{report.unmeasured} taken signal(s) had no stop to price or no bar to "
             "draw from and are left out of both sides.[/dim]"
         )
+
+
+@engine_app.command("rotation")
+def engine_rotation(
+    cost: Annotated[
+        float,
+        typer.Option("--cost", help="Round-trip cost of a swap, percent of the slot."),
+    ] = float(ROUND_TRIP_COST_PCT),
+    start: Annotated[
+        str | None, typer.Option("--start", help="First session (YYYY-MM-DD).")
+    ] = None,
+    end: Annotated[str | None, typer.Option("--end", help="Last session (YYYY-MM-DD).")] = None,
+    rows: Annotated[int, typer.Option("--rows", "-n", help="Newest sessions to list.")] = 10,
+    as_json: JsonOpt = False,
+) -> None:
+    """What a full book cost: swap the coldest holding for the signal it blocked?
+
+    Every session with a signal passed on a full book: its strongest blocked
+    signal against the coldest eligible holding (past its grace, not near target,
+    lowest R), both traded at the signal bar's close and walked over the
+    follow-through horizon. Edge in percent of the slot, after cost. Read-only,
+    no network. 'trd learn rotation'.
+    """
+    _use_json(as_json)
+    db_path = get_settings().db_path
+    try:
+        if not db_path.exists():
+            raise TrdError(f"No database at {db_path}. Run 'trd init' first.")
+        report = RotationService(connect_read_only(db_path)).report(
+            cost_pct=Decimal(str(cost)),
+            start=d.date() if (d := _parse_date(start)) else None,
+            end=e.date() if (e := _parse_date(end)) else None,
+        )
+    except TrdError as exc:
+        _fail(exc)
+        return
+    if as_json:
+        _emit_json(report)
+        return
+    console.print(rotation_table(report))
+    if report.rows:
+        console.print(rotation_rows_table(report, rows))
+    for caveat in report.caveats:
+        console.print(f"[dim]· {caveat}[/dim]")
 
 
 @engine_app.command("daily-report")
