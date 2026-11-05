@@ -41,6 +41,7 @@ from trd.engine.base import StrategyContext, indicator, last
 from trd.engine.exits import exit_quantity
 from trd.engine.regime import REGIME_SYMBOLS
 from trd.engine.settlement import CashLedger, ledger, unsettled_funding
+from trd.engine.temperature import market_temperature
 from trd.errors import ProviderError, TrdError
 from trd.learn import GLOSSARY
 from trd.models import (
@@ -57,6 +58,7 @@ from trd.models import (
     ExitOutlook,
     Instrument,
     IntentStatus,
+    MarketTemperature,
     OrderIntentRow,
     PositionRow,
     Quote,
@@ -230,6 +232,8 @@ class ScanResult(BaseModel):
     halted: bool = False
     halt_reason: str | None = None
     auto_halt: str | None = None
+    # The market as this pass read it (SB-1538). Recorded, shown, decides nothing.
+    temperature: MarketTemperature | None = None
 
     @property
     def quiet(self) -> bool:
@@ -867,12 +871,15 @@ class EngineService:
         reader for the length of a network round trip. See `prefetched_quotes`.
         """
         universe = self.universe()
+        # SPY and VIX ride along for the market temperature (SB-1538): two more
+        # symbols, and with the shared quote cache usually none at all.
+        market = set(REGIME_SYMBOLS)
         try:
             account = self.account()
         except TrdError:
-            return sorted({i.symbol for i in universe})
+            return sorted({i.symbol for i in universe} | market)
         held = self.positions.list_open(account.id)
-        return sorted({i.symbol for i in universe} | {i.symbol for _, i in held})
+        return sorted({i.symbol for i in universe} | {i.symbol for _, i in held} | market)
 
     # ------------------------------------------------------------------ scan
 
@@ -904,10 +911,15 @@ class EngineService:
 
         universe = self.universe()
         open_positions = self.positions.list_open(account.id)
-        symbols = sorted({i.symbol for i in universe} | {i.symbol for _, i in open_positions})
+        symbols = sorted(
+            {i.symbol for i in universe}
+            | {i.symbol for _, i in open_positions}
+            | set(REGIME_SYMBOLS)
+        )
         if quotes is None:
             quotes = self._quotes(symbols)
         run = self.runs.start(now, paper)
+        temperature = market_temperature(quotes, [i.symbol for i in universe]) if quotes else None
 
         result = ScanResult(
             run_id=run.id,
@@ -916,6 +928,7 @@ class EngineService:
             scanned=len(universe),
             capacity=config.max_positions,
             mode=config.mode,
+            temperature=temperature,
         )
 
         if config.is_live:
@@ -994,6 +1007,7 @@ class EngineService:
             signals=len(result.signals),
             opened=len(result.opened),
             closed=len(result.closed),
+            temperature=temperature,
         )
         return result
 
@@ -1874,6 +1888,9 @@ class EngineService:
             silent_strategies=silent,
             last_scan=recent[0].started_at if recent else None,
             scans_today=self.runs.count_since(midnight),
+            temperature=(
+                recent[0].temperature if recent and recent[0].started_at >= midnight else None
+            ),
         )
 
     def run_rows(self, limit: int = 25, today: bool = False) -> list[EngineRun]:
@@ -2115,6 +2132,9 @@ def scan_events(result: ScanResult) -> list[dict]:
             "open_positions": result.open_positions,
             "capacity": result.capacity,
             "skipped": len(result.skipped),
+            "temperature": result.temperature.label.value if result.temperature else None,
+            "spy_pct": num(result.temperature.spy_pct) if result.temperature else None,
+            "breadth_pct": num(result.temperature.breadth_pct) if result.temperature else None,
         }
     )
     return events

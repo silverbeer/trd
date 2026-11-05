@@ -1384,6 +1384,34 @@ _ENTRIES: list[GlossaryEntry] = [
         used_in=["trd engine rotation", "trd engine backtest -p rotate_min_score=S"],
     ),
     GlossaryEntry(
+        key="market-temperature",
+        term="Market temperature",
+        category=Category.ENGINE,
+        definition=(
+            "One read of what the whole market is doing TODAY, recorded with every scan: "
+            "the S&P 500 (SPY) move from the prior close, breadth (the share of the "
+            "engine's own universe trading up), and VIX with its move. Folded into "
+            "cold / cool / neutral / warm / hot.\n\n"
+            "Hot or cold needs the S&P and breadth to agree at full strength; one strong "
+            "reading against a lukewarm other is only warm or cool, and the two pointing "
+            "opposite ways is neutral. A VIX jump of 10% or more caps a green day at cool. "
+            "Missing inputs are neutral, never guessed.\n\n"
+            "It decides nothing. The regime gate is about the TREND (SPY vs its average); "
+            "this is about the DAY. A rule may read it only once a backtest says it helps."
+        ),
+        formula=(
+            "S&P:     >= +1.0% hot, >= +0.4% warm, mirrored below zero\n"
+            "breadth: >= 70% up hot, >= 60% warm, <= 40% cool, <= 30% cold\n"
+            "VIX:     up >= 10% on the day caps the label at cool"
+        ),
+        example=(
+            "S&P +1.6% with 80% of the universe up: hot. S&P +0.8% while 7 of 10 names "
+            "fall: neutral — the index is being carried by a few names."
+        ),
+        related=["passed-signals", "rotation"],
+        used_in=["trd engine scan", "trd engine status", "trd engine live-report"],
+    ),
+    GlossaryEntry(
         key="survivorship",
         term="Survivorship bias",
         category=Category.ENGINE,
