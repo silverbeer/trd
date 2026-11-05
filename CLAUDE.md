@@ -555,6 +555,17 @@ trd engine rotation [--cost 0.1] [--start ISO] [--end ISO] [-n 10] [--json]
                                       # +2.9% ±2.6, median +0.6%, 28/50 won, both halves + —
                                       # NOT significant. 'coldest' is shared with the rotation
                                       # rule (SB-1539) so the study and the rule pick alike
+                                      # -p rotate_min_score=S (backtest/sweep ONLY, SB-1539; 0 =
+                                      # off): with the book full, a signal scoring >= S sells
+                                      # the coldest eligible holding at the bar's close (rule
+                                      # 'rotate'), once a session; 'rotations' in the result.
+                                      # The live scan does NOT read it; what-if refuses it.
+                                      # MEASURED 2026-11-04: swing (10 slots, 10y, 3,742
+                                      # trades) every threshold 0.01-0.7 slightly WORSE (Δ
+                                      # -0.004..-0.009R, |t|<0.5, return 388% -> 348-368%);
+                                      # swing20 (5 slots, 2y, 353 trades) Δ +0.02R, t~0.3,
+                                      # return 132% -> ~215%, DD unchanged. Not significant
+                                      # either way: do not wire it into the live scan on this
 trd engine replay-match [--days 30] [--start ISO] [--end ISO] [--entry-fill open|close] [--json]
                                       # does the backtest trade the way the engine did? Replays
                                       # the window and pairs it with the live trades (same name,

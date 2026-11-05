@@ -61,6 +61,11 @@ DEFAULT_EXIT_PARAMS: dict[str, float] = {
     # thread through, which is what lets the two share one implementation.
     "regime_sma": 0.0,  # block entries while SPY closes below its N-day SMA
     "regime_vix_max": 0.0,  # block entries while VIX closes above this level
+    # Rotation (SB-1539): with the book full, a signal scoring at least this sells
+    # the coldest eligible holding (trd.services.rotation.coldest) to take its
+    # slot, at most once a session. 0 = off. BACKTEST ONLY until a sweep shows it
+    # pays: the live scan does not read it, so a live engine is unaffected.
+    "rotate_min_score": 0.0,
 }
 
 

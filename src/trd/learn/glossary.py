@@ -1381,7 +1381,7 @@ _ENTRIES: list[GlossaryEntry] = [
             "window and not yet distinguishable from zero."
         ),
         related=["passed-signals", "expectancy", "r-multiple"],
-        used_in=["trd engine rotation"],
+        used_in=["trd engine rotation", "trd engine backtest -p rotate_min_score=S"],
     ),
     GlossaryEntry(
         key="survivorship",
