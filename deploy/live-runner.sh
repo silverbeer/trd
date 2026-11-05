@@ -67,7 +67,7 @@ if [[ "${1:-}" == install ]]; then
     PORTFOLIO="${TRD_PORTFOLIO_HOME:-$HOME/.trd-portfolio}"
     if [[ -f "$PORTFOLIO/trd.duckdb" ]]; then
         set +e
-        if TRD_HOME="$PORTFOLIO" "$RUNNER_HOME/venv/bin/trd" account ls --json > /dev/null 2>&1; then
+        if TRD_HOME="$PORTFOLIO" "$RUNNER_HOME/venv/bin/trd" account ls > /dev/null 2>&1; then
             echo "migrated $PORTFOLIO to this build"
         else
             echo "WARNING: could not open $PORTFOLIO with this build — the IRA report will fail" >&2
