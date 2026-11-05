@@ -1351,6 +1351,39 @@ _ENTRIES: list[GlossaryEntry] = [
         used_in=["trd engine edge"],
     ),
     GlossaryEntry(
+        key="rotation",
+        term="Rotation (swap a cold holding for a blocked signal)",
+        category=Category.ENGINE,
+        definition=(
+            "What a full book costs. When every slot is taken, a new signal is passed "
+            "over. Rotation is the alternative: sell the COLDEST eligible holding and take "
+            "the signal instead. 'trd engine rotation' prices that swap on the engine's "
+            "own history before any rule does it for real.\n\n"
+            "Per session with a full-book signal, the strongest blocked signal (highest "
+            "score) is paired with the coldest eligible holding: past the indicator exit's "
+            "grace period, not within 0.5R of its target, lowest R. Both legs trade at the "
+            "signal bar's close. The candidate is walked to its stop, its target or the "
+            "horizon; the holding is what keeping it did (its real exit if it closed "
+            "inside the horizon). Edge = candidate % - keep % - round-trip cost, in "
+            "percent of the slot, because one R of each leg is a different sum of money.\n\n"
+            "Read the median beside the mean: one volatile name can carry the average. "
+            "Under 20 swaps the result is a hypothesis."
+        ),
+        formula=(
+            "edge = (exit_c / close_c - 1) - (exit_h / close_h - 1) - cost\n"
+            "exit_c = stop | target | last close in horizon (first touched; both = stop)\n"
+            "exit_h = the holding's own exit if inside the horizon, else last close\n"
+            "mean edge +/- SE over sessions; significant past 2 SE"
+        ),
+        example=(
+            "50 swaps on a 10-slot swing book: candidates +0.9%, the holdings they would "
+            "have replaced -2.1%, edge +2.9% +/-2.6 — positive in both halves of the "
+            "window and not yet distinguishable from zero."
+        ),
+        related=["passed-signals", "expectancy", "r-multiple"],
+        used_in=["trd engine rotation"],
+    ),
+    GlossaryEntry(
         key="survivorship",
         term="Survivorship bias",
         category=Category.ENGINE,

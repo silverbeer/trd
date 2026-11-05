@@ -64,6 +64,7 @@ from trd.services.outcomes import OutcomeSummary
 from trd.services.plan import PlanStatus
 from trd.services.replay_match import ReplayMatchResult
 from trd.services.review import MIN_TRADES_FOR_FINDING, EnginePack, ReviewResult
+from trd.services.rotation import RotationReport, Stat
 from trd.services.sunday_prep import SundayPrepBriefing
 from trd.services.sweep import SweepResult, SweepRow
 from trd.timeframes import DAILY, sessions_to_bars
@@ -3228,6 +3229,85 @@ def edge_table(report: EdgeReport) -> Table:
         table.add_section()
         for group in report.by_time:
             add(group)
+    return table
+
+
+def _rotation_cell(stat: Stat) -> str:
+    if stat.mean_edge_pct is None:
+        return "—"
+    se = f" ±{stat.se_pct:.2f}" if stat.se_pct is not None else ""
+    text = f"{stat.mean_edge_pct:+.2f}%{se}"
+    return f"[bold]{text}[/bold]" if stat.significant else f"[dim]{text}[/dim]"
+
+
+def rotation_table(report: RotationReport, rows: int = 10) -> Table:
+    """The full-book swap study: each slice's mean edge, then the newest swaps."""
+    counts = ", ".join(f"{v} {k.replace('_', ' ')}" for k, v in sorted(report.counts.items()))
+    table = Table(
+        title=(
+            f"Rotation — {report.blocked_sessions} full-book sessions on {report.timeframe} "
+            f"({report.max_positions} slots), {report.horizon_bars} bars ahead ({counts})"
+        ),
+        title_justify="left",
+        caption=(
+            f"Edge = candidate % - keep % - {report.cost_pct}% cost, ±1 SE. Bold = past 2 SE. "
+            "Under 20 swaps = hypothesis. 'trd learn rotation'"
+        ),
+        caption_justify="left",
+    )
+    table.add_column("Slice", style="bold", no_wrap=True)
+    table.add_column("n", justify="right")
+    table.add_column("Edge (mean)", justify="right")
+    table.add_column("Median", justify="right")
+    table.add_column("Swap won", justify="right")
+    table.add_column("Candidate", justify="right")
+    table.add_column("Kept", justify="right")
+
+    def add(stat: Stat) -> None:
+        label = stat.label + (" [dim](hypothesis)[/dim]" if stat.hypothesis and stat.n else "")
+        table.add_row(
+            label,
+            str(stat.n),
+            _rotation_cell(stat),
+            f"{stat.median_edge_pct:+.2f}%" if stat.median_edge_pct is not None else "—",
+            f"{stat.wins}/{stat.n}" if stat.n else "—",
+            f"{stat.mean_candidate_pct:+.2f}%" if stat.mean_candidate_pct is not None else "—",
+            f"{stat.mean_keep_pct:+.2f}%" if stat.mean_keep_pct is not None else "—",
+        )
+
+    add(report.overall)
+    if report.by_strategy:
+        table.add_section()
+        for stat in report.by_strategy:
+            add(stat)
+    if report.halves:
+        table.add_section()
+        for stat in report.halves:
+            add(stat)
+    return table
+
+
+def rotation_rows_table(report: RotationReport, limit: int = 10) -> Table:
+    table = Table(title="Newest full-book sessions", title_justify="left")
+    for col in ("Session", "Signal", "Sold (R, held)", "Candidate", "Kept", "Edge", "Status"):
+        table.add_column(col, justify="right" if col in ("Candidate", "Kept", "Edge") else "left")
+    for row in sorted(report.rows, key=lambda r: r.session, reverse=True)[:limit]:
+        sold = (
+            f"{row.sold.symbol} ({row.sold.r_now:+.2f}R, {row.sold.sessions_held})"
+            if row.sold
+            else "—"
+        )
+        table.add_row(
+            row.session.isoformat(),
+            f"{row.symbol} {row.strategy}",
+            sold,
+            f"{row.candidate_pct:+.2f}% {row.candidate_exit}"
+            if row.candidate_pct is not None
+            else "—",
+            f"{row.keep_pct:+.2f}%" if row.keep_pct is not None else "—",
+            f"{row.edge_pct:+.2f}%" if row.edge_pct is not None else "—",
+            row.status.replace("_", " "),
+        )
     return table
 
 

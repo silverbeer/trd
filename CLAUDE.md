@@ -541,6 +541,20 @@ trd engine sweep -p KEY=V1,V2 [-p ...] [--start ISO] [--end ISO] [--workers N] [
                                       # 16 rows of 4 months of 5m bars: ~4 min (a single 5m backtest
                                       # went 35 min -> 63 s when volratio stopped re-summing its
                                       # 1,560-bar window every bar — the same speedup reaches scans)
+trd engine rotation [--cost 0.1] [--start ISO] [--end ISO] [-n 10] [--json]
+                                      # what a FULL BOOK cost (SB-1537): per session with a
+                                      # signal passed on a full book, its strongest blocked
+                                      # signal vs the COLDEST eligible holding (past indicator
+                                      # grace, not within 0.5R of target, lowest R). Both legs
+                                      # at the signal bar's close; candidate walked to stop/
+                                      # target/horizon, holding = what keeping it did (its own
+                                      # exit if inside the horizon). Edge in % of the slot
+                                      # after cost — not R, the legs' R are different dollars.
+                                      # Mean ± SE, median, by strategy, by halves. Read-only.
+                                      # MEASURED 2026-11-04, swing (10 slots), 50 swaps:
+                                      # +2.9% ±2.6, median +0.6%, 28/50 won, both halves + —
+                                      # NOT significant. 'coldest' is shared with the rotation
+                                      # rule (SB-1539) so the study and the rule pick alike
 trd engine replay-match [--days 30] [--start ISO] [--end ISO] [--entry-fill open|close] [--json]
                                       # does the backtest trade the way the engine did? Replays
                                       # the window and pairs it with the live trades (same name,
