@@ -23,7 +23,7 @@ from decimal import Decimal
 from pydantic import BaseModel, computed_field
 
 from trd.errors import TrdError
-from trd.models import IntentStatus, PositionRow, Side
+from trd.models import IntentStatus, MarketTemperature, PositionRow, Side
 from trd.services.daily_report import EngineDay, ExitEvent, engine_day
 from trd.services.engine import EngineService
 
@@ -151,6 +151,9 @@ class LiveReport(BaseModel):
     opened_today: list[OpenedToday] = []
     closed_today: list[ClosedToday] = []
     unfilled_today: list[UnfilledIntent] = []
+    # The market as the session's last scan read it (SB-1538). None when no
+    # scan that day recorded one.
+    temperature: MarketTemperature | None = None
 
     @computed_field  # type: ignore[prop-decorator]
     @property
@@ -281,7 +284,18 @@ def live_report(service: EngineService, name: str, on: date) -> LiveReport:
         opened_today=opened,
         closed_today=closed,
         unfilled_today=unfilled,
+        temperature=_temperature_on(service, on),
     )
+
+
+def _temperature_on(service: EngineService, on: date) -> MarketTemperature | None:
+    """The last temperature recorded by a scan on `on`. Newest first, so the
+    reading is the one nearest the close."""
+    start = datetime.combine(on, datetime.min.time())
+    for run in service.runs.list_since(start):
+        if run.started_at.date() == on and run.temperature is not None:
+            return run.temperature
+    return None
 
 
 def _previous_close(service: EngineService, instrument_id: int, on: date) -> Decimal | None:

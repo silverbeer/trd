@@ -984,6 +984,8 @@ def live_report_message(report: LiveReport, label: str | None = None) -> str:
         return "\n".join(lines)
 
     lines += _verdict(report)
+    if report.temperature is not None:
+        lines.append(f"<i>Market: {_h(report.temperature.line())}</i>")
 
     lines += [
         "",

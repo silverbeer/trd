@@ -385,6 +385,54 @@ class EngineGuard(BaseModel):
         return self.halted and self.halted_by == HaltCause.MAX_LOSS
 
 
+# Market temperature (SB-1538) — computed in trd.engine.temperature.
+
+
+class Temperature(StrEnum):
+    COLD = "cold"
+    COOL = "cool"
+    NEUTRAL = "neutral"
+    WARM = "warm"
+    HOT = "hot"
+
+
+ICONS = {
+    Temperature.COLD: "🥶",
+    Temperature.COOL: "🌧",
+    Temperature.NEUTRAL: "⛅",
+    Temperature.WARM: "☀️",
+    Temperature.HOT: "🔥",
+}
+
+
+class MarketTemperature(BaseModel):
+    label: Temperature
+    spy_pct: Decimal | None = None
+    breadth_pct: Decimal | None = None
+    breadth_names: int = 0
+    vix: Decimal | None = None
+    vix_pct: Decimal | None = None
+    # Why the label is what it is, in one line — what a report prints.
+    reason: str
+
+    @property
+    def icon(self) -> str:
+        return ICONS[self.label]
+
+    def line(self) -> str:
+        parts = []
+        if self.spy_pct is not None:
+            parts.append(f"S&P {self.spy_pct:+.1f}%")
+        if self.breadth_pct is not None:
+            parts.append(f"{self.breadth_pct:.0f}% of {self.breadth_names} names up")
+        if self.vix is not None:
+            vix = f"VIX {self.vix:.1f}"
+            if self.vix_pct is not None:
+                vix += f" ({self.vix_pct:+.0f}%)"
+            parts.append(vix)
+        return f"{self.icon} {self.label.value} day — " + (", ".join(parts) or "no data")
+
+
 class EngineRun(BaseModel):
     id: int
     started_at: datetime
@@ -394,6 +442,8 @@ class EngineRun(BaseModel):
     closed: int = 0
     paper: bool = True
     note: str | None = None
+    # The market as this pass read it (SB-1538). NULL on runs before migration 034.
+    temperature: MarketTemperature | None = None
 
 
 class SignalRow(BaseModel):
@@ -592,6 +642,9 @@ class EngineStatus(BaseModel):
 
     last_scan: datetime | None
     scans_today: int
+    # The market as today's newest scan read it (SB-1538); None before the first
+    # scan of the day, so yesterday's close is never shown as today's weather.
+    temperature: MarketTemperature | None = None
 
     @computed_field  # type: ignore[prop-decorator]
     @property

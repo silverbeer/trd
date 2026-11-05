@@ -16,6 +16,7 @@ from trd.models import (
     EngineSignal,
     Instrument,
     IntentStatus,
+    MarketTemperature,
     OrderIntent,
     PositionStatus,
     Side,
@@ -37,7 +38,7 @@ _POSITION_COLS = (
     "stop_price, target_price, atr_at_entry, trail_high, bars_held, last_bar_date, status, "
     "closed_at, exit_price, exit_reason, exit_rule, closed_quantity, booked_pnl"
 )
-_RUN_COLS = "id, started_at, scanned, signals, opened, closed, paper, note"
+_RUN_COLS = "id, started_at, scanned, signals, opened, closed, paper, note, temperature"
 _INTENT_COLS = (
     "id, account_id, instrument_id, side, quantity, ref_price, notional, reason, rule, "
     "strategy, signal_id, position_id, stop_price, target_price, atr_at_entry, ref_id, "
@@ -140,6 +141,7 @@ def _row_to_run(row: tuple) -> EngineRun:
         closed=row[5],
         paper=row[6],
         note=row[7],
+        temperature=MarketTemperature.model_validate_json(row[8]) if row[8] else None,
     )
 
 
@@ -212,13 +214,29 @@ class EngineRunRepo:
         assert row is not None
         return _row_to_run(row)
 
-    def finish(self, run_id: int, scanned: int, signals: int, opened: int, closed: int) -> None:
+    def finish(
+        self,
+        run_id: int,
+        scanned: int,
+        signals: int,
+        opened: int,
+        closed: int,
+        temperature: MarketTemperature | None = None,
+    ) -> None:
         self.conn.execute(
             """
-            UPDATE engine_run SET scanned = ?, signals = ?, opened = ?, closed = ?
+            UPDATE engine_run SET scanned = ?, signals = ?, opened = ?, closed = ?,
+                temperature = ?
             WHERE id = ?
             """,
-            [scanned, signals, opened, closed, run_id],
+            [
+                scanned,
+                signals,
+                opened,
+                closed,
+                temperature.model_dump_json() if temperature else None,
+                run_id,
+            ],
         )
 
     def list_recent(self, limit: int = 20) -> list[EngineRun]:

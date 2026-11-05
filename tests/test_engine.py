@@ -1099,7 +1099,8 @@ def test_quote_symbols_covers_the_universe_and_anything_held(engine, provider, c
     provider.add_symbol("AAA", price="100")
     provider.add_symbol("BBB", price="100")
     engine.init(symbols=["AAA"], strategies=["breakout"])
-    assert engine.quote_symbols() == ["AAA"]
+    # SPY and ^VIX ride along for the market temperature (SB-1538).
+    assert engine.quote_symbols() == ["AAA", "SPY", "^VIX"]
 
     account = engine.account()
     other = InstrumentRepo(conn).insert(InstrumentInfo(symbol="BBB", name="BBB"))
@@ -1116,7 +1117,7 @@ def test_quote_symbols_covers_the_universe_and_anything_held(engine, provider, c
         atr_at_entry=Decimal("2.5"),
         last_bar_date=date(2026, 7, 30),
     )
-    assert engine.quote_symbols() == ["AAA", "BBB"]
+    assert engine.quote_symbols() == ["AAA", "BBB", "SPY", "^VIX"]
 
 
 def test_scan_uses_prefetched_quotes_without_calling_the_provider(engine, provider, monkeypatch):

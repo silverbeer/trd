@@ -391,6 +391,13 @@ trd engine status [--json]            # what this engine is + whether it's healt
                                       # halted / halt_reason / halted_at / halted_by, guard (caps),
                                       # awaiting_approval and stuck_intents in --json — published
                                       # in status.json, which is what the watchdog reads
+                                      # MARKET TEMPERATURE (SB-1538, migration 034): every
+                                      # scan quotes SPY + ^VIX alongside its universe and
+                                      # records cold/cool/neutral/warm/hot on engine_run
+                                      # (S&P move, breadth over the universe, VIX jump caps
+                                      # at cool). In scan NDJSON, status --json 'temperature'
+                                      # (today's newest run only), and one line in the live
+                                      # report. Decides nothing. 'trd learn market-temperature'
 trd engine outcomes [--backfill] [--recompute] [--trades] [--json]
                                       # did we enter early, did we exit early, and what did the
                                       # signals we PASSED OVER do next. MAE (heat taken), MFE
