@@ -71,6 +71,8 @@ from trd.services.engine import (
     strategy_stats,
 )
 from trd.services.outcomes import excursion, pooled_capture
+from trd.services.rotation import Holding, coldest
+from trd.timeframes import sessions_to_bars
 
 YOUNG_CAVEAT = (
     "A listing's first sessions carry what no other stretch of its chart does: IPO "
@@ -223,6 +225,8 @@ class BacktestResult(BaseModel):
     # many ranked entries were skipped for want of settled cash. 0 when off.
     settlement: bool = False
     cash_blocked: int = 0
+    # Full-book swaps taken by the rotation param (SB-1539); 0 with it off.
+    rotations: int = 0
     # The settlement bridge the replay ran with (SB-1445). None = none.
     bridge: Decimal | None = None
     equity: list[EquityPoint]
@@ -598,6 +602,15 @@ def simulate(
     # settlement on; with it off every exit pays straight into `cash`, as before.
     pending: dict[date, Decimal] = {}
     cash_blocked = 0
+    # Rotation (SB-1539): off at 0. One swap a session at most, the same bound
+    # the full-book study (trd engine rotation) measures.
+    rotate_min = float(exit_params.get("rotate_min_score", 0.0))
+    rotate_grace = sessions_to_bars(
+        timeframe, float(exit_params.get("indicator_grace_sessions", 3.0))
+    )
+    rotate_target_r = Decimal(str(exit_params.get("target_r", 2.0)))
+    rotated_on: date | None = None
+    rotations = 0
 
     equity_by_session: dict[date, Decimal] = {}
     for stamp in stamps:
@@ -644,13 +657,38 @@ def simulate(
                 cash += proceeds
             if decision is None:
                 return
-            exit_price = fills[-1][0]
+            record_close(
+                symbol,
+                fills[-1][0],
+                decision.rule,
+                decision.reason,
+                i,
+                stamp,
+                today,
+                just_closed,
+                lived_exit_bar=fill is FillMode.CLOSE,
+            )
+
+        def record_close(
+            symbol: str,
+            exit_price: Decimal,
+            rule: str,
+            reason: str,
+            i: int,
+            stamp: datetime,
+            today: date,
+            just_closed: set[str],
+            lived_exit_bar: bool,
+        ) -> None:
+            """Book a closed position: out of the book, onto the trade list."""
+            position = open_positions[symbol]
+            bars = series[symbol]
             position.status = PositionStatus.CLOSED
             position.closed_at = (
                 stamp if source.is_intraday else datetime.combine(today, _FILL_TIME)
             )
-            position.exit_reason = decision.reason
-            position.exit_rule = decision.rule
+            position.exit_reason = reason
+            position.exit_rule = rule
             closed.append(position)
             del open_positions[symbol]
             just_closed.add(symbol)
@@ -659,7 +697,7 @@ def simulate(
             # either way. The exit bar is in only on a close fill, which lived
             # through all of it; an intrabar fill left somewhere inside it, so only
             # the exit price itself is on the path.
-            lived = bars[entry_index[position.id] + 1 : i + 1 if fill is FillMode.CLOSE else i]
+            lived = bars[entry_index[position.id] + 1 : i + 1 if lived_exit_bar else i]
             path = excursion(
                 lived,
                 position.entry_price,
@@ -678,8 +716,8 @@ def simulate(
                     entry_reason=entry_reasons.get(position.id, ""),
                     exit_at=position.closed_at,
                     exit_price=exit_price,
-                    rule=decision.rule,
-                    exit_reason=decision.reason,
+                    rule=rule,
+                    exit_reason=reason,
                     pnl=position.realized_pnl or Decimal(0),
                     r_multiple=position.realized_r,
                     mae_r=path.mae_r,
@@ -715,8 +753,17 @@ def simulate(
         )
         if blocked_by_regime is not None:
             regime_blocked += 1
+        # A full book may still rotate: evaluate the candidates so the strongest
+        # can be weighed against the coldest holding. Not when the entry budget
+        # is what binds — a spent budget is not a full book.
+        may_rotate = (
+            rotate_min > 0
+            and rotated_on != today
+            and len(open_positions) >= max_positions
+            and (max_entries_per_day <= 0 or entries_today < max_entries_per_day)
+        )
         if (
-            capacity > 0
+            (capacity > 0 or may_rotate)
             and today >= trading_start
             and not too_late
             and not too_early
@@ -773,6 +820,55 @@ def simulate(
                         continue
                     candidates.append((signal.score, symbol, key, prefix, signal.reason))
             candidates.sort(key=lambda c: (-c[0], c[1]))
+            if (
+                capacity <= 0
+                and may_rotate
+                and candidates
+                and candidates[0][0] >= rotate_min
+                and candidates[0][1] not in just_closed
+            ):
+                held_now: list[Holding] = []
+                for held_symbol, position in open_positions.items():
+                    j = index[held_symbol].get(stamp)
+                    if j is None or position.risk_per_share <= 0:
+                        continue
+                    mark = series[held_symbol][j].close
+                    held_now.append(
+                        Holding(
+                            position_id=position.id,
+                            symbol=held_symbol,
+                            strategy=position.strategy,
+                            sessions_held=position.bars_held,
+                            r_now=(mark - position.entry_price) / position.risk_per_share,
+                            mark=mark,
+                        )
+                    )
+                cold = coldest(held_now, rotate_grace, rotate_target_r)
+                if cold is not None:
+                    position = open_positions[cold.symbol]
+                    sold = position.remaining_quantity
+                    position.book_exit(sold, cold.mark)
+                    proceeds = cold.mark * sold
+                    if settlement:
+                        settle = settles_on(today)
+                        pending[settle] = pending.get(settle, Decimal(0)) + proceeds
+                    else:
+                        cash += proceeds
+                    record_close(
+                        cold.symbol,
+                        cold.mark,
+                        "rotate",
+                        f"rotated out at {cold.r_now:+.2f}R for {candidates[0][1]} "
+                        f"(score {candidates[0][0]:.2f})",
+                        index[cold.symbol][stamp],
+                        stamp,
+                        today,
+                        just_closed,
+                        lived_exit_bar=True,
+                    )
+                    rotated_on = today
+                    rotations += 1
+                    capacity = 1
             for _score, symbol, key, prefix, reason in candidates:
                 if capacity <= 0:
                     break
@@ -875,6 +971,7 @@ def simulate(
         regime_blocked=regime_blocked,
         settlement=settlement,
         cash_blocked=cash_blocked,
+        rotations=rotations,
         bridge=bridge if settlement else None,
         equity=equity,
         start_value=start_value,

@@ -54,7 +54,9 @@ from trd.services.outcomes import excursion, pooled_capture, window
 # Knobs that decide which trades exist, not how they end. A what-if holds the
 # entries fixed, so varying one of these would report the baseline under a new
 # name — refused rather than silently ignored.
-ENTRY_PARAMS = frozenset({"entry_delay_minutes", "regime_sma", "regime_vix_max"})
+ENTRY_PARAMS = frozenset(
+    {"entry_delay_minutes", "regime_sma", "regime_vix_max", "rotate_min_score"}
+)
 
 # A paired difference this many standard errors from zero is the bar SB-1033
 # set for touching the live config. Below it the row is noise, whatever its sign.

@@ -789,3 +789,82 @@ def test_the_cli_young_slice_finds_the_listing_and_overrides_rules(cli_env: Fake
         assert out["open_at_end"] == 1  # NEW's breakout; OLD's is outside the slice
     finally:
         os.environ.pop("TRD_HOME", None)
+
+
+# ------------------------------------------------------------- rotation (SB-1539)
+
+
+class _Scripted:
+    """Fires wherever a bar carries the marker volume. Lets a test say exactly
+    which day each name signals, which no real rule can be made to do."""
+
+    key = "scripted"
+    MARK = 7
+
+    def warmup_bars(self, timeframe: str = DAILY) -> int:
+        return 15
+
+    def warmup_daily(self, timeframe: str = DAILY) -> int:
+        return 0
+
+    def evaluate(self, ctx):
+        from trd.engine.base import StrategySignal
+
+        if ctx.bars[-1].volume == self.MARK:
+            return StrategySignal(strategy="scripted", score=0.9, reason="scripted")
+        return None
+
+
+def _rotation_book() -> dict[str, list[DailyBar]]:
+    start = date(2024, 1, 1)
+    # COLD: flat, signals on day 15, then creeps up — above its own average,
+    # a little green, nowhere near its target: the coldest thing on the book.
+    cold = [
+        bar(start + timedelta(days=i), c, c + 1, c - 1, c, 7 if i == 15 else 1_000)
+        for i, c in enumerate([100.0] * 16 + [100.0 + 0.1 * k for k in range(1, 15)])
+    ]
+    # HOT: flat at 50, signals on day 22 — the book (one slot) is full then.
+    hot = [
+        bar(start + timedelta(days=i), 50.0, 51.0, 49.0, 50.0, 7 if i == 22 else 1_000)
+        for i in range(30)
+    ]
+    return {"COLD": cold, "HOT": hot}
+
+
+def test_rotation_swaps_the_coldest_holding_for_a_strong_blocked_signal(monkeypatch):
+    from trd.engine import REGISTRY
+
+    monkeypatch.setitem(REGISTRY, "scripted", _Scripted())
+    off = run(_rotation_book(), strategies=["scripted"], max_positions=1)
+    assert off.rotations == 0
+    # Without it COLD runs on to its time exit and HOT, blocked on day 22, is never taken.
+    assert [(t.symbol, t.rule) for t in off.trades] == [("COLD", "time")]
+    assert off.open_at_end == 0
+
+    params = dict(DEFAULT_EXIT_PARAMS, rotate_min_score=0.5)
+    on = run(_rotation_book(), strategies=["scripted"], max_positions=1, exit_params=params)
+    assert on.rotations == 1
+    (swap,) = on.trades
+    assert swap.symbol == "COLD" and swap.rule == "rotate"
+    assert swap.exit_at.date() == date(2024, 1, 23)  # day 22, the HOT signal's bar
+    assert swap.exit_price == Decimal("100.7")
+    assert "for HOT" in swap.exit_reason
+    assert on.open_at_end == 1
+
+
+def test_rotation_waits_for_the_score_and_the_grace_period(monkeypatch):
+    from trd.engine import REGISTRY
+
+    monkeypatch.setitem(REGISTRY, "scripted", _Scripted())
+    # The signal scores 0.9: a 0.95 bar is never met.
+    high = dict(DEFAULT_EXIT_PARAMS, rotate_min_score=0.95)
+    assert (
+        run(_rotation_book(), strategies=["scripted"], max_positions=1, exit_params=high).rotations
+        == 0
+    )
+    # COLD has held 7 sessions on day 22; a 10-session grace protects it.
+    grace = dict(DEFAULT_EXIT_PARAMS, rotate_min_score=0.5, indicator_grace_sessions=10)
+    assert (
+        run(_rotation_book(), strategies=["scripted"], max_positions=1, exit_params=grace).rotations
+        == 0
+    )
