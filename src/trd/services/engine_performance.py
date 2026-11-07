@@ -20,7 +20,7 @@ from pydantic import BaseModel, computed_field
 
 from trd.engine.settlement import ledger
 from trd.errors import TrdError
-from trd.models import Side, Transaction
+from trd.models import EnginePosition, Side, Transaction
 from trd.services.engine import EngineService
 from trd.services.fifo import realized_sales
 
@@ -52,6 +52,21 @@ class PerformanceSession(BaseModel):
     provisional: bool = False
 
 
+class TradeLine(BaseModel):
+    """One closed trade, named in the summary as the best or the worst."""
+
+    symbol: str
+    strategy: str
+    opened: date
+    closed: date
+    entry_price: Decimal
+    exit_price: Decimal | None
+    pnl: Decimal
+    pnl_pct: Decimal | None
+    r: Decimal | None
+    exit_rule: str | None = None
+
+
 class EnginePerformance(BaseModel):
     account: str
     mode: str
@@ -65,6 +80,10 @@ class EnginePerformance(BaseModel):
     # Symbols held on a session with no close stored at or before it. Their
     # value is unknown, so a session that holds one is left out, never zeroed.
     unpriced: list[str] = []
+    # By booked dollars, not R: the summary is about money. None until a trade
+    # closes; worst stays None with one trade, which is already the best.
+    best_trade: TradeLine | None = None
+    worst_trade: TradeLine | None = None
 
     @computed_field  # type: ignore[prop-decorator]
     @property
@@ -223,8 +242,9 @@ def engine_performance(service: EngineService, today: date | None = None) -> Eng
         )
         previous = worth
 
-    closed = [p for p, _ in service.positions.list_closed(account.id)]
-    booked = [p.realized_pnl for p in closed if p.realized_pnl is not None]
+    closed = service.positions.list_closed(account.id)
+    booked = [p.realized_pnl for p, _ in closed if p.realized_pnl is not None]
+    lines = [_trade_line(p, i.symbol) for p, i in closed if p.realized_pnl is not None]
     return EnginePerformance(
         account=account.name,
         mode=config.mode.value,
@@ -235,4 +255,23 @@ def engine_performance(service: EngineService, today: date | None = None) -> Eng
         won=sum(1 for b in booked if b > 0),
         lost=sum(1 for b in booked if b <= 0),
         unpriced=sorted(unpriced),
+        best_trade=max(lines, key=lambda t: t.pnl, default=None),
+        worst_trade=min(lines, key=lambda t: t.pnl) if len(lines) > 1 else None,
+    )
+
+
+def _trade_line(position: EnginePosition, symbol: str) -> TradeLine:
+    pnl = position.realized_pnl or Decimal(0)
+    cost = position.entry_price * position.quantity
+    return TradeLine(
+        symbol=symbol,
+        strategy=position.strategy,
+        opened=position.opened_at.date(),
+        closed=(position.closed_at or position.opened_at).date(),
+        entry_price=position.entry_price,
+        exit_price=position.exit_price,
+        pnl=pnl,
+        pnl_pct=_pct(pnl, cost),
+        r=position.realized_r,
+        exit_rule=position.exit_rule,
     )

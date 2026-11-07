@@ -17,7 +17,7 @@ from typer.testing import CliRunner
 from trd.cli.app import app
 from trd.errors import TrdError
 from trd.models import Side
-from trd.repos import InstrumentRepo, PriceRepo, TransactionRepo
+from trd.repos import EnginePositionRepo, InstrumentRepo, PriceRepo, TransactionRepo
 from trd.services import EngineService
 from trd.services.engine_performance import engine_performance
 from trd.services.equity_curve import EquityCurveService
@@ -188,3 +188,71 @@ def test_engine_performance_cli(cli_env: FakeProvider):
 
     equity = runner.invoke(app, ["equity", "--account", "engine-sim"])
     assert "trd engine performance" in equity.output
+
+
+def _closed_position(conn, engine, symbol, entry, stop, exit_, opened, closed, rule):
+    instrument = InstrumentRepo(conn).get_by_symbol(symbol)
+    assert instrument is not None
+    repo = EnginePositionRepo(conn)
+    p = repo.open(
+        engine.account().id,
+        instrument.id,
+        None,
+        "momentum",
+        opened,
+        D(entry),
+        D("2"),
+        D(stop),
+        D("999"),
+        D("1"),
+        None,
+    )
+    repo.close(p.id, closed, D(exit_), "test", rule)
+
+
+def test_best_and_worst_trade_by_booked_dollars(conn, book):
+    _closed_position(
+        conn,
+        book,
+        "AAA",
+        "100",
+        "90",
+        "120",
+        datetime(2026, 3, 2, 9, 40),
+        datetime(2026, 3, 3, 15, 0),
+        "target",
+    )
+    _closed_position(
+        conn,
+        book,
+        "BBB",
+        "100",
+        "95",
+        "94",
+        datetime(2026, 3, 2, 9, 41),
+        datetime(2026, 3, 4, 10, 0),
+        "stop",
+    )
+    perf = engine_performance(book, today=date(2026, 3, 10))
+    best, worst = perf.best_trade, perf.worst_trade
+    assert best is not None and best.symbol == "AAA" and best.pnl == D("40")
+    assert best.pnl_pct == D("20") and best.r == D("2") and best.closed == TUE
+    assert worst is not None and worst.symbol == "BBB" and worst.pnl == D("-12")
+    assert worst.r == D("-1.2") and worst.exit_rule == "stop"
+
+
+def test_one_trade_is_only_the_best_and_none_is_neither(conn, book):
+    assert engine_performance(book, today=date(2026, 3, 10)).best_trade is None
+    _closed_position(
+        conn,
+        book,
+        "AAA",
+        "100",
+        "90",
+        "120",
+        datetime(2026, 3, 2, 9, 40),
+        datetime(2026, 3, 3, 15, 0),
+        "target",
+    )
+    perf = engine_performance(book, today=date(2026, 3, 10))
+    assert perf.best_trade is not None and perf.worst_trade is None

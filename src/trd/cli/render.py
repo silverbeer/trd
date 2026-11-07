@@ -3623,6 +3623,16 @@ def engine_performance_renderables(
             f"{fmt_signed(perf.best.day_change)} / {fmt_signed(perf.worst.day_change)}",
             f"{perf.best.date:%m-%d} / {perf.worst.date:%m-%d}",
         )
+    for label, trade in (("best trade", perf.best_trade), ("worst trade", perf.worst_trade)):
+        if trade is None:
+            continue
+        r = f" {trade.r:+.1f}R" if trade.r is not None else ""
+        summary.add_row(
+            label,
+            f"{fmt_signed(trade.pnl)}  [bold]{trade.symbol}[/bold]",
+            f"{fmt_signed_pct(trade.pnl_pct)}{r} · {trade.opened:%m-%d}→{trade.closed:%m-%d}"
+            + (f" · {trade.exit_rule}" if trade.exit_rule else ""),
+        )
     out: list[RenderableType] = [table, summary]
     if any(s.provisional for s in sessions):
         out.append(
