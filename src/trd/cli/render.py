@@ -61,6 +61,7 @@ from trd.services.engine_performance import EnginePerformance
 from trd.services.equity_curve import EquityCurve
 from trd.services.exit_whatif import WhatIfArm, WhatIfResult
 from trd.services.history import HistoryResult
+from trd.services.live_report import LiveReport
 from trd.services.movers import MoverRow
 from trd.services.outcomes import OutcomeSummary
 from trd.services.plan import PlanStatus
@@ -1673,6 +1674,168 @@ def engine_positions_table(
     return table
 
 
+def engine_positions_summary(rows: list[PositionRow], max_positions: int | None) -> RenderableType:
+    """The open book at a glance: slots, money in it, and the trades to watch —
+    the leader and laggard in R, and whichever sits nearest its stop or target."""
+    open_rows = [r for r in rows if r.position.status != PositionStatus.CLOSED]
+    if not open_rows:
+        return Text("")
+    committed = sum((r.position.cost for r in open_rows), Decimal(0))
+    pnl = sum((r.position.pnl_at(r.mark) or Decimal(0) for r in open_rows), Decimal(0))
+    risk = sum((r.risk_at_stop or Decimal(0) for r in open_rows), Decimal(0))
+    slots = max_positions or len(open_rows)
+    full = len(open_rows) >= slots
+    color = "yellow" if full else "cyan"
+    color_pnl, arrow = tone(pnl)
+    top = hero(
+        "Open book",
+        [
+            Text.from_markup(
+                f"[dim]slots[/dim] {gauge(len(open_rows) / slots, slots, color)} "
+                f"[{color}]{len(open_rows)}/{slots}[/{color}]"
+                + (
+                    "  [yellow]full[/yellow]"
+                    if full
+                    else f"  [dim]room for {slots - len(open_rows)}[/dim]"
+                )
+            ),
+            Text.from_markup(
+                f"[dim]committed[/dim] {fmt_money(committed)}   [dim]unrealized[/dim] "
+                f"[{color_pnl}]{arrow} {fmt_signed(pnl)}[/{color_pnl}]   "
+                f"[dim]at risk[/dim] {fmt_money(risk)}"
+            ),
+        ],
+        border=color_pnl,
+    )
+
+    def r_of(row: PositionRow) -> Decimal | None:
+        return row.position.r_multiple_at(row.mark)
+
+    def line(icon: str, row: PositionRow) -> Row:
+        r = r_of(row)
+        return (
+            f"{icon} [bold]{row.instrument.symbol}[/bold]",
+            f"{fmt_r(r)} {fmt_signed(row.position.pnl_at(row.mark))}",
+        )
+
+    by_r = sorted((r for r in open_rows if r_of(r) is not None), key=lambda r: r_of(r) or 0)
+    leaders: list[Row] = []
+    if by_r:
+        leaders.append(line("🏆", by_r[-1]))
+        if len(by_r) > 1:
+            leaders.append(line("💀", by_r[0]))
+
+    def gap(row: PositionRow, level: Decimal) -> Decimal | None:
+        if row.mark is None or row.mark == 0:
+            return None
+        return (row.mark - level) / row.mark * 100
+
+    watch: list[Row] = []
+    near_stop = min(
+        (r for r in open_rows if gap(r, r.stop_in_force) is not None),
+        key=lambda r: gap(r, r.stop_in_force) or 0,
+        default=None,
+    )
+    if near_stop is not None:
+        d = gap(near_stop, near_stop.stop_in_force) or Decimal(0)
+        c = severity(max(Decimal(0), 10 - d), 5, 8)
+        watch.append((f"🛑 {near_stop.instrument.symbol}", f"[{c}]{d:.1f}% above stop[/{c}]"))
+    near_target = min(
+        (r for r in open_rows if gap(r, r.position.target_price) is not None),
+        key=lambda r: -(gap(r, r.position.target_price) or 0),
+        default=None,
+    )
+    if near_target is not None:
+        d = -(gap(near_target, near_target.position.target_price) or Decimal(0))
+        watch.append((f"🎯 {near_target.instrument.symbol}", f"[green]{d:.1f}% to target[/green]"))
+    return dashboard(
+        top, ("🏁 Leader / laggard", leaders, "magenta"), ("👀 Watch", watch, "yellow")
+    )
+
+
+def live_report_renderables(report: LiveReport, label: str) -> list[RenderableType]:
+    """`trd engine live-report` in the terminal: the account hero, one card per
+    position (stop → target gauge), and the day's activity. The Telegram
+    message is the same report as HTML."""
+    day = report.day
+    lines: list[RenderableType | None] = []
+    if day.live_worth is not None and day.capital is not None:
+        lines.append(change_line(day.capital, day.live_worth, start_label="capital"))
+    change, pct = report.today_change, report.today_change_pct
+    if change is not None:
+        c, arrow = tone(change)
+        lines.append(
+            Text.from_markup(
+                f"[dim]today[/dim] [{c}]{arrow} {fmt_signed(change)}"
+                + (f"  ({pct:+.2f}%)" if pct is not None else "")
+                + f"[/{c}]"
+            )
+        )
+    if report.temperature is not None:
+        lines.append(Text(report.temperature.line(), style="dim"))
+    if day.marks_are_stale:
+        lines.append(Text.from_markup(f"[red]⚠ stale marks — as of {day.marked_at}[/red]"))
+    if day.halted:
+        lines.append(
+            Text.from_markup(f"[bold red]HALTED[/bold red] [red]{day.halt_reason or ''}[/red]")
+        )
+    border = "red" if day.halted else tone(day.net)[0]
+    top = hero(label, lines, border=border, subtitle=f"{report.on:%a %b %d}")
+
+    account: list[Row] = [
+        ("realized", fmt_signed(day.realized_all)),
+        ("unrealized", fmt_signed(day.unrealized)),
+        ("at risk", fmt_money(day.risk_at_stop)),
+    ]
+    if day.cash_settled is not None:
+        account.append(("settled", fmt_money(day.cash_settled)))
+    if day.cash_unsettled is not None:
+        account.append(("unsettled", fmt_money(day.cash_unsettled)))
+    if day.cash_buying_power is not None:
+        account.append(("buying power", f"[bold]{fmt_money(day.cash_buying_power)}[/bold]"))
+    if day.open_intents or day.awaiting_approval:
+        account.append(("orders", f"{day.open_intents} open · {day.awaiting_approval} to approve"))
+
+    activity: list[Row] = []
+    for o in report.opened_today:
+        activity.append(
+            (f"🟢 bought {o.symbol}", f"{fmt_qty(o.quantity)} @ {fmt_money(o.entry_price)}")
+        )
+    for closed in report.closed_today:
+        t = closed.trade
+        activity.append(
+            (
+                f"{'✅' if t.pnl >= 0 else '🔴'} sold {t.symbol}",
+                f"{fmt_signed(t.pnl)} {fmt_r(t.r_multiple)}",
+            )
+        )
+    for u in report.unfilled_today:
+        activity.append((f"⚪ {u.side.value} {u.symbol}", f"[dim]{u.status.value}[/dim]"))
+
+    position_cards: list[tuple[str, list[Row], str]] = []
+    for p in sorted(report.positions, key=lambda p: -(p.unrealized_pct or Decimal(-999))):
+        rows: list[Row] = [
+            ("P&L", f"{fmt_signed(p.unrealized)} {fmt_signed_pct(p.unrealized_pct)}"),
+            ("R", fmt_r(p.r_now)),
+            ("today", fmt_signed_pct(p.day_change_pct)),
+            ("", r_gauge(p.entry_price, p.mark, p.stop_in_force, p.target)),
+            (
+                "stop" + (" ↑" if p.trailing else ""),
+                f"{fmt_money(p.stop_in_force)} [dim]{p.stop_distance_pct or 0:.1f}% below[/dim]",
+            ),
+            ("target", f"{fmt_money(p.target)} [dim]{p.target_distance_pct or 0:.1f}% above[/dim]"),
+        ]
+        color = "green" if (p.unrealized or 0) >= 0 else "red"
+        position_cards.append((f"{p.symbol} · {p.strategy}", rows, color))
+
+    out: list[RenderableType] = [
+        dashboard(top, ("💵 Account", account, "cyan"), ("📋 Today", activity, "yellow"))
+    ]
+    if position_cards:
+        out.append(cards(*position_cards))
+    return out
+
+
 def fmt_r(value: Decimal | None) -> str:
     """An R-multiple, coloured by sign. The engine's own unit, so it appears
     everywhere a number is compared across differently sized trades."""
@@ -2177,6 +2340,129 @@ def engine_cash_renderables(cash: CashLedger | None) -> list[RenderableType]:
     return [table, Text(note, style="dim")]
 
 
+def _status_dashboard(status: EngineStatus, mode: str, trading: str) -> RenderableType:
+    """The engine at a glance: what it is, how full, how it's doing, the
+    market's temperature and when it last ran — then the book in cards."""
+    live = status.mode == EngineMode.LIVE
+    filled = status.open_positions / status.max_positions if status.max_positions else 0.0
+    slot_color = "yellow" if status.capacity == 0 else "cyan"
+    lines: list[RenderableType | None] = [
+        Text.from_markup(f"{trading}  [dim]·  {mode}[/dim]"),
+        Text.from_markup(
+            f"[dim]slots[/dim] {gauge(filled, status.max_positions or 1, slot_color)} "
+            f"[{slot_color}]{status.open_positions}/{status.max_positions}[/{slot_color}]"
+            + (
+                "  [yellow]full[/yellow]"
+                if status.capacity == 0
+                else f"  [dim]room for {status.capacity}[/dim]"
+            )
+            + f"   [dim]net[/dim] [{tone(status.net_pnl)[0]}]{tone(status.net_pnl)[1]} "
+            f"{fmt_signed(status.net_pnl)}[/{tone(status.net_pnl)[0]}]"
+        ),
+    ]
+    if status.temperature is not None:
+        lines.append(Text(status.temperature.line(), style="dim"))
+    if status.last_scan is None:
+        lines.append(Text.from_markup("[yellow]⚠ never scanned — run 'trd engine scan'[/yellow]"))
+    else:
+        lines.append(
+            Text.from_markup(
+                f"[dim]last scan {status.last_scan:%Y-%m-%d %H:%M:%S} · "
+                f"{status.scans_today} today · build {status.build}[/dim]"
+            )
+        )
+    lines.append(Text(str(status.db_path), style="dim"))
+    border = "red" if status.halted or status.config_refused else ("bold red" if live else "cyan")
+    top = hero(status.account, lines, border=border, subtitle="💵 live" if live else "paper")
+
+    pnl: list[Row] = [
+        (
+            "realized",
+            fmt_signed(status.realized)
+            + (f" [dim]({status.closed_trades} closed)[/dim]" if status.closed_trades else ""),
+        )
+    ]
+    if not status.open_positions:
+        mark = ""
+    elif status.marks_are_stale:
+        mark = f" [red]STALE{' ' + str(status.marked_at) if status.marked_at else ''}[/red]"
+    else:
+        mark = f" [dim]{status.marked_at or ''}[/dim]"
+    pnl.append(("unrealized", fmt_signed(status.unrealized) + mark))
+    pnl.append(("[bold]net[/bold]", f"[bold]{fmt_signed(status.net_pnl)}[/bold]"))
+
+    book: list[Row] = [("committed", fmt_money(status.committed))]
+    if status.committed > 0:
+        share = float(status.risk_at_stop / status.committed)
+        color = severity(share * 100, 10, 20)
+        book.append(
+            (
+                "at risk",
+                f"{fmt_money(status.risk_at_stop)} {gauge(share * 5, 8, color)} "
+                f"[{color}]{share * 100:.0f}%[/{color}] [dim]of committed[/dim]",
+            )
+        )
+    else:
+        book.append(("at risk", fmt_money(status.risk_at_stop)))
+    if status.max_entries_per_day > 0:
+        left = max(0, status.max_entries_per_day - status.entries_today)
+        book.append(
+            (
+                "entries today",
+                f"{status.entries_today}/{status.max_entries_per_day}"
+                + ("  [yellow]spent[/yellow]" if left == 0 else f"  [dim]{left} left[/dim]"),
+            )
+        )
+    if live:
+        book.append(
+            ("intents", f"{status.open_intents} open · {status.awaiting_approval} to approve")
+        )
+        if status.stuck_intents:
+            book.append(
+                ("[red]stuck[/red]", f"[red]{status.stuck_intents} — trd engine fills[/red]")
+            )
+
+    cash: list[Row] = []
+    if status.capital is not None:
+        cash = [
+            ("capital", fmt_money(status.capital)),
+            ("settled", fmt_money(status.cash_settled)),
+            ("unsettled", fmt_money(status.cash_unsettled)),
+        ]
+        if status.cash_next_settle is not None:
+            cash.append(("next settles", str(status.cash_next_settle)))
+        if status.cash_bridge:
+            cash.append(
+                (
+                    "bridge",
+                    f"{fmt_money(status.cash_bridge)} "
+                    f"[dim]({fmt_money(status.cash_bridged)} used)[/dim]",
+                )
+            )
+        cash.append(
+            ("[bold]buying power[/bold]", f"[bold]{fmt_money(status.cash_buying_power)}[/bold]")
+        )
+
+    guard: list[Row] = []
+    if live and status.guard is not None:
+        g = status.guard
+        guard = [
+            ("per order", fmt_money(g.max_order) if g.max_order is not None else "off"),
+            ("per day", fmt_money(g.max_daily) if g.max_daily is not None else "off"),
+            ("positions", str(g.max_positions) if g.max_positions is not None else "off"),
+            ("loss stop", fmt_money(g.max_loss) if g.max_loss is not None else "off"),
+        ]
+        if not g.stored:
+            guard.append(("", "[dim](defaults)[/dim]"))
+    return dashboard(
+        top,
+        ("💰 P&L", pnl, "green"),
+        ("📦 Book", book, "magenta"),
+        ("💵 Cash", cash, "cyan"),
+        ("🛡 Guard", guard, "red"),
+    )
+
+
 def engine_status_renderables(status: EngineStatus) -> list[RenderableType]:
     """What this engine is and whether it is healthy, in one screen.
 
@@ -2196,11 +2482,7 @@ def engine_status_renderables(status: EngineStatus) -> list[RenderableType]:
         if status.mode == EngineMode.LIVE
         else "paper — simulated fills"
     )
-    header = (
-        f"[bold]{status.account}[/bold]  ·  {mode}\n{trading}\n"
-        f"build {status.build}\n{status.db_path}"
-    )
-    out: list[RenderableType] = [Panel(header, expand=False, border_style="cyan")]
+    out: list[RenderableType] = [_status_dashboard(status, mode, trading)]
 
     # Directly under the header, before any number it invalidates. An engine in a
     # configuration `init` would refuse produces results that look like a flat
@@ -2258,97 +2540,6 @@ def engine_status_renderables(status: EngineStatus) -> list[RenderableType]:
         rules.add_row("regime gate", "off")
     out.append(rules)
 
-    book = Table(title="Book", title_justify="left", show_header=False, box=None)
-    book.add_column(style="dim")
-    book.add_column()
-    room = (
-        "[yellow]full — no new entries until something exits[/yellow]"
-        if status.capacity == 0
-        else f"room for {status.capacity}"
-    )
-    book.add_row("positions", f"{status.open_positions} of {status.max_positions}  ·  {room}")
-    # An open intent is a position in all but the fill: it holds a slot and its
-    # cash. Shown on a live engine always — zero is an answer there.
-    if status.mode == EngineMode.LIVE:
-        book.add_row(
-            "open intents",
-            f"{status.open_intents}  ·  {status.awaiting_approval} awaiting approval  ·  "
-            "'trd engine intents'",
-        )
-        if status.stuck_intents:
-            book.add_row(
-                "[red]stuck[/red]",
-                f"[red]{status.stuck_intents} intent(s) the broker has not resolved in time "
-                "— ingest a fresh snapshot ('trd engine fills')[/red]",
-            )
-        if status.guard is not None:
-            book.add_row("hard caps", guard_caps_line(status.guard))
-    # Two different limits, so both are shown when both are on: max_positions caps
-    # how many trades are open, the budget caps how many may be opened. A day
-    # engine recycles its slots as exits fire, so the book can read "room for 2"
-    # while the engine is done trading for the session.
-    if status.max_entries_per_day > 0:
-        left = max(0, status.max_entries_per_day - status.entries_today)
-        budget = f"{status.entries_today} of {status.max_entries_per_day} taken today"
-        budget += (
-            "  ·  [yellow]spent — no more entries this session[/yellow]"
-            if left == 0
-            else f"  ·  {left} left"
-        )
-        book.add_row("entry budget", budget)
-    # Only with the ledger on. Settled is what the next entry can spend; a refill
-    # that reads "room for 1" above can still be refused here until T+1.
-    if status.capital is not None:
-        cash = (
-            f"{fmt_money(status.cash_settled)} settled  ·  "
-            f"{fmt_money(status.cash_unsettled)} unsettled"
-        )
-        if status.cash_next_settle is not None:
-            cash += f"  ·  next settles {status.cash_next_settle}"
-        if status.cash_bridge:
-            cash += (
-                f"  ·  bridge {fmt_money(status.cash_bridge)} "
-                f"({fmt_money(status.cash_bridged)} in use)  ·  "
-                f"[bold]{fmt_money(status.cash_buying_power)} buying power[/bold]"
-            )
-        book.add_row("cash", cash + f" [dim](of {fmt_money(status.capital)} capital)[/dim]")
-    book.add_row("committed", fmt_money(status.committed))
-    # Committed capital reads as the exposure, and it is not: every position has
-    # a stop under it. The share says how much of the committed money is actually
-    # in play, which is the number that argues for one sizing mode over the other.
-    share = (
-        f" [dim]({status.risk_at_stop / status.committed * 100:.1f}% of committed, "
-        "if every stop hits)[/dim]"
-        if status.committed > 0
-        else ""
-    )
-    book.add_row("at risk", fmt_money(status.risk_at_stop) + share)
-    out.append(book)
-
-    # Realized and unrealized separately, then the sum. An engine up only on open
-    # positions while most of its completed trades lost money is a different
-    # engine from one that is up on both, and a lone net number hides that.
-    pnl = Table(title="P&L", title_justify="left", show_header=False, box=None)
-    pnl.add_column(style="dim")
-    pnl.add_column()
-    closed = f" [dim]({status.closed_trades} closed)[/dim]" if status.closed_trades else ""
-    pnl.add_row("realized", fmt_signed(status.realized) + closed)
-    # The mark's date, always — a P&L number can only be judged next to the
-    # session it was priced on. Loud when that session is behind the newest one
-    # in the database: a stale mark reads as a healthy position right up until it
-    # closes for a loss.
-    if not status.open_positions:
-        open_note = ""
-    elif status.marks_are_stale:
-        dated = f" as of {status.marked_at}" if status.marked_at else ""
-        open_note = f" [red]({status.open_positions} open, STALE marks{dated} — run trd sync)[/red]"
-    else:
-        dated = f" {status.marked_at}" if status.marked_at else ""
-        open_note = f" [dim]({status.open_positions} open, marked at the{dated} close)[/dim]"
-    pnl.add_row("unrealized", fmt_signed(status.unrealized) + open_note)
-    pnl.add_row("[bold]net[/bold]", f"[bold]{fmt_signed(status.net_pnl)}[/bold]")
-    out.append(pnl)
-
     data = Table(title="Data", title_justify="left", show_header=False, box=None)
     data.add_column(style="dim")
     data.add_column()
@@ -2382,15 +2573,6 @@ def engine_status_renderables(status: EngineStatus) -> list[RenderableType]:
         )
     out.append(data)
 
-    activity = Table(title="Activity", title_justify="left", show_header=False, box=None)
-    activity.add_column(style="dim")
-    activity.add_column()
-    if status.last_scan is None:
-        activity.add_row("last scan", "[yellow]never — run 'trd engine scan'[/yellow]")
-    else:
-        activity.add_row("last scan", status.last_scan.strftime("%Y-%m-%d %H:%M:%S"))
-    activity.add_row("scans today", str(status.scans_today))
-    out.append(activity)
     return out
 
 

@@ -41,6 +41,7 @@ from trd.cli.render import (
     engine_intents_table,
     engine_monitor_view,
     engine_performance_renderables,
+    engine_positions_summary,
     engine_positions_table,
     engine_report_table,
     engine_runs_table,
@@ -61,6 +62,7 @@ from trd.cli.render import (
     history_table,
     income_table,
     indicator_panel,
+    live_report_renderables,
     lots_summary,
     lots_table,
     movers_table,
@@ -111,7 +113,6 @@ from trd.notify.messages import (
     halt_message,
     live_report_message,
     review_message,
-    strip_html,
     sunday_prep_message,
 )
 from trd.notify.telegram import LIVE_LABEL, TelegramNotifier
@@ -2756,6 +2757,7 @@ def engine_positions(
         console.print("No engine positions yet. Run [bold]trd engine scan[/bold].")
         return
     title = "Engine positions — all" if all_ else "Engine positions — open"
+    console.print(engine_positions_summary(rows, max_positions))
     console.print(
         engine_positions_table(
             rows,
@@ -3082,7 +3084,8 @@ def engine_live_report(
     if as_json:
         _emit_json({"message": message, "sent": sent, "report": report.model_dump(mode="json")})
         return
-    console.print(strip_html(message), markup=False, highlight=False)
+    for part in live_report_renderables(report, label):
+        console.print(part)
     if notify and not report.market_open:
         console.print("[dim]No session stored for this date — nothing sent.[/dim]")
 
