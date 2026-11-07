@@ -424,3 +424,12 @@ def test_buying_power_line_names_the_bridge() -> None:
     text = live_report_message(LiveReport(on=SESSION, day=bridged))
     assert "Buying power $23.35" in text
     assert "up to $100.00 bridge fronting $42.10 from sales still settling" in text
+
+
+def test_cli_terminal_view_is_panels(cli_env):
+    _cli_live_home(cli_env)
+    result = runner.invoke(app, ["engine", "live-report", "--date", SESSION.isoformat()])
+    assert result.exit_code == 0, result.output
+    shown = " ".join(result.output.split())
+    assert "capital 100.00" in shown and "Account" in shown and "buying power" in shown
+    assert "<b>" not in result.output  # never the Telegram HTML

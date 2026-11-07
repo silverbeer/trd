@@ -19,7 +19,11 @@ import pytest
 
 from tests.conftest import FakeProvider
 from tests.test_engine import make_bars, seed, uptrend
-from trd.cli.render import engine_positions_table, engine_status_renderables
+from trd.cli.render import (
+    engine_positions_summary,
+    engine_positions_table,
+    engine_status_renderables,
+)
 from trd.learn import GlossaryEntry, lookup
 from trd.models import EnginePosition, Instrument, InstrumentType, PositionRow, PositionStatus
 from trd.services import EngineService
@@ -207,7 +211,7 @@ def test_the_status_screen_says_all_of_it(held) -> None:
     for renderable in engine_status_renderables(held.status()):
         console.print(renderable)
     text = console.export_text()
-    for label in ("at risk", "realized", "unrealized", "net", "% of committed"):
+    for label in ("at risk", "realized", "unrealized", "net", "% of committed", "slots", "Book"):
         assert label in text, f"{label} missing from engine status"
 
 
@@ -219,6 +223,9 @@ def test_the_positions_table_has_a_risk_column_and_a_book_total(held) -> None:
     text = console.export_text()
     assert "Risk" in text
     assert "at risk" in text  # the caption total
+    console.print(engine_positions_summary(held.position_rows(), 5))
+    text = console.export_text()
+    assert "Open book" in text and "slots" in text and "Watch" in text
 
 
 def test_the_risk_column_survives_json(held) -> None:
