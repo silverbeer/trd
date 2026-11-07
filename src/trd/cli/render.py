@@ -1,7 +1,6 @@
 from datetime import date, datetime, timedelta
 from decimal import Decimal
 
-from rich.columns import Columns
 from rich.console import Group, RenderableType
 from rich.padding import Padding
 from rich.panel import Panel
@@ -70,30 +69,23 @@ from trd.services.sunday_prep import SundayPrepBriefing
 from trd.services.sweep import SweepResult, SweepRow
 from trd.timeframes import DAILY, sessions_to_bars
 
-MONEY = "{:,.2f}"
-
-
-def fmt_money(value: Decimal | None) -> str:
-    return MONEY.format(value) if value is not None else "—"
-
-
-def fmt_qty(value: Decimal) -> str:
-    text = f"{value.normalize():f}"
-    return text
-
-
-def fmt_signed(value: Decimal | None) -> str:
-    if value is None:
-        return "—"
-    color = "green" if value >= 0 else "red"
-    return f"[{color}]{'+' if value >= 0 else ''}{MONEY.format(value)}[/{color}]"
-
-
-def fmt_signed_pct(value: Decimal | None) -> str:
-    if value is None:
-        return "—"
-    color = "green" if value >= 0 else "red"
-    return f"[{color}]{'+' if value >= 0 else ''}{value:.2f}%[/{color}]"
+from .ui import (
+    MONEY,
+    Row,
+    change_line,
+    dashboard,
+    fmt_money,
+    fmt_qty,
+    fmt_signed,
+    fmt_signed_pct,
+    gauge,
+    hero,
+    severity,
+    sparkline,
+    tone,
+    versus,
+    win_loss,
+)
 
 
 def trend_change(values: list[float]) -> str:
@@ -3542,128 +3534,45 @@ def proposal_renderables(p: Proposal) -> list[RenderableType]:
     return [*out, Text.from_markup("\n".join(lines))]
 
 
-_SPARK = "▁▂▃▄▅▆▇█"
-
-
-def _sparkline(values: list[Decimal], peak_at: int | None = None) -> Text:
-    """Worth over the sessions, one block per session: green up, red down vs
-    the session before, the peak in gold. Block glyphs ship in every common
-    monospace font; this is the one view that is about the shape of a line."""
-    text = Text()
-    if not values:
-        return text
-    lo, hi = min(values), max(values)
-    span = hi - lo
-    # A short history drawn one cell a session is a smudge: widen each to ~40.
-    stretch = max(1, min(4, 40 // len(values)))
-    previous = values[0]
-    for i, v in enumerate(values):
-        level = 0 if span == 0 else int((v - lo) / span * (len(_SPARK) - 1))
-        style = "bold gold1" if i == peak_at else "green" if v >= previous else "red"
-        text.append(_SPARK[level] * stretch, style=style)
-        previous = v
-    return text
-
-
-def _bar(filled: float, width: int, on: str, off: str) -> str:
-    """A horizontal gauge: `filled` (0..1) of `width` cells in `on`, rest in `off`."""
-    n = max(0, min(width, round(filled * width)))
-    return f"[{on}]{'━' * n}[/{on}][{off}]{'━' * (width - n)}[/{off}]"
-
-
-def _card(title: str, rows: list[tuple[str, str]], color: str, height: int) -> Panel:
-    grid = Table.grid(padding=(0, 2))
-    grid.add_column(
-        style="dim",
-        no_wrap=True,
-        min_width=max((Text.from_markup(r[0]).cell_len for r in rows), default=0),
-    )
-    grid.add_column(justify="right", no_wrap=True)
-    for label, value in rows:
-        grid.add_row(label, value)
-    return Panel(
-        grid,
-        title=f"[bold {color}]{title}[/bold {color}]",
-        border_style=color,
-        title_align="left",
-        padding=(0, 1),
-        height=height,
-        expand=False,
-    )
-
-
 def performance_summary(perf: EnginePerformance) -> RenderableType:
-    """The lifetime summary as a headline panel over three cards."""
-    up = perf.net >= 0
-    tone = "green" if up else "red"
-    arrow = "▲" if up else "▼"
-
-    headline = Text.from_markup(
-        f"[dim]{fmt_money(perf.capital)}[/dim]  [bold]→[/bold]  "
-        f"[bold {tone}]{fmt_money(perf.worth)}[/bold {tone}]   "
-        f"[{tone}]{arrow} {fmt_signed(perf.net)}  ({perf.return_pct:+.2f}%)[/{tone}]"
-    )
-    lines: list[RenderableType] = [headline]
-    bench = perf.benchmark_return_pct
-    if bench is not None:
-        gap = perf.return_pct - bench
-        verdict = (
-            f"[bold green]✓ {gap:.2f} pts ahead[/bold green]"
-            if gap >= 0
-            else f"[bold red]✗ {-gap:.2f} pts behind[/bold red]"
-        )
-        lines.append(
-            Text.from_markup(f"[dim]vs {perf.benchmark}[/dim] {fmt_signed_pct(bench)}  {verdict}")
-        )
+    """The lifetime summary: a headline panel over Money, Trades and Risk cards."""
+    color, _ = tone(perf.net)
+    spark = None
     if perf.sessions:
         worths = [s.worth for s in perf.sessions]
+        above = perf.peak > perf.capital
         peak_at = next((i for i, w in enumerate(worths) if w == perf.peak), None)
-        spark = _sparkline(worths, peak_at if perf.peak > perf.capital else None)
+        spark = sparkline(worths, peak_at if above else None)
         spark.append(
             f"  {perf.sessions[0].date:%m-%d} → {perf.sessions[-1].date:%m-%d}", style="dim"
         )
-        if perf.peak > perf.capital:
+        if above:
             spark.append(f"   ★ peak {fmt_money(perf.peak)} {perf.peak_date:%m-%d}", style="gold1")
-        lines.append(spark)
-    hero = Panel(
-        Group(*lines),
-        title=f"[bold]✦ Since the start[/bold] [dim]· {perf.started}[/dim]",
-        title_align="left",
-        border_style=tone,
-        padding=(0, 2),
-        expand=False,
+    top = hero(
+        "Since the start",
+        [
+            change_line(perf.capital, perf.worth, pct=perf.return_pct),
+            versus(perf.benchmark, perf.return_pct, perf.benchmark_return_pct),
+            spark,
+        ],
+        border=color,
+        subtitle=str(perf.started),
     )
 
-    money_rows = [
+    money: list[Row] = [
         ("capital", fmt_money(perf.capital)),
         ("worth", f"[bold]{fmt_money(perf.worth)}[/bold]"),
         ("booked", fmt_signed(perf.realized)),
         ("still open", fmt_signed(perf.unrealized)),
     ]
 
-    closed = perf.won + perf.lost
-    trade_rows: list[tuple[str, str]] = []
-    if closed:
-        rate = perf.won / closed
-        trade_rows.append(
-            (
-                f"[green]{perf.won}W[/green] [red]{perf.lost}L[/red]",
-                f"{_bar(rate, 12, 'green', 'red')} {rate * 100:.0f}%",
-            )
-        )
-    else:
-        trade_rows.append(("closed", "[dim]none yet[/dim]"))
-    for label, trade, icon in (
-        ("best", perf.best_trade, "🏆"),
-        ("worst", perf.worst_trade, "💀"),
-    ):
+    trades: list[Row] = [win_loss(perf.won, perf.lost)]
+    for label, trade, icon in (("best", perf.best_trade, "🏆"), ("worst", perf.worst_trade, "💀")):
         if trade is None:
             continue
         r = f" {trade.r:+.1f}R" if trade.r is not None else ""
-        trade_rows.append(
-            (f"{icon} {label}", f"[bold]{trade.symbol}[/bold] {fmt_signed(trade.pnl)}")
-        )
-        trade_rows.append(
+        trades.append((f"{icon} {label}", f"[bold]{trade.symbol}[/bold] {fmt_signed(trade.pnl)}"))
+        trades.append(
             (
                 "",
                 f"{fmt_signed_pct(trade.pnl_pct)}[dim]{r} · "
@@ -3673,9 +3582,8 @@ def performance_summary(perf: EnginePerformance) -> RenderableType:
             )
         )
 
-    dd = abs(perf.max_drawdown_pct)
-    dd_color = "green" if dd < 5 else "yellow" if dd < 15 else "red"
-    risk_rows = [
+    dd_color = severity(perf.max_drawdown_pct, 5, 15)
+    risk: list[Row] = [
         (
             "peak",
             f"[gold1]{fmt_money(perf.peak)}[/gold1] [dim]{perf.peak_date:%m-%d}[/dim]"
@@ -3684,30 +3592,23 @@ def performance_summary(perf: EnginePerformance) -> RenderableType:
         ),
         (
             "max drawdown",
-            f"{_bar(float(min(dd, Decimal(25))) / 25, 10, dd_color, 'grey23')} "
+            f"{gauge(float(abs(perf.max_drawdown_pct)) / 25, 10, dd_color)} "
             f"[{dd_color}]{perf.max_drawdown_pct:.1f}%[/{dd_color}]",
         ),
     ]
     if perf.best is not None and perf.worst is not None:
-        risk_rows.append(
+        risk.append(
             ("best day", f"{fmt_signed(perf.best.day_change)} [dim]{perf.best.date:%m-%d}[/dim]")
         )
-        risk_rows.append(
+        risk.append(
             ("worst day", f"{fmt_signed(perf.worst.day_change)} [dim]{perf.worst.date:%m-%d}[/dim]")
         )
-    # Panels side by side don't share a height on their own; give them one.
-    height = max(len(money_rows), len(trade_rows), len(risk_rows)) + 2
-    # Natural widths, wrapped onto a new row when the terminal is too narrow —
-    # a value is never cut to fit.
-    cards = Columns(
-        [
-            _card("💰 Money", money_rows, "cyan", height),
-            _card("🎯 Trades", trade_rows, "magenta", height),
-            _card("🌊 Risk", risk_rows, "blue", height),
-        ],
-        padding=(0, 1),
+    return dashboard(
+        top,
+        ("💰 Money", money, "cyan"),
+        ("🎯 Trades", trades, "magenta"),
+        ("🌊 Risk", risk, "blue"),
     )
-    return Group(Text(""), hero, cards)
 
 
 def engine_performance_renderables(
