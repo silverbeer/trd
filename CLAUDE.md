@@ -841,6 +841,30 @@ stdout with a non-zero exit, so one `| jq` handles success and failure alike. Sp
 suppressed in JSON mode (they write to stdout and would corrupt the document). Rich tables
 truncate to terminal width — never parse them.
 
+### Human output: the UI kit (SB-1587)
+
+Every human view is built from [src/trd/cli/ui.py](src/trd/cli/ui.py), the look first
+shipped by `trd engine performance`. It has two parts:
+
+- a **hero** panel that says where the money stands in one glance (`change_line`
+  for start → now ▲/▼, `versus` for ✓ ahead / ✗ behind a benchmark in points,
+  `sparkline` for the shape);
+- emoji-titled **cards** of label/value rows (`dashboard(hero, (title, rows, colour), ...)`).
+
+Gauges (`gauge`, `win_loss`) and `severity` handle magnitudes.
+
+Rules:
+- Green means up, red down, gold a peak, dim context. Never use colour alone:
+  the sign, arrow or word is always printed too.
+- Cards wrap onto a new row on a narrow terminal and share a height. A value is
+  never truncated.
+- Long lists (sessions, holdings, signals) stay tables. The kit is the summary
+  above or below them.
+- The formatters (`fmt_money`, `fmt_signed`, `fmt_signed_pct`) live in `ui` and
+  are re-exported by `render`.
+- `ui` is rendering only. `--json` and Telegram HTML never pass through it, and
+  services never import it.
+
 CSV import format (header required): `date,account,symbol,side,quantity,price[,fees,note]` — date is ISO, side is buy/sell.
 
 ## Architecture rules (enforce in review)
