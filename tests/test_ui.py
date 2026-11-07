@@ -51,8 +51,9 @@ def test_tone_and_severity() -> None:
 def test_change_line_and_versus() -> None:
     assert "100.00  →  97.50   ▼ -2.50  (-2.50%)" in change_line(D(100), D("97.5")).plain
     assert "▲ +10.00" in change_line(D(100), D(110)).plain
-    assert "1.24 pts ahead" in versus("SPY", D("-2.50"), D("-3.74")).plain  # type: ignore[union-attr]
-    assert "3.00 pts behind" in versus("SPY", D(1), D(4)).plain  # type: ignore[union-attr]
+    ahead, behind = versus("SPY", D("-2.50"), D("-3.74")), versus("SPY", D(1), D(4))
+    assert ahead is not None and "1.24 pts ahead" in ahead.plain
+    assert behind is not None and "3.00 pts behind" in behind.plain
     assert versus("SPY", D(1), None) is None
 
 
