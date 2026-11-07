@@ -40,6 +40,7 @@ from trd.models import (
 from trd.models.activity_import import ImportPlan
 from trd.models.alloc import (
     CASH_FLOW_LABELS,
+    AllocReport,
     AllocView,
     CashBalance,
     CashFlow,
@@ -47,6 +48,7 @@ from trd.models.alloc import (
     Proposal,
 )
 from trd.models.engine import describe_short
+from trd.notify.messages import ALLOC_BIG_PCT, ALLOC_FLAT_PCT
 from trd.repos import PrepSnapshotRow
 from trd.services.backtest import YOUNG_CAVEAT
 from trd.services.backtest import BacktestResult as EngineBacktestResult
@@ -72,6 +74,7 @@ from trd.timeframes import DAILY, sessions_to_bars
 from .ui import (
     MONEY,
     Row,
+    cards,
     change_line,
     dashboard,
     fmt_money,
@@ -3340,55 +3343,274 @@ def cash_flows_table(flows: list[CashFlow], balance: CashBalance) -> RenderableT
     return Group(table, summary)
 
 
-def alloc_view_renderables(view: AllocView) -> list[RenderableType]:
+def _alloc_cash_rows(view: AllocView) -> list[Row]:
+    """What the waiting cash earns, and what is set aside for paced buys."""
+    plan = view.plan
+    cash: list[Row] = []
+    cy = plan.cash_yield
+    if cy is not None:
+        age = (view.as_of.date() - cy.as_of).days
+        cash.append((f"in {cy.fund}", f"[green]{cy.yield_pct:.2f}%[/green]"))
+        cash.append(("≈ a month", fmt_signed(view.cash_monthly_interest)))
+        cash.append(("earned so far", fmt_money(view.cash_interest_earned)))
+        cash.append(
+            ("rate as of", f"[yellow]{cy.as_of} ({age}d)[/yellow]" if age > 35 else str(cy.as_of))
+        )
+    if view.reserved_cash:
+        names = ", ".join(p.symbol for p in view.paced)
+        cash.append((f"set aside {names}", fmt_money(view.reserved_cash)))
+    return cash
+
+
+def _alloc_next_rows(view: AllocView) -> list[Row]:
+    """The next paced instalment(s) and the next live tranche, with days to go."""
+    nxt: list[Row] = []
+    today = view.as_of.date()
+    for p in view.paced:
+        if p.next_date is not None:
+            nxt.append(
+                (
+                    f"🚀 {p.symbol}",
+                    f"{fmt_money(p.instalment)} [dim]{p.next_date:%b %d} · "
+                    f"{(p.next_date - today).days}d[/dim]",
+                )
+            )
+    upcoming = next(
+        (p for p in view.progress if p.state in ("planned", "partial", "overdue", "postponed")),
+        None,
+    )
+    if upcoming is not None:
+        m = upcoming.milestone
+        days = (m.due_date - today).days
+        label = "initial" if m.seq == 0 else f"#{m.seq}"
+        when = (
+            f"[red]overdue {-days}d[/red]"
+            if days < 0
+            else f"[dim]{m.due_date:%b %d} · {days}d[/dim]"
+        )
+        nxt.append((f"🗓 tranche {label}", f"{fmt_money(m.amount)} {when}"))
+    return nxt
+
+
+def alloc_view_summary(view: AllocView) -> RenderableType:
+    """Where the plan stands in one glance: a hero (deposits → worth, vs SPY,
+    how much is deployed) over Money, Cash, Drift and Next cards."""
     plan = view.plan
     kind = " · ".join(x for x in (plan.account_kind, plan.brokerage) if x)
-    head = [
-        f"[bold]{plan.name}[/bold]  ({plan.account}{' · ' + kind if kind else ''})",
-        f"capital {fmt_money(plan.capital)} · deposited {fmt_money(view.cash.net_deposits)}"
-        f" · in funds {fmt_money(view.deployed)} · still to invest "
-        f"{fmt_money(view.remaining_to_deploy)}",
-    ]
-    if view.total_value is None:
-        head.append(
-            f"[red]value unknown — no price for {', '.join(view.unpriced)}[/red] "
-            "(never counted as zero)"
+    subtitle = plan.account + (f" · {kind}" if kind else "")
+    deposits = view.cash.net_deposits
+    worth = view.total_value
+
+    lines: list[RenderableType | None] = []
+    if worth is None:
+        lines.append(
+            Text.from_markup(
+                f"[bold red]value unknown[/bold red] — no price for {', '.join(view.unpriced)} "
+                "[dim](never counted as zero)[/dim]"
+            )
         )
+        border = "red"
     else:
-        head.append(
-            f"[bold]worth {fmt_money(view.total_value)}[/bold] = holdings "
-            f"{fmt_money(view.holdings_value)} + cash {fmt_money(view.cash.cash)}"
-            + (
-                f" (of which {fmt_money(view.reserved_cash)} reserved for "
-                f"{', '.join(p.symbol for p in view.paced)})"
-                if view.reserved_cash
-                else ""
+        lines.append(
+            change_line(deposits, worth, pct=view.simple_return_pct, start_label="deposited")
+        )
+        spy_pct = (
+            (view.benchmark_value - deposits) / deposits * 100
+            if view.benchmark_value is not None and deposits
+            else None
+        )
+        lines.append(versus("SPY", view.simple_return_pct, spy_pct))
+        border, _ = tone(view.gain)
+    in_funds = view.deployed
+    to_go = view.remaining_to_deploy
+    total = in_funds + to_go
+    if total > 0:
+        share = float(in_funds / total)
+        lines.append(
+            Text.from_markup(
+                f"[dim]deployed[/dim] {gauge(share, 24, 'cyan')} [cyan]{share * 100:.0f}%[/cyan]"
+                f"  [dim]{fmt_money(in_funds)} in funds · {fmt_money(to_go)} still to invest[/dim]"
             )
         )
-        cy = view.plan.cash_yield
-        if cy is not None:
-            head.append(
-                f"cash {fmt_money(view.cash.cash)} in {cy.fund} at {cy.yield_pct:.2f}% "
-                f"(as of {cy.as_of}) ≈ {fmt_signed(view.cash_monthly_interest)}/mo"
-                f" · earned so far {fmt_money(view.cash_interest_earned)}"
+    top = hero(plan.name, lines, border=border, subtitle=subtitle)
+
+    money: list[Row] = []
+    if worth is not None:
+        money.append(("worth", f"[bold]{fmt_money(worth)}[/bold]"))
+    money.append(("deposited", fmt_money(deposits)))
+    if view.holdings_value is not None:
+        money.append(("in funds", fmt_money(view.holdings_value)))
+    money.append(("cash", fmt_money(view.cash.cash)))
+    if view.gain is not None:
+        money.append(("gain", fmt_signed(view.gain)))
+    if view.day_change is not None:
+        money.append(("today", fmt_signed(view.day_change)))
+    if view.xirr is not None:
+        money.append(("XIRR", f"{view.xirr * 100:+.2f}%/yr"))
+
+    cash = _alloc_cash_rows(view)
+
+    drift: list[Row] = []
+    for r in view.rows:
+        if r.drift_pp is None:
+            continue
+        color = severity(r.drift_pp, float(plan.drift_threshold) / 2, float(plan.drift_threshold))
+        drift.append(
+            (
+                r.symbol,
+                f"{gauge(float(abs(r.drift_pp)) / float(plan.drift_threshold), 8, color)} "
+                f"[{color}]{r.drift_pp:+.1f}pp[/{color}]",
             )
-        if view.gain is not None:
-            head.append(
-                f"gain {fmt_signed(view.gain)} ({fmt_signed_pct(view.simple_return_pct)} of net "
-                f"deposits — simple, not annualised)"
-                + (f" · XIRR {view.xirr * 100:+.2f}%/yr" if view.xirr is not None else "")
+        )
+    if drift:
+        worst = max(abs(r.drift_pp) for r in view.rows if r.drift_pp is not None)
+        drift.append(
+            (
+                "",
+                f"[green]✓ all within ±{plan.drift_threshold:g}pp[/green]"
+                if worst < plan.drift_threshold
+                else "[red]✗ rebalance due[/red]",
             )
-        if view.benchmark_value is not None:
-            head.append(
-                f"same deposits in SPY: {fmt_money(view.benchmark_value)} "
-                f"({fmt_signed(view.total_value - view.benchmark_value)} vs you)"
-            )
-    head.append(
-        f"[dim]as of {view.as_of:%Y-%m-%d %H:%M}"
-        + (f" · stale prices: {', '.join(view.stale)}" if view.stale else "")
-        + "[/dim]"
+        )
+
+    nxt = _alloc_next_rows(view)
+
+    return dashboard(
+        top,
+        ("💰 Money", money, "cyan"),
+        ("💵 Cash", cash, "green"),
+        ("🎯 Drift", drift, "magenta"),
+        ("⏭ Next", nxt, "blue"),
     )
 
+
+def _day_verdict(pct: Decimal) -> tuple[str, str]:
+    """(label, colour) for the day — the same thresholds as the Telegram report."""
+    if pct <= -ALLOC_BIG_PCT:
+        return "🩸 BAD DAY", "bold red"
+    if pct <= -ALLOC_FLAT_PCT:
+        return "🔴 DOWN DAY", "red"
+    if pct < ALLOC_FLAT_PCT:
+        return "⚪ FLAT DAY", "white"
+    if pct < ALLOC_BIG_PCT:
+        return "🟢 GOOD DAY", "green"
+    return "🚀 GREAT DAY", "bold green"
+
+
+def alloc_report_renderables(report: AllocReport) -> list[RenderableType]:
+    """`trd alloc report` in the terminal: the day's verdict and the scoreboard
+    as panels. The Telegram message is the same report as HTML; --json is the model."""
+    view = report.view
+    spy = next((b for b in report.benchmarks if b.symbol == "SPY"), None)
+    lines: list[RenderableType | None] = []
+    change, pct = view.day_change, report.account.today_pct
+    border = "yellow"
+    if change is None or pct is None:
+        lines.append(
+            Text.from_markup(
+                "[yellow]⚠ can't score today — a holding has no previous close[/yellow]"
+            )
+        )
+    else:
+        label, style = _day_verdict(pct)
+        border, arrow = tone(change)
+        lines.append(
+            Text.from_markup(
+                f"[{style}]{label}   {arrow} {fmt_signed(change)}  ({pct:+.2f}%)[/{style}]"
+            )
+        )
+
+    def against(prefix: str, own: Decimal | None, bench: Decimal | None, name: str) -> Text | None:
+        verdict = versus(name, own, bench)
+        if verdict is None:
+            return None
+        return Text.from_markup(f"[dim]{prefix}[/dim] {fmt_signed_pct(own)}  ").append_text(verdict)
+
+    if spy is not None:
+        lines.append(
+            against(
+                "your funds", report.invested.today_pct, spy.invested.today_pct, "S&P 500 today"
+            )
+        )
+    if report.account.value is not None:
+        lines.append(
+            change_line(
+                report.account.base,
+                report.account.value,
+                pct=report.account.return_pct,
+                start_label="since funding",
+            )
+        )
+    if spy is not None:
+        lines.append(
+            against(
+                "funds since bought", report.invested.return_pct, spy.invested.return_pct, "S&P 500"
+            )
+        )
+    top = hero(view.plan.name, lines, border=border, subtitle=f"{report.today:%a %b %d}")
+
+    funds: list[Row] = [("", "[dim]today[/dim]", "[dim]since bought[/dim]", "[dim]weight[/dim]")]
+    for f in report.funds:
+        weight = (
+            "—"
+            if f.weight_pct is None
+            else "<1%"
+            if 0 < f.weight_pct < 1
+            else f"{f.weight_pct:.0f}%"
+        )
+        funds.append(
+            (
+                f"🚀 {f.symbol}" if f.paced else f.symbol,
+                fmt_signed_pct(f.today_pct),
+                fmt_signed_pct(f.gain_pct),
+                f"[dim]{weight}[/dim]",
+            )
+        )
+
+    board: list[tuple[str, Decimal | None]] = [
+        ("You (all)", report.account.return_pct),
+        ("You (invested)", report.invested.return_pct),
+    ] + [(b.short, b.invested.return_pct) for b in report.benchmarks]
+    known = [v for _, v in board if v is not None]
+    best = max(known) if known else None
+    scoreboard: list[Row] = [
+        (
+            ("🏆 " if v is not None and v == best else "") + name,
+            fmt_signed_pct(v),
+        )
+        for name, v in board
+    ]
+
+    markets: list[Row] = [
+        (b.short, fmt_signed_pct(b.invested.today_pct))
+        for b in report.benchmarks
+        if b.symbol is not None
+    ]
+    cash = _alloc_cash_rows(view)
+    if report.cash_pct is not None:
+        cash.insert(0, ("share of account", f"{report.cash_pct:.0f}%"))
+    out: list[RenderableType] = [
+        dashboard(
+            top,
+            ("📊 Funds", funds, "cyan"),
+            ("🏁 Since you started", scoreboard, "magenta"),
+            ("🌍 Markets today", markets, "blue"),
+        ),
+        cards(("💵 Cash", cash, "green"), ("⏭ Next", _alloc_next_rows(view), "yellow")),
+        Text.from_markup(
+            "[dim]Scoreboard: the same dollars on the same days in each index. "
+            "Planning aid, not advice.[/dim]"
+        ),
+    ]
+    return out
+
+
+def alloc_view_renderables(view: AllocView) -> list[RenderableType]:
+    stale = (
+        f"[dim]as of {view.as_of:%Y-%m-%d %H:%M}"
+        + (f" · [yellow]stale prices: {', '.join(view.stale)}[/yellow]" if view.stale else "")
+        + "[/dim]"
+    )
     table = Table(title="Allocation", title_justify="left")
     for col, just in [
         ("Symbol", "left"),
@@ -3449,7 +3671,7 @@ def alloc_view_renderables(view: AllocView) -> list[RenderableType]:
             f"[{c}]{p.state}[/{c}]",
             m.note or "",
         )
-    out: list[RenderableType] = [Text.from_markup("\n".join(head)), table]
+    out: list[RenderableType] = [alloc_view_summary(view), Text.from_markup(stale), table]
     if view.paced:
         pt = Table(title="Paced (bought monthly, outside the tranches)", title_justify="left")
         for col in (

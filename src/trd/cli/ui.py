@@ -33,8 +33,9 @@ from rich.text import Text
 
 MONEY = "{:,.2f}"
 
-# A label/value row of a card. Both are Rich markup strings.
-Row = tuple[str, str]
+# A row of a card: a label then one or more values, all Rich markup. Most
+# cards are label/value; a card with more columns lines them up as a table.
+Row = tuple[str, ...]
 
 UP, DOWN, PEAK, OFF = "green", "red", "gold1", "grey23"
 SPARK = "▁▂▃▄▅▆▇█"
@@ -179,17 +180,18 @@ def hero(
 
 
 def card(title: str, rows: Sequence[Row], color: str, height: int | None = None) -> Panel:
-    """A titled box of label/value rows. Cells never wrap, so `height` (rows + 2)
-    is exact and a row of cards lines up."""
+    """A titled box of rows: a dim label, then right-aligned values. Cells never
+    wrap, so `height` (rows + 2) is exact and a row of cards lines up."""
     grid = Table.grid(padding=(0, 2))
     grid.add_column(
         style="dim",
         no_wrap=True,
         min_width=max((Text.from_markup(r[0]).cell_len for r in rows), default=0),
     )
-    grid.add_column(justify="right", no_wrap=True)
-    for label, value in rows:
-        grid.add_row(label, value)
+    for _ in range(max((len(r) for r in rows), default=2) - 1):
+        grid.add_column(justify="right", no_wrap=True)
+    for row in rows:
+        grid.add_row(*row)
     return Panel(
         grid,
         title=f"[bold {color}]{title}[/bold {color}]",

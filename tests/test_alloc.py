@@ -783,7 +783,8 @@ def test_the_report_reads_without_writing(cli_env: FakeProvider, monkeypatch) ->
     refused = runner.invoke(app, ["alloc", "report", "--notify"])
     assert refused.exit_code == 1
     plain = runner.invoke(app, ["alloc", "report"])
-    assert plain.exit_code == 0 and "<b>" not in plain.output and "💰 Worth" in plain.output
+    assert plain.exit_code == 0 and "<b>" not in plain.output
+    assert "Since you started" in plain.output and "Cash" in plain.output
 
 
 # ------------------------------------------------------------------ paced (SB-1388)
@@ -1059,10 +1060,10 @@ def test_cli_cash_yield_set_edit_show_and_clear(cli_env: FakeProvider) -> None:
     assert r.exit_code == 0, r.output
     r = runner.invoke(app, ["alloc", "show"])
     assert r.exit_code == 0, r.output
-    assert (
-        "cash 40,000.00 in CORXX at 3.51% (as of 2026-10-21) ≈ +117.00/mo · earned so far 0.00"
-        in " ".join(r.output.split())  # Rich wraps at the test terminal's width
-    )
+    shown = " ".join(r.output.split())  # Rich wraps at the test terminal's width
+    assert "in CORXX 3.51%" in shown and "≈ a month +117.00" in shown
+    assert "earned so far 0.00" in shown and "rate as of 2026-10-21" in shown
+    assert "Money" in shown and "deposited 40,000.00" in shown
     view = json.loads(runner.invoke(app, ["alloc", "show", "--json"]).output)
     assert view["plan"]["cash_yield"] == {
         "fund": "CORXX",

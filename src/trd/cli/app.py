@@ -20,6 +20,7 @@ from trd.cli.render import (
     activity_import_renderables,
     agenda_renderables,
     ai_review_renderables,
+    alloc_report_renderables,
     alloc_view_renderables,
     backtest_table,
     board_table,
@@ -5062,7 +5063,8 @@ def alloc_report(
             }
         )
         return
-    console.print(strip_html(text), markup=False, highlight=False)
+    for part in alloc_report_renderables(report):
+        console.print(part)
 
 
 @alloc_app.command("history")
