@@ -111,6 +111,14 @@ def test_drawdown_reads_from_the_running_peak(conn, engine):
     assert perf.sessions[0].drawdown_pct == 0
     assert perf.sessions[1].drawdown_pct == D("-25")
     assert perf.max_drawdown_pct == D("-25")
+    assert perf.peak == D("1200") and perf.peak_date == MON
+
+
+def test_peak_is_the_capital_when_no_close_beats_it(conn, engine):
+    _closes(conn, "AAA", {MON: 90, TUE: 95})
+    _fill(conn, engine, "AAA", Side.BUY, "10", "100", datetime(2026, 3, 2, 9, 40))
+    perf = engine_performance(engine, today=date(2026, 3, 10))
+    assert perf.peak == perf.capital and perf.peak_date == perf.started
 
 
 def test_spy_counts_from_the_close_before_the_first_fill(conn, book):
@@ -172,9 +180,11 @@ def test_engine_performance_cli(cli_env: FakeProvider):
     data = json.loads(doc.output)
     assert D(data["worth"]) == D("1050") and D(data["capital"]) == D("1000")
     assert data["sessions"][0]["held"] == ["AAA"]
+    assert D(data["peak"]) == D("1050") and data["peak_date"] == str(MON)
 
     human = runner.invoke(app, ["engine", "perf"])
     assert human.exit_code == 0 and "Since the start" in human.output
+    assert "opening balance" in human.output and "highest close" in human.output
 
     equity = runner.invoke(app, ["equity", "--account", "engine-sim"])
     assert "trd engine performance" in equity.output

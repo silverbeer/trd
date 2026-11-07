@@ -93,6 +93,18 @@ class EnginePerformance(BaseModel):
 
     @computed_field  # type: ignore[prop-decorator]
     @property
+    def peak(self) -> Decimal:
+        """The high-water mark max drawdown is read from: capital until a close beats it."""
+        return max((s.worth for s in self.sessions), default=self.capital).max(self.capital)
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def peak_date(self) -> date:
+        """The first close at the peak; the start when no close ever beat the capital."""
+        return next((s.date for s in self.sessions if s.worth == self.peak), self.started)
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
     def best(self) -> PerformanceSession | None:
         return max(self.sessions, key=lambda s: s.day_change, default=None)
 

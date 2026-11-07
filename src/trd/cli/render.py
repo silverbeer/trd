@@ -3591,7 +3591,7 @@ def engine_performance_renderables(
     summary.add_column(style="dim")
     summary.add_column(justify="right")
     summary.add_column(style="dim")
-    summary.add_row("started", f"{perf.started}", "first fill")
+    summary.add_row("capital", fmt_money(perf.capital), f"opening balance, {perf.started}")
     summary.add_row(
         "worth", f"[bold]{fmt_money(perf.worth)}[/bold]", "cash + holdings at the close"
     )
@@ -3606,6 +3606,11 @@ def engine_performance_renderables(
         "closed trades",
         f"{perf.won} won · {perf.lost} lost",
         f"{perf.won / (perf.won + perf.lost) * 100:.0f}% win rate" if perf.won + perf.lost else "",
+    )
+    summary.add_row(
+        "peak",
+        fmt_money(perf.peak),
+        f"highest close, {perf.peak_date}" if perf.peak > perf.capital else "never above capital",
     )
     summary.add_row(
         "max drawdown",
