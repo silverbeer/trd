@@ -83,3 +83,9 @@ def test_dashboard_skips_missing_hero_lines() -> None:
         )
     )
     assert "✦ Title · since" in out and "Card" in out
+
+
+def test_a_long_series_is_bucketed_to_one_line() -> None:
+    line = sparkline([D(i) for i in range(400)], peak_at=399, target=40)
+    assert len(line.plain) == 40 and line.plain[-1] == "█"
+    assert str(line.spans[-1].style) == "bold gold1"

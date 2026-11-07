@@ -26,6 +26,15 @@ def test_buy_then_portfolio(cli_env: FakeProvider) -> None:
     assert result.exit_code == 0, result.output
     assert "AAPL" in result.output
     assert "200.00" in result.output  # live fake quote
+    shown = " ".join(result.output.split())
+    assert "cost 1,500.00 → 2,000.00" in shown and "▲ +500.00" in shown  # the hero
+    assert "Since bought" in shown and "Biggest" in shown
+
+    result = runner.invoke(app, ["lots"])
+    assert result.exit_code == 0, result.output
+    shown = " ".join(result.output.split())
+    assert "paid 1,500.00 → 2,000.00" in shown and "1 lots · 1 symbols" in shown
+    assert "Best buys" in shown and "AAPL 2026-01-05" in shown
 
 
 def test_sell_more_than_held_fails(cli_env: FakeProvider) -> None:

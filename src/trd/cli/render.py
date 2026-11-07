@@ -764,29 +764,145 @@ def equity_chart(curve: EquityCurve, width: int = 64, height: int = 12) -> Text:
     )
 
 
-def equity_summary_table(curve: EquityCurve) -> Table:
-    table = Table(show_header=False, title=None, box=None, padding=(0, 2, 0, 0))
-    table.add_column("k", style="dim")
-    table.add_column("v")
-    days = (curve.end_date - curve.start_date).days
-    table.add_row("Period", f"{curve.start_date} → {curve.end_date}  ({days}d)")
-    table.add_row(
-        "Value", f"{fmt_money(curve.start_value)} → [bold]{fmt_money(curve.end_value)}[/bold]"
+def _ranked(items: list, key, label, value, n: int = 3, best: bool = True) -> list[Row]:
+    """The top (or bottom) `n` of `items` by `key`, as card rows. Items whose
+    key is None are left out — an unknown is never ranked as zero."""
+    known = [i for i in items if key(i) is not None]
+    known.sort(key=key, reverse=best)
+    return [(label(i), value(i)) for i in known[:n]]
+
+
+def portfolio_summary(positions: list[Position], scope: str) -> RenderableType:
+    """Holdings in one glance: worth, today, P&L, then today's movers, the
+    best and worst since bought, and where the money sits."""
+    value = sum((p.market_value for p in positions if p.market_value is not None), Decimal(0))
+    cost = sum((p.cost_basis for p in positions), Decimal(0))
+    day = sum((p.day_change for p in positions if p.day_change is not None), Decimal(0))
+    prior = value - day
+    day_line = Text.from_markup(
+        f"[dim]today[/dim] [{tone(day)[0]}]{tone(day)[1]} {fmt_signed(day)}"
+        + (f"  ({day / prior * 100:+.2f}%)" if prior else "")
+        + f"[/{tone(day)[0]}]"
     )
-    table.add_row("Period return", _fmt_pct_signed(curve.period_return_pct))
-    table.add_row("Unrealized P&L", _fmt_pct_signed(curve.pl_pct))
-    table.add_row("XIRR", _fmt_pct_signed(curve.xirr * 100 if curve.xirr is not None else None))
-    table.add_row("Max drawdown", f"[red]{curve.max_drawdown_pct:.2f}%[/red]")
-    table.add_row("Peak value", fmt_money(curve.peak_value))
-    return table
+    top = hero(
+        scope.capitalize(),
+        [change_line(cost, value, start_label="cost"), day_line],
+        border=tone(value - cost)[0],
+        subtitle=f"{len(positions)} holdings",
+    )
+    sym = lambda p: f"[bold]{p.instrument.symbol}[/bold]"  # noqa: E731
+    today: list[Row] = _ranked(
+        positions, lambda p: p.day_change_pct, sym, lambda p: fmt_signed_pct(p.day_change_pct)
+    ) + _ranked(
+        positions,
+        lambda p: p.day_change_pct,
+        sym,
+        lambda p: fmt_signed_pct(p.day_change_pct),
+        best=False,
+    )
+    since: list[Row] = [
+        (f"🏆 {sym(p)}", f"{fmt_signed(p.unrealized_pl)} {fmt_signed_pct(p.unrealized_pl_pct)}")
+        for p in sorted(
+            (p for p in positions if p.unrealized_pl_pct is not None),
+            key=lambda p: p.unrealized_pl_pct or Decimal(0),
+            reverse=True,
+        )[:3]
+    ] + [
+        (f"💀 {sym(p)}", f"{fmt_signed(p.unrealized_pl)} {fmt_signed_pct(p.unrealized_pl_pct)}")
+        for p in sorted(
+            (p for p in positions if p.unrealized_pl_pct is not None),
+            key=lambda p: p.unrealized_pl_pct or Decimal(0),
+        )[:3]
+    ]
+    weights: list[Row] = []
+    if value > 0:
+        for p in sorted(
+            (p for p in positions if p.market_value is not None),
+            key=lambda p: p.market_value or Decimal(0),
+            reverse=True,
+        )[:5]:
+            share = float((p.market_value or Decimal(0)) / value)
+            weights.append((sym(p), f"{gauge(share, 12, 'cyan')} {share * 100:.0f}%"))
+    return dashboard(
+        top,
+        ("📈 Today", today, "green"),
+        ("🏆 Since bought", since, "magenta"),
+        ("🧩 Biggest", weights, "cyan"),
+    )
+
+
+def lots_summary(lots: list[LotPosition]) -> RenderableType:
+    """What the lots add up to, and the best and worst purchases."""
+    cost = sum((lot.cost for lot in lots), Decimal(0))
+    priced = [lot for lot in lots if lot.value is not None]
+    value = sum((lot.value or Decimal(0) for lot in priced), Decimal(0))
+    symbols = {lot.instrument.symbol for lot in lots}
+    first = min(lot.bought_at for lot in lots)
+    top = hero(
+        "Lots",
+        [change_line(cost, value, start_label="paid") if priced else None],
+        border=tone(value - cost)[0] if priced else "white",
+        subtitle=f"{len(lots)} lots · {len(symbols)} symbols · since {first:%Y-%m-%d}",
+    )
+
+    def row(icon: str, lot: LotPosition) -> Row:
+        return (
+            f"{icon} [bold]{lot.instrument.symbol}[/bold] [dim]{lot.bought_at:%Y-%m-%d}[/dim]",
+            f"{fmt_signed(lot.gain)} {fmt_signed_pct(lot.gain_pct)}",
+        )
+
+    ranked = sorted(
+        (lot for lot in priced if lot.gain_pct is not None), key=lambda lot: lot.gain_pct or 0
+    )
+    best = [row("🏆", lot) for lot in reversed(ranked[-3:])]
+    worst = [row("💀", lot) for lot in ranked[:3]] if len(ranked) > 3 else []
+    return dashboard(top, ("🏆 Best buys", best, "green"), ("💀 Worst buys", worst, "red"))
+
+
+def equity_summary(curve: EquityCurve) -> RenderableType:
+    """The curve's numbers as a hero over Return and Risk cards."""
+    values = [p.value for p in curve.points]
+    peak_at = values.index(curve.peak_value) if values else None
+    spark = sparkline(values, peak_at)
+    days = (curve.end_date - curve.start_date).days
+    spark.append(f"  {curve.start_date} → {curve.end_date} ({days}d)", style="dim")
+    top = hero(
+        f"Equity · {curve.account_label}",
+        [change_line(curve.start_value, curve.end_value, start_label="start"), spark],
+        border=tone(curve.end_value - curve.start_value)[0],
+    )
+
+    def pct(v: float | None) -> str:
+        return fmt_signed_pct(Decimal(str(round(v, 4)))) if v is not None else "—"
+
+    ret: list[Row] = [
+        ("period return", pct(curve.period_return_pct)),
+        ("unrealized P&L", pct(curve.pl_pct)),
+        ("XIRR", pct(curve.xirr * 100) if curve.xirr is not None else "—"),
+    ]
+    dd_color = severity(curve.max_drawdown_pct, 5, 15)
+    moves = [p for p in curve.points[1:] if p.day_pnl_pct is not None]
+    risk: list[Row] = [
+        ("peak", f"[gold1]{fmt_money(curve.peak_value)}[/gold1]"),
+        (
+            "max drawdown",
+            f"{gauge(abs(curve.max_drawdown_pct) / 25, 10, dd_color)} "
+            f"[{dd_color}]{curve.max_drawdown_pct:.1f}%[/{dd_color}]",
+        ),
+    ]
+    if moves:
+        best = max(moves, key=lambda p: p.day_pnl)
+        worst = min(moves, key=lambda p: p.day_pnl)
+        risk.append(("best day", f"{fmt_signed(best.day_pnl)} [dim]{best.date:%m-%d}[/dim]"))
+        risk.append(("worst day", f"{fmt_signed(worst.day_pnl)} [dim]{worst.date:%m-%d}[/dim]"))
+    return dashboard(top, ("📈 Return", ret, "magenta"), ("🌊 Risk", risk, "blue"))
 
 
 def equity_curve_renderables(curve: EquityCurve) -> list[RenderableType]:
     out: list[RenderableType] = [
         Text.from_markup(f"[bold]Equity curve[/bold] — {curve.account_label}"),
         equity_chart(curve),
-        Text(""),
-        equity_summary_table(curve),
+        equity_summary(curve),
     ]
     if curve.unpriced:
         out.append(
