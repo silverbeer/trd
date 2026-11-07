@@ -184,7 +184,7 @@ def test_engine_performance_cli(cli_env: FakeProvider):
 
     human = runner.invoke(app, ["engine", "perf"])
     assert human.exit_code == 0 and "Since the start" in human.output
-    assert "opening balance" in human.output and "highest close" in human.output
+    assert "★ peak" in human.output and "Money" in human.output and "Risk" in human.output
 
     equity = runner.invoke(app, ["equity", "--account", "engine-sim"])
     assert "trd engine performance" in equity.output
@@ -256,3 +256,33 @@ def test_one_trade_is_only_the_best_and_none_is_neither(conn, book):
     )
     perf = engine_performance(book, today=date(2026, 3, 10))
     assert perf.best_trade is not None and perf.worst_trade is None
+
+
+def _render(perf) -> str:
+    from rich.console import Console
+
+    from trd.cli.render import performance_summary
+
+    console = Console(width=150, record=True, color_system=None)
+    console.print(performance_summary(perf))
+    return console.export_text()
+
+
+def test_summary_says_ahead_or_behind_the_benchmark(conn, book):
+    _closes(conn, "SPY", {FRI_BEFORE: 100, MON: 101, TUE: 102, WED: 150})
+    _closed_position(
+        conn,
+        book,
+        "AAA",
+        "100",
+        "90",
+        "120",
+        datetime(2026, 3, 2, 9, 40),
+        datetime(2026, 3, 3, 15, 0),
+        "target",
+    )
+    perf = engine_performance(book, today=date(2026, 3, 10))
+    text = _render(perf)  # engine +12%, SPY +50%
+    assert "38.00 pts behind" in text and "🏆 best" in text and "AAA +40.00" in text
+    assert "★ peak" in text
+    assert "pts ahead" in _render(perf.model_copy(update={"capital": D("500")}))

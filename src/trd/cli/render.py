@@ -1,6 +1,7 @@
 from datetime import date, datetime, timedelta
 from decimal import Decimal
 
+from rich.columns import Columns
 from rich.console import Group, RenderableType
 from rich.padding import Padding
 from rich.panel import Panel
@@ -3541,6 +3542,174 @@ def proposal_renderables(p: Proposal) -> list[RenderableType]:
     return [*out, Text.from_markup("\n".join(lines))]
 
 
+_SPARK = "▁▂▃▄▅▆▇█"
+
+
+def _sparkline(values: list[Decimal], peak_at: int | None = None) -> Text:
+    """Worth over the sessions, one block per session: green up, red down vs
+    the session before, the peak in gold. Block glyphs ship in every common
+    monospace font; this is the one view that is about the shape of a line."""
+    text = Text()
+    if not values:
+        return text
+    lo, hi = min(values), max(values)
+    span = hi - lo
+    # A short history drawn one cell a session is a smudge: widen each to ~40.
+    stretch = max(1, min(4, 40 // len(values)))
+    previous = values[0]
+    for i, v in enumerate(values):
+        level = 0 if span == 0 else int((v - lo) / span * (len(_SPARK) - 1))
+        style = "bold gold1" if i == peak_at else "green" if v >= previous else "red"
+        text.append(_SPARK[level] * stretch, style=style)
+        previous = v
+    return text
+
+
+def _bar(filled: float, width: int, on: str, off: str) -> str:
+    """A horizontal gauge: `filled` (0..1) of `width` cells in `on`, rest in `off`."""
+    n = max(0, min(width, round(filled * width)))
+    return f"[{on}]{'━' * n}[/{on}][{off}]{'━' * (width - n)}[/{off}]"
+
+
+def _card(title: str, rows: list[tuple[str, str]], color: str, height: int) -> Panel:
+    grid = Table.grid(padding=(0, 2))
+    grid.add_column(
+        style="dim",
+        no_wrap=True,
+        min_width=max((Text.from_markup(r[0]).cell_len for r in rows), default=0),
+    )
+    grid.add_column(justify="right", no_wrap=True)
+    for label, value in rows:
+        grid.add_row(label, value)
+    return Panel(
+        grid,
+        title=f"[bold {color}]{title}[/bold {color}]",
+        border_style=color,
+        title_align="left",
+        padding=(0, 1),
+        height=height,
+        expand=False,
+    )
+
+
+def performance_summary(perf: EnginePerformance) -> RenderableType:
+    """The lifetime summary as a headline panel over three cards."""
+    up = perf.net >= 0
+    tone = "green" if up else "red"
+    arrow = "▲" if up else "▼"
+
+    headline = Text.from_markup(
+        f"[dim]{fmt_money(perf.capital)}[/dim]  [bold]→[/bold]  "
+        f"[bold {tone}]{fmt_money(perf.worth)}[/bold {tone}]   "
+        f"[{tone}]{arrow} {fmt_signed(perf.net)}  ({perf.return_pct:+.2f}%)[/{tone}]"
+    )
+    lines: list[RenderableType] = [headline]
+    bench = perf.benchmark_return_pct
+    if bench is not None:
+        gap = perf.return_pct - bench
+        verdict = (
+            f"[bold green]✓ {gap:.2f} pts ahead[/bold green]"
+            if gap >= 0
+            else f"[bold red]✗ {-gap:.2f} pts behind[/bold red]"
+        )
+        lines.append(
+            Text.from_markup(f"[dim]vs {perf.benchmark}[/dim] {fmt_signed_pct(bench)}  {verdict}")
+        )
+    if perf.sessions:
+        worths = [s.worth for s in perf.sessions]
+        peak_at = next((i for i, w in enumerate(worths) if w == perf.peak), None)
+        spark = _sparkline(worths, peak_at if perf.peak > perf.capital else None)
+        spark.append(
+            f"  {perf.sessions[0].date:%m-%d} → {perf.sessions[-1].date:%m-%d}", style="dim"
+        )
+        if perf.peak > perf.capital:
+            spark.append(f"   ★ peak {fmt_money(perf.peak)} {perf.peak_date:%m-%d}", style="gold1")
+        lines.append(spark)
+    hero = Panel(
+        Group(*lines),
+        title=f"[bold]✦ Since the start[/bold] [dim]· {perf.started}[/dim]",
+        title_align="left",
+        border_style=tone,
+        padding=(0, 2),
+        expand=False,
+    )
+
+    money_rows = [
+        ("capital", fmt_money(perf.capital)),
+        ("worth", f"[bold]{fmt_money(perf.worth)}[/bold]"),
+        ("booked", fmt_signed(perf.realized)),
+        ("still open", fmt_signed(perf.unrealized)),
+    ]
+
+    closed = perf.won + perf.lost
+    trade_rows: list[tuple[str, str]] = []
+    if closed:
+        rate = perf.won / closed
+        trade_rows.append(
+            (
+                f"[green]{perf.won}W[/green] [red]{perf.lost}L[/red]",
+                f"{_bar(rate, 12, 'green', 'red')} {rate * 100:.0f}%",
+            )
+        )
+    else:
+        trade_rows.append(("closed", "[dim]none yet[/dim]"))
+    for label, trade, icon in (
+        ("best", perf.best_trade, "🏆"),
+        ("worst", perf.worst_trade, "💀"),
+    ):
+        if trade is None:
+            continue
+        r = f" {trade.r:+.1f}R" if trade.r is not None else ""
+        trade_rows.append(
+            (f"{icon} {label}", f"[bold]{trade.symbol}[/bold] {fmt_signed(trade.pnl)}")
+        )
+        trade_rows.append(
+            (
+                "",
+                f"{fmt_signed_pct(trade.pnl_pct)}[dim]{r} · "
+                f"{trade.opened:%m-%d}→{trade.closed:%m-%d}"
+                + (f" · {trade.exit_rule}" if trade.exit_rule else "")
+                + "[/dim]",
+            )
+        )
+
+    dd = abs(perf.max_drawdown_pct)
+    dd_color = "green" if dd < 5 else "yellow" if dd < 15 else "red"
+    risk_rows = [
+        (
+            "peak",
+            f"[gold1]{fmt_money(perf.peak)}[/gold1] [dim]{perf.peak_date:%m-%d}[/dim]"
+            if perf.peak > perf.capital
+            else "[dim]never above capital[/dim]",
+        ),
+        (
+            "max drawdown",
+            f"{_bar(float(min(dd, Decimal(25))) / 25, 10, dd_color, 'grey23')} "
+            f"[{dd_color}]{perf.max_drawdown_pct:.1f}%[/{dd_color}]",
+        ),
+    ]
+    if perf.best is not None and perf.worst is not None:
+        risk_rows.append(
+            ("best day", f"{fmt_signed(perf.best.day_change)} [dim]{perf.best.date:%m-%d}[/dim]")
+        )
+        risk_rows.append(
+            ("worst day", f"{fmt_signed(perf.worst.day_change)} [dim]{perf.worst.date:%m-%d}[/dim]")
+        )
+    # Panels side by side don't share a height on their own; give them one.
+    height = max(len(money_rows), len(trade_rows), len(risk_rows)) + 2
+    # Natural widths, wrapped onto a new row when the terminal is too narrow —
+    # a value is never cut to fit.
+    cards = Columns(
+        [
+            _card("💰 Money", money_rows, "cyan", height),
+            _card("🎯 Trades", trade_rows, "magenta", height),
+            _card("🌊 Risk", risk_rows, "blue", height),
+        ],
+        padding=(0, 1),
+    )
+    return Group(Text(""), hero, cards)
+
+
 def engine_performance_renderables(
     perf: EnginePerformance, days: int | None = None
 ) -> list[RenderableType]:
@@ -3587,52 +3756,7 @@ def engine_performance_renderables(
             " ".join(s.held),
         )
 
-    summary = Table(show_header=False, box=None, title="Since the start", title_justify="left")
-    summary.add_column(style="dim")
-    summary.add_column(justify="right")
-    summary.add_column(style="dim")
-    summary.add_row("capital", fmt_money(perf.capital), f"opening balance, {perf.started}")
-    summary.add_row(
-        "worth", f"[bold]{fmt_money(perf.worth)}[/bold]", "cash + holdings at the close"
-    )
-    summary.add_row(
-        "return",
-        f"{fmt_signed(perf.net)}  {fmt_signed_pct(perf.return_pct)}",
-        f"{perf.benchmark} {fmt_signed_pct(perf.benchmark_return_pct)} over the same sessions",
-    )
-    summary.add_row("  booked", fmt_signed(perf.realized), "from sells — cash, done")
-    summary.add_row("  still open", fmt_signed(perf.unrealized), "positions not sold yet")
-    summary.add_row(
-        "closed trades",
-        f"{perf.won} won · {perf.lost} lost",
-        f"{perf.won / (perf.won + perf.lost) * 100:.0f}% win rate" if perf.won + perf.lost else "",
-    )
-    summary.add_row(
-        "peak",
-        fmt_money(perf.peak),
-        f"highest close, {perf.peak_date}" if perf.peak > perf.capital else "never above capital",
-    )
-    summary.add_row(
-        "max drawdown",
-        f"{perf.max_drawdown_pct:.2f}%",
-        "worst fall from a peak, capital included",
-    )
-    if perf.best is not None and perf.worst is not None:
-        summary.add_row(
-            "best / worst day",
-            f"{fmt_signed(perf.best.day_change)} / {fmt_signed(perf.worst.day_change)}",
-            f"{perf.best.date:%m-%d} / {perf.worst.date:%m-%d}",
-        )
-    for label, trade in (("best trade", perf.best_trade), ("worst trade", perf.worst_trade)):
-        if trade is None:
-            continue
-        r = f" {trade.r:+.1f}R" if trade.r is not None else ""
-        summary.add_row(
-            label,
-            f"{fmt_signed(trade.pnl)}  [bold]{trade.symbol}[/bold]",
-            f"{fmt_signed_pct(trade.pnl_pct)}{r} · {trade.opened:%m-%d}→{trade.closed:%m-%d}"
-            + (f" · {trade.exit_rule}" if trade.exit_rule else ""),
-        )
+    summary = performance_summary(perf)
     out: list[RenderableType] = [table, summary]
     if any(s.provisional for s in sessions):
         out.append(
