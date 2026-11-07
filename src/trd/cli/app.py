@@ -61,12 +61,14 @@ from trd.cli.render import (
     history_table,
     income_table,
     indicator_panel,
+    lots_summary,
     lots_table,
     movers_table,
     outbox_renderables,
     outcome_summary_renderables,
     outcome_trades_table,
     plans_pnl_table,
+    portfolio_summary,
     positions_table,
     prep_history_table,
     proposal_renderables,
@@ -691,16 +693,8 @@ def portfolio(
     key, reverse = _SORT_KEYS[sort]
     shown.sort(key=key, reverse=reverse)
 
-    value = sum((p.market_value for p in positions if p.market_value is not None), Decimal(0))
-    cost = sum((p.cost_basis for p in positions), Decimal(0))
-    day = sum((p.day_change for p in positions if p.day_change is not None), Decimal(0))
-    pl = value - cost
-    console.print(
-        f"[bold]{fmt_money(value)}[/bold]  "
-        f"today {fmt_signed(day)}  ·  P&L {fmt_signed(pl)} "
-        f"({fmt_signed_pct(pl / cost * 100 if cost else None)})"
-    )
     scope = account or ("all accounts" if include_all else "all real accounts")
+    console.print(portfolio_summary(positions, scope))
     console.print(positions_table(shown, f"Portfolio — {scope}", sparklines=sparks))
     if hidden:
         dust = sum((p.market_value for p in hidden if p.market_value is not None), Decimal(0))
@@ -821,6 +815,7 @@ def lots(
         if parts
         else ("Lots — all accounts" if include_all else "Lots — all real accounts")
     )
+    console.print(lots_summary(result))
     console.print(lots_table(result, title))
 
 

@@ -188,6 +188,7 @@ def test_engine_performance_cli(cli_env: FakeProvider):
 
     equity = runner.invoke(app, ["equity", "--account", "engine-sim"])
     assert "trd engine performance" in equity.output
+    assert "✦ Equity · engine-sim" in equity.output and "max drawdown" in equity.output
 
 
 def _closed_position(conn, engine, symbol, entry, stop, exit_, opened, closed, rule):

@@ -95,11 +95,19 @@ def sparkline(
 ) -> Text:
     """A line's shape in block glyphs: green where it rose from the point
     before, red where it fell, the `peak_at` point in gold. A short series is
-    stretched toward `target` cells — eleven cells of history is a smudge."""
+    stretched toward `target` cells — eleven cells of history is a smudge — and
+    a long one bucketed down to `target`, so it stays one line."""
     text = Text()
     if not values:
         return text
     points = [float(v) for v in values]
+    if len(points) > target:
+        # A long history is bucketed to `target` cells, each the bucket's last
+        # value; the peak lands in whichever bucket held it.
+        size = len(points) / target
+        if peak_at is not None:
+            peak_at = min(target - 1, int(peak_at / size))
+        points = [points[min(len(points) - 1, int((i + 1) * size) - 1)] for i in range(target)]
     lo, hi = min(points), max(points)
     span = hi - lo
     stretch = max(1, min(4, target // len(points)))
