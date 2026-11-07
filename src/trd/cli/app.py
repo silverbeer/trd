@@ -33,6 +33,7 @@ from trd.cli.render import (
     dca_summary_table,
     dca_symbols_table,
     earnings_table,
+    edge_summary,
     edge_table,
     engine_backtest_renderables,
     engine_cash_renderables,
@@ -43,7 +44,7 @@ from trd.cli.render import (
     engine_performance_renderables,
     engine_positions_summary,
     engine_positions_table,
-    engine_report_table,
+    engine_report_summary,
     engine_runs_table,
     engine_scan_renderables,
     engine_signals_table,
@@ -2785,7 +2786,7 @@ def engine_report(as_json: JsonOpt = False) -> None:
     if not stats:
         console.print("No trades yet. Run [bold]trd engine scan[/bold] for a while first.")
         return
-    console.print(engine_report_table(stats))
+    console.print(engine_report_summary(stats))
 
 
 @engine_app.command("edge")
@@ -2820,6 +2821,7 @@ def engine_edge(
     if as_json:
         _emit_json(report)
         return
+    console.print(edge_summary(report))
     console.print(edge_table(report))
     if report.unmeasured:
         console.print(

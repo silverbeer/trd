@@ -3101,33 +3101,40 @@ def outcome_summary_renderables(summary: OutcomeSummary) -> list:
     """
     out: list = []
     t = summary.trades
-    trades = Table(
-        title=f"Trade outcomes — {t.count} of {summary.closed_trades} closed trades, "
-        f"in R on {summary.timeframe} bars",
-        title_justify="left",
+    capture = float(t.capture_pooled) if t.capture_pooled is not None else None
+    cap_color = severity(100 - (capture or 0) * 100, 50, 75)
+    top = hero(
+        "Trade outcomes",
+        [
+            Text.from_markup(
+                f"[dim]capture[/dim] {gauge(capture or 0, 20, cap_color)} "
+                + (
+                    f"[{cap_color}]{capture * 100:.0f}%[/{cap_color}]"
+                    if capture is not None
+                    else "—"
+                )
+                + " [dim]of what was offered was booked[/dim]"
+            ),
+            Text.from_markup(
+                f"[dim]exited early[/dim] {t.exited_early}/{t.count}"
+                if t.count
+                else "[dim]exited early —[/dim]"
+            ),
+        ],
+        border="cyan",
+        subtitle=f"{t.count} of {summary.closed_trades} closed trades · R on {summary.timeframe}",
     )
-    trades.add_column("Measure", style="bold")
-    trades.add_column("Average", justify="right")
-    trades.add_column("Reads as")
-    trades.add_row("MAE (heat taken)", fmt_r(t.avg_mae_r), "how far underwater before it worked")
-    trades.add_row("MFE (best offered)", fmt_r(t.avg_mfe_r), "how much was ever on the table")
-    trades.add_row("Exit", fmt_r(t.avg_exit_r), "what was actually booked")
-    trades.add_row(
-        "Capture (pooled)",
-        f"{float(t.capture_pooled) * 100:.0f}%" if t.capture_pooled is not None else "—",
-        "booked R over offered R, across every trade",
-    )
-    trades.add_row(
-        f"Follow-through (+{summary.follow_through_bars} bars)",
-        fmt_r(t.avg_follow_through_r),
-        "where it went after we left",
-    )
-    trades.add_row(
-        "Exited early",
-        f"{t.exited_early}/{t.count}" if t.count else "—",
-        "kept going +1R or more without us",
-    )
-    out.append(trades)
+    measures: list[Row] = [
+        ("MAE (heat taken)", fmt_r(t.avg_mae_r), "[dim]how far underwater before it worked[/dim]"),
+        ("MFE (best offered)", fmt_r(t.avg_mfe_r), "[dim]how much was ever on the table[/dim]"),
+        ("Exit", fmt_r(t.avg_exit_r), "[dim]what was actually booked[/dim]"),
+        (
+            f"Follow-through (+{summary.follow_through_bars})",
+            fmt_r(t.avg_follow_through_r),
+            "[dim]where it went after we left[/dim]",
+        ),
+    ]
+    out.append(dashboard(top, ("📏 Averages per trade", measures, "magenta")))
 
     signals = Table(
         title=f"Signals — what the ones we passed over did next ({summary.horizon_bars} bars)",
@@ -3475,6 +3482,108 @@ def _edge_cell(m: Measure, unit: str = "R", places: int = 2) -> str:
     se = f" ±{m.edge_se:.{places}f}" if m.edge_se is not None else ""
     text = f"{m.edge:+.{places}f}{unit}{se}"
     return f"[bold]{text}[/bold]" if m.significant else f"[dim]{text}[/dim]"
+
+
+def _expectancy(value: Decimal | None) -> str:
+    if value is None:
+        return "—"
+    color = "green" if value >= 0 else "red"
+    return f"[bold {color}]{value:+.2f}R[/bold {color}]"
+
+
+def engine_report_summary(stats: list[StrategyStat]) -> RenderableType:
+    """The scorecard as a hero (all strategies) over one card per strategy.
+    Under MIN_TRADES_FOR_FINDING closed trades a number is labelled a hypothesis."""
+    trades = sum(s.trades for s in stats)
+    wins = sum(s.wins for s in stats)
+    losses = sum(s.losses for s in stats)
+    pnl = sum((s.total_pnl for s in stats), Decimal(0))
+    weighted = [(s.avg_r, s.trades) for s in stats if s.avg_r is not None and s.trades]
+    overall = (
+        sum((r * n for r, n in weighted), Decimal(0)) / sum(n for _, n in weighted)
+        if weighted
+        else None
+    )
+    label, bar = win_loss(wins, losses, 16)
+    lines: list[RenderableType | None] = [
+        Text.from_markup(f"{label}  {bar}"),
+        Text.from_markup(
+            f"[dim]expectancy[/dim] {_expectancy(overall)} [dim]per trade[/dim]   "
+            f"[dim]P&L[/dim] {fmt_signed(pnl)}"
+        ),
+    ]
+    if trades < MIN_TRADES_FOR_FINDING:
+        lines.append(
+            Text.from_markup(
+                f"[yellow]⚠ {trades} closed trades — under {MIN_TRADES_FOR_FINDING}, "
+                "read every number as a hypothesis[/yellow]"
+            )
+        )
+    top = hero("Scorecard", lines, border=tone(pnl)[0], subtitle=f"{trades} closed trades")
+    specs: list[tuple[str, list[Row], str]] = []
+    for s in sorted(stats, key=lambda s: -(s.expectancy_r or Decimal(-99))):
+        wl = win_loss(s.wins, s.losses, 10)
+        rows: list[Row] = [
+            wl,
+            ("expectancy", _expectancy(s.expectancy_r)),
+            (
+                "avg win / loss",
+                f"{fmt_signed_pct(s.avg_win_pct)} / {fmt_signed_pct(s.avg_loss_pct)}",
+            ),
+            ("P&L", fmt_signed(s.total_pnl)),
+            ("open", str(s.open_trades)),
+        ]
+        color = "green" if (s.expectancy_r or 0) >= 0 else "red"
+        specs.append((s.strategy, rows, color))
+    return dashboard(top, *specs)
+
+
+def _edge_verdict(m: Measure) -> str:
+    if m.edge is None:
+        return "[dim]not enough to measure[/dim]"
+    if not m.significant:
+        return "[yellow]≈ no edge over random[/yellow]"
+    return (
+        "[bold green]✓ beats random[/bold green]"
+        if m.edge > 0
+        else "[bold red]✗ worse than random[/bold red]"
+    )
+
+
+def edge_summary(report: EdgeReport) -> RenderableType:
+    """Do the entries beat chance? One verdict, then one card per strategy."""
+    o = report.overall
+    top = hero(
+        "Entry edge vs random",
+        [
+            Text.from_markup(f"[dim]net[/dim] {_edge_cell(o.net_r)}   {_edge_verdict(o.net_r)}"),
+            Text.from_markup(
+                f"[dim]{report.measured} taken signals x {report.samples} random entries, "
+                f"{report.horizon_bars} bars ahead on {report.timeframe}[/dim]"
+            ),
+        ],
+        border="green" if o.net_r.significant and (o.net_r.edge or 0) > 0 else "yellow",
+    )
+    specs: list[tuple[str, list[Row], str]] = []
+    for g in report.by_strategy:
+        specs.append(
+            (
+                g.label,
+                [
+                    ("n", str(g.signals)),
+                    ("net", _edge_cell(g.net_r)),
+                    ("2R first", _edge_cell(g.target_first_pct, unit="pt", places=1)),
+                    ("", _edge_verdict(g.net_r)),
+                ]
+                + (
+                    [("", f"[yellow]n < {MIN_TRADES_FOR_FINDING}: a hypothesis[/yellow]")]
+                    if g.signals < MIN_TRADES_FOR_FINDING
+                    else []
+                ),
+                "green" if g.net_r.significant and (g.net_r.edge or 0) > 0 else "blue",
+            )
+        )
+    return dashboard(top, *specs)
 
 
 def edge_table(report: EdgeReport) -> Table:
