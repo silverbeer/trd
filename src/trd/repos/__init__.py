@@ -1,6 +1,7 @@
 from trd.repos.accounts import AccountRepo
 from trd.repos.earnings import EarningsRepo, EarningsResultRepo
 from trd.repos.engine import (
+    CashRefusalRepo,
     EngineConfigRepo,
     EnginePositionRepo,
     EngineRunRepo,
@@ -17,6 +18,7 @@ from trd.repos.watchlists import WatchlistRepo
 
 __all__ = [
     "AccountRepo",
+    "CashRefusalRepo",
     "EarningsRepo",
     "EarningsResultRepo",
     "EngineConfigRepo",

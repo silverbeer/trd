@@ -15,12 +15,12 @@ the engine has a capital (migration 026).
 """
 
 from collections.abc import Iterable
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 
 from pydantic import BaseModel, ConfigDict, computed_field
 
-from trd.models import Side
+from trd.models import CashBlock, CashRefusal, Side
 
 # One flow of cash through the account: (trade date, side, quantity, price, fees).
 Flow = tuple[date, Side, Decimal, Decimal, Decimal]
@@ -109,6 +109,40 @@ class CashLedger(BaseModel):
             return f"{head} — nothing pending settlement (cash account)"
         when, amount = nxt
         return f"{head} — ${amount:,.2f} from earlier exits settles {when} (T+1, cash account)"
+
+    def refusal(
+        self, symbol: str, strategy: str, score: float, cost: Decimal, at: datetime | None
+    ) -> CashRefusal:
+        """The same refusal as `shortfall`, as data the scan stores (SB-1628)."""
+        nxt = self.next_settle
+        return CashRefusal(
+            symbol=symbol,
+            strategy=strategy,
+            score=score,
+            cost=cost,
+            buying_power=self.buying_power,
+            settles_on=nxt[0] if nxt else None,
+            settles_amount=nxt[1] if nxt else None,
+            at=at,
+        )
+
+    def block(self, free_slots: int, entry_cost: Decimal) -> CashBlock | None:
+        """Free slots this ledger cannot fill one of, or None (SB-1628).
+
+        None with no free slot — a full book needs no cash — and whenever
+        buying power covers one entry. Strictly below: an entry sized to the
+        position size costs at most that, never more.
+        """
+        if free_slots <= 0 or self.buying_power >= entry_cost:
+            return None
+        nxt = self.next_settle
+        return CashBlock(
+            free_slots=free_slots,
+            entry_cost=entry_cost,
+            buying_power=self.buying_power,
+            settles_on=nxt[0] if nxt else None,
+            settles_amount=nxt[1] if nxt else None,
+        )
 
 
 def ledger(

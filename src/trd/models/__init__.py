@@ -27,6 +27,8 @@ from trd.models.core import (
 from trd.models.engine import (
     EXPIRABLE_INTENT_STATUSES,
     OPEN_INTENT_STATUSES,
+    CashBlock,
+    CashRefusal,
     EngineConfig,
     EngineGuard,
     EngineMode,
@@ -94,7 +96,9 @@ __all__ = [
     "BrokerOrderState",
     "BrokerPosition",
     "BrokerSnapshot",
+    "CashBlock",
     "CashCheck",
+    "CashRefusal",
     "DailyBar",
     "EarningsDate",
     "EarningsEvent",

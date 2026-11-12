@@ -1,5 +1,5 @@
 from datetime import date, datetime, timedelta
-from decimal import Decimal
+from decimal import ROUND_DOWN, Decimal
 
 from rich.console import Group, RenderableType
 from rich.padding import Padding
@@ -1791,8 +1791,23 @@ def live_report_renderables(report: LiveReport, label: str) -> list[RenderableTy
         account.append(("settled", fmt_money(day.cash_settled)))
     if day.cash_unsettled is not None:
         account.append(("unsettled", fmt_money(day.cash_unsettled)))
+    if day.cash_bridge:
+        account.append(
+            (
+                "bridge",
+                f"{fmt_money(day.cash_bridge)} [dim]({fmt_money(day.cash_bridged)} used)[/dim]",
+            )
+        )
+    if day.cash_next_settle is not None and day.cash_unsettled:
+        account.append(
+            ("next settles", f"{fmt_money(day.cash_next_amount)} {day.cash_next_settle}")
+        )
     if day.cash_buying_power is not None:
-        account.append(("buying power", f"[bold]{fmt_money(day.cash_buying_power)}[/bold]"))
+        account.append(("buying power", f"[bold]{fmt_cash_floor(day.cash_buying_power)}[/bold]"))
+    if day.cash_block is not None:
+        account.append(("[yellow]short[/yellow]", f"[yellow]{day.cash_block.line()}[/yellow]"))
+    if day.cash_refused_today:
+        account.append(("passed for cash", ", ".join(r.symbol for r in day.cash_refused_today[:5])))
     if day.open_intents or day.awaiting_approval:
         account.append(("orders", f"{day.open_intents} open · {day.awaiting_approval} to approve"))
 
@@ -1834,6 +1849,14 @@ def live_report_renderables(report: LiveReport, label: str) -> list[RenderableTy
     if position_cards:
         out.append(cards(*position_cards))
     return out
+
+
+def fmt_cash_floor(value: Decimal | None) -> str:
+    """Buying power floored to the cent: $19.9993 must not print as $20.00 over a
+    slot it cannot fill (SB-1628)."""
+    if value is None:
+        return "—"
+    return fmt_money(value.quantize(Decimal("0.01"), rounding=ROUND_DOWN))
 
 
 def fmt_r(value: Decimal | None) -> str:
@@ -2326,7 +2349,9 @@ def engine_cash_renderables(cash: CashLedger | None) -> list[RenderableType]:
     if cash.bridge > 0:
         table.add_row("bridge", fmt_money(cash.bridge))
         table.add_row("  in use", fmt_money(cash.bridged))
-        table.add_row("[bold]buying power[/bold]", f"[bold]{fmt_money(cash.buying_power)}[/bold]")
+        table.add_row(
+            "[bold]buying power[/bold]", f"[bold]{fmt_cash_floor(cash.buying_power)}[/bold]"
+        )
         note = (
             "Buying power is settled cash plus the bridge's share of proceeds still "
             "settling: spare broker cash fronts a refill, and the next settle pays it "
@@ -2362,6 +2387,8 @@ def _status_dashboard(status: EngineStatus, mode: str, trading: str) -> Renderab
     ]
     if status.temperature is not None:
         lines.append(Text(status.temperature.line(), style="dim"))
+    if status.cash_block is not None:
+        lines.append(Text(f"⚠ {status.cash_block.line()}", style="yellow"))
     if status.last_scan is None:
         lines.append(Text.from_markup("[yellow]⚠ never scanned — run 'trd engine scan'[/yellow]"))
     else:
@@ -2440,8 +2467,30 @@ def _status_dashboard(status: EngineStatus, mode: str, trading: str) -> Renderab
                 )
             )
         cash.append(
-            ("[bold]buying power[/bold]", f"[bold]{fmt_money(status.cash_buying_power)}[/bold]")
+            (
+                "[bold]buying power[/bold]",
+                f"[bold]{fmt_cash_floor(status.cash_buying_power)}[/bold]",
+            )
         )
+        if status.cash_block is not None:
+            cash.append(
+                (
+                    "[yellow]short[/yellow]",
+                    f"[yellow]{fmt_money(status.cash_block.short)} of one entry[/yellow]",
+                )
+            )
+        if status.cash_refused_today:
+            cash.append(
+                (
+                    "passed for cash",
+                    ", ".join(r.symbol for r in status.cash_refused_today[:5])
+                    + (
+                        f" +{len(status.cash_refused_today) - 5}"
+                        if len(status.cash_refused_today) > 5
+                        else ""
+                    ),
+                )
+            )
 
     guard: list[Row] = []
     if live and status.guard is not None:

@@ -8,6 +8,7 @@ import duckdb
 from trd.models import (
     EXPIRABLE_INTENT_STATUSES,
     OPEN_INTENT_STATUSES,
+    CashRefusal,
     EngineConfig,
     EngineGuard,
     EngineMode,
@@ -200,6 +201,66 @@ class EngineConfigRepo:
         ).fetchone()
         assert row is not None
         return _row_to_config(row)
+
+
+class CashRefusalRepo:
+    """Entries a scan ranked and settled cash could not pay for (SB-1628)."""
+
+    def __init__(self, conn: duckdb.DuckDBPyConnection) -> None:
+        self.conn = conn
+
+    def record(self, run_id: int, account_id: int, refusals: list[CashRefusal]) -> None:
+        for r in refusals:
+            self.conn.execute(
+                """
+                INSERT INTO engine_cash_refusal (run_id, account_id, refused_at, symbol, strategy,
+                    score, cost, buying_power, settles_on, settles_amount)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                [
+                    run_id,
+                    account_id,
+                    r.at,
+                    r.symbol,
+                    r.strategy,
+                    r.score,
+                    r.cost,
+                    r.buying_power,
+                    r.settles_on,
+                    r.settles_amount,
+                ],
+            )
+
+    def list_on(self, account_id: int, session: date) -> list[CashRefusal]:
+        """Every refusal in one session, best score first, one row per name and
+        strategy (its latest) — the same signal refused on six passes is one
+        thing passed over, not six."""
+        rows = self.conn.execute(
+            """
+            SELECT symbol, strategy, score, cost, buying_power, settles_on,
+                settles_amount, refused_at
+            FROM engine_cash_refusal
+            WHERE account_id = ? AND CAST(refused_at AS DATE) = ?
+            QUALIFY row_number() OVER (
+                PARTITION BY symbol, strategy ORDER BY refused_at DESC, id DESC
+            ) = 1
+            ORDER BY score DESC, symbol
+            """,
+            [account_id, session],
+        ).fetchall()
+        return [
+            CashRefusal(
+                symbol=r[0],
+                strategy=r[1],
+                score=r[2],
+                cost=r[3],
+                buying_power=r[4],
+                settles_on=r[5],
+                settles_amount=r[6],
+                at=r[7],
+            )
+            for r in rows
+        ]
 
 
 class EngineRunRepo:
