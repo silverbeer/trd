@@ -108,6 +108,7 @@ from trd.notify.bot import (
 from trd.notify.messages import (
     alloc_report_message,
     approval_message,
+    cash_alert_message,
     daily_report_message,
     fill_alert_message,
     fill_messages,
@@ -2358,6 +2359,9 @@ def _notify_scan(result: ScanResult, label: str | None = None) -> None:
         _send(scan_alert_messages(result, label), alert=True)
     if result.auto_halt:
         _send([halt_message(result.auto_halt, label)], alert=True)
+    cash_alert = cash_alert_message(result, label)
+    if cash_alert:
+        _send([cash_alert], alert=True)
 
 
 def _send(messages: list[str], alert: bool = False) -> None:

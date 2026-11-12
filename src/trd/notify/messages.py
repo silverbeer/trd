@@ -25,7 +25,7 @@ terminal.
 import re
 from collections.abc import Callable
 from datetime import datetime, timedelta
-from decimal import Decimal
+from decimal import ROUND_DOWN, Decimal
 from html import escape, unescape
 from typing import Any
 
@@ -938,29 +938,77 @@ def _distance(value: Decimal | None, ahead: str, crossed: str) -> str:
     return f"{crossed} {abs(float(value)):.1f}%"
 
 
-def _buying_power_line(day: EngineDay) -> str:
-    """What the live engine may spend next, and where that number comes from.
+def _cents_down(value: Decimal) -> str:
+    """Buying power floored to the cent. $19.9993 is not $20.00 — rounding it up
+    printed a full wallet over a slot it could not fill (SB-1628)."""
+    return f"${value.quantize(Decimal('0.01'), rounding=ROUND_DOWN):,.2f}"
 
-    With a bridge (SB-1445) the engine's settled cash can read near zero, or below
-    it, while the spare broker cash fronts the sales still settling — so the line
-    leads with what an entry may actually spend and names the bridge.
+
+def _cash_lines(day: EngineDay) -> list[str]:
+    """The live engine's cash, the same figures `trd engine cash` prints (SB-1628).
+
+    Leads with what an entry may spend. With a bridge (SB-1445) settled cash can
+    read below zero while spare broker cash fronts the sales still settling, so
+    the bridge and how much of it is in use are named. A free slot buying power
+    cannot fill is said outright, with what lifts it.
     """
+    if day.cash_settled is None:
+        return []
+    power = day.cash_buying_power if day.cash_buying_power is not None else day.cash_settled
+    lines = [f"💵 <b>Buying power {_cents_down(power)}</b>"]
+    parts = [f"capital {_lusd(day.capital, signed=False)}", f"settled {_lusd(day.cash_settled)}"]
+    unsettled = f"unsettled {_lusd(day.cash_unsettled, signed=False)}"
+    if day.cash_unsettled and day.cash_next_settle is not None:
+        nxt = (
+            f"{_lusd(day.cash_next_amount, signed=False)} settles {day.cash_next_settle:%a %b %-d}"
+        )
+        unsettled += f" ({nxt})"
+    parts.append(unsettled)
     if day.cash_bridge:
-        return (
-            f"<i>Buying power {_lusd(day.cash_buying_power, signed=False)} — "
-            f"{_lusd(day.cash_settled)} settled + up to "
-            f"{_lusd(day.cash_bridge, signed=False)} bridge fronting "
-            f"{_lusd(day.cash_unsettled, signed=False)} from sales still settling</i>"
+        parts.append(
+            f"bridge {_lusd(day.cash_bridge, signed=False)} "
+            f"({_lusd(day.cash_bridged or Decimal(0), signed=False)} in use)"
         )
-    return (
-        f"<i>Buying power {_lusd(day.cash_settled, signed=False)}"
-        + (
-            f" (+{_lusd(day.cash_unsettled, signed=False)} from sales, settles next business day)"
-            if day.cash_unsettled
-            else ""
+    lines.append("<i>" + " · ".join(parts) + "</i>")
+    if day.cash_block is not None:
+        lines.append(f"⚠️ <b>{_h(day.cash_block.line())}</b>")
+    if day.cash_refused_today:
+        names = ", ".join(
+            f"{_h(r.symbol)} ({_h(r.strategy)} {r.score:.2f})" for r in day.cash_refused_today[:5]
         )
-        + "</i>"
+        more = len(day.cash_refused_today) - 5
+        lines.append(
+            f"<i>Passed over for cash today: {names}"
+            + (f" +{more} more" if more > 0 else "")
+            + "</i>"
+        )
+    return lines
+
+
+def cash_alert_message(result: ScanResult, label: str | None = None) -> str | None:
+    """A live scan refused a signal it ranked because settled cash could not pay,
+    with a slot free (SB-1628). Sent once a session, to the alert chat: an empty
+    slot and a green watchlist otherwise read as 'nothing to buy'."""
+    if not result.cash_alert or not result.cash_refused:
+        return None
+    top = result.cash_refused[0]
+    names = ", ".join(
+        f"{_h(r.symbol)} ({_h(r.strategy)} {r.score:.2f})" for r in result.cash_refused[:5]
     )
+    lines = [
+        f"{_live_head(label)} slot free, cash short",
+        f"Buying power {_cents_down(top.buying_power)} — ${top.short:,.2f} short of a "
+        f"${top.cost:,.2f} entry.",
+        f"Passed over: {names}",
+    ]
+    if top.settles_on is not None:
+        lines.append(
+            f"{_lusd(top.settles_amount, signed=False)} settles {top.settles_on:%a %b %-d}; "
+            "the slot refills then. Adding capital ('trd engine cash --set') fills it sooner."
+        )
+    else:
+        lines.append("Nothing pending settlement — only more capital refills it.")
+    return "\n".join(lines)
 
 
 def live_report_message(report: LiveReport, label: str | None = None) -> str:
@@ -994,8 +1042,8 @@ def live_report_message(report: LiveReport, label: str | None = None) -> str:
         f"({_lpc(day.live_return_pct)}) on the {_lusd(day.capital, signed=False)} you started with",
         f"<i>{_lusd(day.realized_all)} locked in from sold trades · "
         f"{_lusd(day.unrealized)} on positions still open</i>",
-        _buying_power_line(day),
     ]
+    lines += _cash_lines(day)
     if day.open_intents or day.awaiting_approval:
         lines.append(
             f"📨 {day.open_intents} order(s) open · "

@@ -398,6 +398,15 @@ trd engine status [--json]            # what this engine is + whether it's healt
                                       # at cool). In scan NDJSON, status --json 'temperature'
                                       # (today's newest run only), and one line in the live
                                       # report. Decides nothing. 'trd learn market-temperature'
+                                      # CASH-BLOCKED (SB-1628, migration 035): an entry the scan
+                                      # ranked but settled cash + bridge could not pay for is
+                                      # stored in engine_cash_refusal. status shows '⚠ cash-
+                                      # blocked: N free slot(s), $X short of one entry' whenever
+                                      # a slot is free and buying power < one entry (exposure
+                                      # sizing), plus the names passed for cash today; --json
+                                      # 'cash_block', 'cash_refused_today'. A live scan's FIRST
+                                      # refusal of a session alerts the private chat (scan
+                                      # --notify). Buying power prints floored to the cent
 trd engine outcomes [--backfill] [--recompute] [--trades] [--json]
                                       # did we enter early, did we exit early, and what did the
                                       # signals we PASSED OVER do next. MAE (heat taken), MFE
@@ -681,6 +690,9 @@ trd engine live-report [--date ISO] [--notify] [--json]
                                       # close; the ENTRY for a position opened today), stop in
                                       # force (↑ = trailing) and % below, target and % above,
                                       # at risk; then today's buys, exits and rejected/expired
+                                      # The cash block is `trd engine cash` whole: buying power
+                                      # (floored), capital, settled, unsettled + settle date,
+                                      # bridge + in use, and the cash-blocked line (SB-1628)
                                       # orders. Stale marks at the top, and a stale position's
                                       # day move is unknown, never yesterday's. READ-ONLY
                                       # connection, no network. Refused on paper. --notify =

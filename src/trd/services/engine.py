@@ -48,6 +48,8 @@ from trd.models import (
     Account,
     AccountType,
     Bar,
+    CashBlock,
+    CashRefusal,
     DailyBar,
     EngineConfig,
     EngineGuard,
@@ -80,6 +82,7 @@ from trd.repos import (
     WatchlistRepo,
 )
 from trd.repos.engine import (
+    CashRefusalRepo,
     EngineConfigRepo,
     EnginePositionRepo,
     EngineRunRepo,
@@ -234,6 +237,11 @@ class ScanResult(BaseModel):
     auto_halt: str | None = None
     # The market as this pass read it (SB-1538). Recorded, shown, decides nothing.
     temperature: MarketTemperature | None = None
+    # SB-1628: entries ranked and refused because settled cash could not pay,
+    # best score first. `cash_alert` is set only on a live pass whose refusals
+    # are the session's first, so a notifier alerts once a session, not per scan.
+    cash_refused: list[CashRefusal] = []
+    cash_alert: bool = False
 
     @property
     def quiet(self) -> bool:
@@ -402,6 +410,7 @@ class EngineService:
         self.earnings = EarningsRepo(conn)
         self.configs = EngineConfigRepo(conn)
         self.runs = EngineRunRepo(conn)
+        self.cash_refusals = CashRefusalRepo(conn)
         self.signals = EngineSignalRepo(conn)
         self.positions = EnginePositionRepo(conn)
         self.intents = OrderIntentRepo(conn)
@@ -588,6 +597,17 @@ class EngineService:
             if intent.side == Side.BUY:
                 cash = cash.spend(intent.notional)
         return cash
+
+    @staticmethod
+    def _cash_block(
+        config: EngineConfig, cash: CashLedger | None, free_slots: int
+    ) -> CashBlock | None:
+        """Free slots buying power cannot fill (SB-1628). Exposure sizing only:
+        under risk sizing an entry's cost floats with its stop, so there is no
+        one-entry figure to fall short of."""
+        if cash is None or config.sizing_mode != SizingMode.EXPOSURE:
+            return None
+        return cash.block(free_slots, config.position_size)
 
     def set_capital(self, capital: Decimal | None) -> EngineConfig:
         """Switch the cash ledger on at `capital`, or off with None.
@@ -1001,6 +1021,12 @@ class EngineService:
             result.skipped.append("exits only: no new entries this pass")
 
         result.open_positions = len(self.positions.list_open(account.id))
+        if result.cash_refused:
+            # The session's first refusal is the alert; later passes refusing the
+            # same empty slot are the same news. Read before this pass writes.
+            first = not self.cash_refusals.list_on(account.id, today)
+            self.cash_refusals.record(run.id, account.id, result.cash_refused)
+            result.cash_alert = config.is_live and paper and first
         self.runs.finish(
             run.id,
             scanned=result.scanned,
@@ -1460,7 +1486,7 @@ class EngineService:
         cash: CashLedger | None = None,
     ) -> ScanFill | None:
         price = bars[-1].close
-        plan = self._affordable_plan(config, instrument, bars, result, cash)
+        plan = self._affordable_plan(config, instrument, bars, result, cash, scan_signal)
         if plan is None:
             return None
 
@@ -1512,6 +1538,7 @@ class EngineService:
         bars: list[Bar],
         result: ScanResult,
         cash: CashLedger | None,
+        scan_signal: ScanSignal,
     ) -> EntryPlan | None:
         """The sized entry, or None (with the reason in `skipped`) when it cannot
         be sized or settled cash cannot pay for it. Shared by the paper fill and
@@ -1527,6 +1554,11 @@ class EngineService:
         cost = plan.quantity * bars[-1].close
         if cash is not None and cost > cash.buying_power:
             result.skipped.append(cash.shortfall(instrument.symbol, cost))
+            result.cash_refused.append(
+                cash.refusal(
+                    instrument.symbol, scan_signal.strategy, scan_signal.score, cost, result.at
+                )
+            )
             return None
         return plan
 
@@ -1567,7 +1599,7 @@ class EngineService:
         knows what the order costs. A refused intent is never written; the signal
         stays recorded and unacted, like any other entry the engine passed over.
         """
-        plan = self._affordable_plan(config, instrument, bars, result, cash)
+        plan = self._affordable_plan(config, instrument, bars, result, cash, scan_signal)
         if plan is None:
             return None
         if tally is not None:
@@ -1836,6 +1868,12 @@ class EngineService:
         nxt = cash.next_settle if cash is not None else None
         in_flight = [intent for intent, _ in self.intents.list_open(account.id)]
         guard = self.guards.guard(config)
+        free_slots = max(
+            0,
+            config.max_positions
+            - len(open_pairs)
+            - sum(1 for i in in_flight if i.side == Side.BUY),
+        )
         return EngineStatus(
             build=build_version(),
             db_path=db_path,
@@ -1856,9 +1894,12 @@ class EngineService:
             cash_settled=cash.settled if cash is not None else None,
             cash_unsettled=cash.unsettled if cash is not None else None,
             cash_next_settle=nxt[0] if nxt is not None else None,
+            cash_next_amount=nxt[1] if nxt is not None else None,
             cash_bridge=cash.bridge if cash is not None else None,
             cash_bridged=cash.bridged if cash is not None else None,
             cash_buying_power=cash.buying_power if cash is not None else None,
+            cash_block=self._cash_block(config, cash, free_slots),
+            cash_refused_today=self.cash_refusals.list_on(account.id, date.today()),
             mode=config.mode,
             open_intents=len(in_flight),
             open_buy_intents=sum(1 for i in in_flight if i.side == Side.BUY),

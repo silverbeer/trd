@@ -1,5 +1,5 @@
 from datetime import date, datetime, timedelta
-from decimal import Decimal
+from decimal import ROUND_CEILING, Decimal
 from enum import StrEnum
 
 from pydantic import BaseModel, computed_field
@@ -549,6 +549,65 @@ def describe_short(names: list[ShortName]) -> list[str]:
     return [f"{', '.join(symbols)}: {rules}" for rules, symbols in groups.items()]
 
 
+def _cents_up(amount: Decimal) -> Decimal:
+    """Round a shortfall UP to the cent. $0.0007 short is still short, and
+    printing it as $0.00 is how a blocked slot reads as a full wallet."""
+    return max(Decimal(0), amount).quantize(Decimal("0.01"), rounding=ROUND_CEILING)
+
+
+class CashRefusal(BaseModel):
+    """One entry the scan ranked and could not pay for (SB-1628).
+
+    Stored per scan in `engine_cash_refusal`, because the only other trace was a
+    line in the scan's `skipped`, which lives in a pod log and dies with the pod.
+    """
+
+    symbol: str
+    strategy: str
+    score: float
+    cost: Decimal
+    buying_power: Decimal
+    # The next proceeds to settle — what lifts the block. None = nothing pending.
+    settles_on: date | None = None
+    settles_amount: Decimal | None = None
+    at: datetime | None = None
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def short(self) -> Decimal:
+        return _cents_up(self.cost - self.buying_power)
+
+
+class CashBlock(BaseModel):
+    """Free slots that buying power cannot fill (SB-1628).
+
+    Derived from the ledger, never stored, so it shows even on a pass where no
+    signal fired — an empty slot with no money behind it is a state, not an event.
+    `entry_cost` is the position size: exposure sizing only, since under risk
+    sizing what an entry costs floats with its stop.
+    """
+
+    free_slots: int
+    entry_cost: Decimal
+    buying_power: Decimal
+    settles_on: date | None = None
+    settles_amount: Decimal | None = None
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def short(self) -> Decimal:
+        return _cents_up(self.entry_cost - self.buying_power)
+
+    def line(self) -> str:
+        slots = f"{self.free_slots} free slot{'s' if self.free_slots != 1 else ''}"
+        head = (
+            f"cash-blocked: {slots}, ${self.short:,.2f} short of one ${self.entry_cost:,.2f} entry"
+        )
+        if self.settles_on is None:
+            return f"{head} — nothing pending settlement"
+        return f"{head} — ${self.settles_amount or 0:,.2f} settles {self.settles_on}"
+
+
 class EngineStatus(BaseModel):
     """Everything you need to know before trusting a running engine, in one object.
 
@@ -582,6 +641,8 @@ class EngineStatus(BaseModel):
     cash_settled: Decimal | None = None
     cash_unsettled: Decimal | None = None
     cash_next_settle: date | None = None
+    # How much settles on that date.
+    cash_next_amount: Decimal | None = None
     # The settlement bridge: configured, in use now, and what an entry may spend
     # (settled + the bridge's share of unsettled). None with no ledger.
     cash_bridge: Decimal | None = None
@@ -646,6 +707,10 @@ class EngineStatus(BaseModel):
     # The market as today's newest scan read it (SB-1538); None before the first
     # scan of the day, so yesterday's close is never shown as today's weather.
     temperature: MarketTemperature | None = None
+    # SB-1628: free slots buying power cannot fill (None = not blocked, or no
+    # ledger), and every entry today's scans refused for cash, best score first.
+    cash_block: CashBlock | None = None
+    cash_refused_today: list[CashRefusal] = []
 
     @computed_field  # type: ignore[prop-decorator]
     @property

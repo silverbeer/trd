@@ -411,7 +411,8 @@ def test_buying_power_line_names_the_bridge() -> None:
     base = EngineDay(engine="live", last_session=SESSION, capital=D("100"), mode=EngineMode.LIVE)
     plain = base.model_copy(update={"cash_settled": D("1.25"), "cash_unsettled": D("42.10")})
     text = live_report_message(LiveReport(on=SESSION, day=plain))
-    assert "Buying power $1.25 (+$42.10 from sales, settles next business day)" in text
+    assert "Buying power $1.25</b>" in text
+    assert "settled +$1.25 · unsettled $42.10" in text
 
     bridged = base.model_copy(
         update={
@@ -422,8 +423,8 @@ def test_buying_power_line_names_the_bridge() -> None:
         }
     )
     text = live_report_message(LiveReport(on=SESSION, day=bridged))
-    assert "Buying power $23.35" in text
-    assert "up to $100.00 bridge fronting $42.10 from sales still settling" in text
+    assert "Buying power $23.35</b>" in text
+    assert "bridge $100.00 ($0.00 in use)" in text
 
 
 def test_cli_terminal_view_is_panels(cli_env):

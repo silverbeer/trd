@@ -27,7 +27,15 @@ from decimal import Decimal
 
 from pydantic import BaseModel, computed_field
 
-from trd.models import EngineConfig, EngineMode, EnginePosition, SizingMode, StrategyStat
+from trd.models import (
+    CashBlock,
+    CashRefusal,
+    EngineConfig,
+    EngineMode,
+    EnginePosition,
+    SizingMode,
+    StrategyStat,
+)
 from trd.services.engine import EngineService, strategy_stats
 
 # How far back "what is working" looks. A month of sessions is long enough that
@@ -159,6 +167,13 @@ class EngineDay(BaseModel):
     # still settling. 0 = none; buying power is settled + its share of unsettled.
     cash_bridge: Decimal | None = None
     cash_buying_power: Decimal | None = None
+    # SB-1628: the rest of `engine cash`, so the live report can print it whole,
+    # and free slots buying power cannot fill plus what today refused for cash.
+    cash_bridged: Decimal | None = None
+    cash_next_settle: date | None = None
+    cash_next_amount: Decimal | None = None
+    cash_block: CashBlock | None = None
+    cash_refused_today: list[CashRefusal] = []
     open_intents: int = 0
     awaiting_approval: int = 0
     halted: bool = False
@@ -457,6 +472,11 @@ def engine_day(
         cash_unsettled=status.cash_unsettled if config.is_live else None,
         cash_bridge=status.cash_bridge if config.is_live else None,
         cash_buying_power=status.cash_buying_power if config.is_live else None,
+        cash_bridged=status.cash_bridged if config.is_live else None,
+        cash_next_settle=status.cash_next_settle if config.is_live else None,
+        cash_next_amount=status.cash_next_amount if config.is_live else None,
+        cash_block=status.cash_block if config.is_live else None,
+        cash_refused_today=status.cash_refused_today if config.is_live else [],
         open_intents=status.open_intents,
         awaiting_approval=status.awaiting_approval,
         halted=status.halted,
