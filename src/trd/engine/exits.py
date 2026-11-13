@@ -66,6 +66,11 @@ DEFAULT_EXIT_PARAMS: dict[str, float] = {
     # slot, at most once a session. 0 = off. BACKTEST ONLY until a sweep shows it
     # pays: the live scan does not read it, so a live engine is unaffected.
     "rotate_min_score": 0.0,
+    # Pyramiding (SB-1655): positions one name may hold at once. 1 = the live
+    # rule (one position per symbol). Above it a fresh signal on a held name
+    # competes for a free slot like any other, one new entry per name per bar.
+    # BACKTEST ONLY: the live scan does not read it.
+    "max_per_symbol": 1.0,
 }
 
 

@@ -227,6 +227,10 @@ class BacktestResult(BaseModel):
     cash_blocked: int = 0
     # Full-book swaps taken by the rotation param (SB-1539); 0 with it off.
     rotations: int = 0
+    # Pyramiding (SB-1655): positions one name may hold at once, and how many
+    # entries were taken into a name already held. 1 / 0 = the live rule.
+    max_per_symbol: int = 1
+    pyramided: int = 0
     # The settlement bridge the replay ran with (SB-1445). None = none.
     bridge: Decimal | None = None
     equity: list[EquityPoint]
@@ -581,7 +585,10 @@ def simulate(
     # capital explicitly.
     start_value = capital if capital is not None else position_size * max_positions
     cash = start_value
-    open_positions: dict[str, EnginePosition] = {}
+    # Keyed by position id, not symbol: with max_per_symbol > 1 one name can
+    # hold several positions at once. `symbol_of` names each one's series.
+    open_positions: dict[int, EnginePosition] = {}
+    symbol_of: dict[int, str] = {}
     closed: list[EnginePosition] = []
     trades: list[BacktestTrade] = []
     entry_reasons: dict[int, str] = {}
@@ -611,6 +618,20 @@ def simulate(
     rotate_target_r = Decimal(str(exit_params.get("target_r", 2.0)))
     rotated_on: date | None = None
     rotations = 0
+    # Pyramiding (SB-1655): how many positions one name may hold at once. 1 is
+    # the live rule. Above it, a fresh signal on a held name competes for a slot
+    # like any other candidate — at most one new entry per name per bar.
+    # BACKTEST ONLY: the live scan does not read it.
+    max_per_symbol = max(1, int(exit_params.get("max_per_symbol", 1)))
+    pyramided = 0
+
+    def held_count(symbol: str) -> int:
+        return sum(1 for pid in open_positions if symbol_of[pid] == symbol)
+
+    def by_symbol() -> list[int]:
+        # The order the book was walked in when it was keyed by symbol; ties
+        # (pyramided positions) oldest first.
+        return sorted(open_positions, key=lambda pid: (symbol_of[pid], pid))
 
     equity_by_session: dict[date, Decimal] = {}
     for stamp in stamps:
@@ -636,12 +657,13 @@ def simulate(
         just_closed: set[str] = set()
 
         def advance(
-            symbol: str, stamp: datetime, today: date, now: datetime, just_closed: set[str]
+            pid: int, stamp: datetime, today: date, now: datetime, just_closed: set[str]
         ) -> None:
-            """One bar of exits for the position in `symbol`, closing and
-            recording it if a rule fires."""
+            """One bar of exits for position `pid`, closing and recording it if
+            a rule fires."""
             nonlocal cash
-            position = open_positions[symbol]
+            position = open_positions[pid]
+            symbol = symbol_of[pid]
             i = index[symbol].get(stamp)
             if i is None:
                 return
@@ -658,7 +680,7 @@ def simulate(
             if decision is None:
                 return
             record_close(
-                symbol,
+                pid,
                 fills[-1][0],
                 decision.rule,
                 decision.reason,
@@ -670,7 +692,7 @@ def simulate(
             )
 
         def record_close(
-            symbol: str,
+            pid: int,
             exit_price: Decimal,
             rule: str,
             reason: str,
@@ -681,7 +703,8 @@ def simulate(
             lived_exit_bar: bool,
         ) -> None:
             """Book a closed position: out of the book, onto the trade list."""
-            position = open_positions[symbol]
+            position = open_positions[pid]
+            symbol = symbol_of[pid]
             bars = series[symbol]
             position.status = PositionStatus.CLOSED
             position.closed_at = (
@@ -690,7 +713,7 @@ def simulate(
             position.exit_reason = reason
             position.exit_rule = rule
             closed.append(position)
-            del open_positions[symbol]
+            del open_positions[pid]
             just_closed.add(symbol)
             # The entry bar is out when the fill was at its close, in when the fill
             # was at its open — `entry_index` records the last bar BEFORE the trade
@@ -725,8 +748,8 @@ def simulate(
                 )
             )
 
-        for symbol in sorted(open_positions):
-            advance(symbol, stamp, today, now, just_closed)
+        for pid in by_symbol():
+            advance(pid, stamp, today, now, just_closed)
 
         # Entries: every enabled strategy over every eligible symbol, ranked the
         # way _run_entries ranks, filled while capacity lasts.
@@ -769,11 +792,12 @@ def simulate(
             and not too_early
             and blocked_by_regime is None
         ):
-            opened_now: list[str] = []
+            opened_now: list[int] = []
+            entered_now: set[str] = set()
             candidates: list[tuple[float, str, str, list[Bar], str]] = []
             for symbol in sorted(series):
                 i = index[symbol].get(stamp)
-                if i is None or symbol in open_positions:
+                if i is None or held_count(symbol) >= max_per_symbol:
                     continue
                 if young_sessions > 0 and (
                     symbol not in young or bisect_left(daily_dates[symbol], today) >= young_sessions
@@ -828,7 +852,9 @@ def simulate(
                 and candidates[0][1] not in just_closed
             ):
                 held_now: list[Holding] = []
-                for held_symbol, position in open_positions.items():
+                for held_pid in by_symbol():
+                    position = open_positions[held_pid]
+                    held_symbol = symbol_of[held_pid]
                     j = index[held_symbol].get(stamp)
                     if j is None or position.risk_per_share <= 0:
                         continue
@@ -845,7 +871,7 @@ def simulate(
                     )
                 cold = coldest(held_now, rotate_grace, rotate_target_r)
                 if cold is not None:
-                    position = open_positions[cold.symbol]
+                    position = open_positions[cold.position_id]
                     sold = position.remaining_quantity
                     position.book_exit(sold, cold.mark)
                     proceeds = cold.mark * sold
@@ -855,7 +881,7 @@ def simulate(
                     else:
                         cash += proceeds
                     record_close(
-                        cold.symbol,
+                        cold.position_id,
                         cold.mark,
                         "rotate",
                         f"rotated out at {cold.r_now:+.2f}R for {candidates[0][1]} "
@@ -872,7 +898,8 @@ def simulate(
             for _score, symbol, key, prefix, reason in candidates:
                 if capacity <= 0:
                     break
-                if symbol in open_positions:
+                held = held_count(symbol)
+                if held >= max_per_symbol or symbol in entered_now:
                     continue
                 if symbol in just_closed:
                     # Mirrors the live scanner, down to where the check sits: the
@@ -908,18 +935,22 @@ def simulate(
                 # The last bar before the trade: the signal bar on a close fill,
                 # the bar before the one filled into on an open fill.
                 entry_index[next_id] = len(prefix) - (2 if entry_fill is EntryFill.OPEN else 1)
+                open_positions[next_id] = position
+                symbol_of[next_id] = symbol
+                entered_now.add(symbol)
+                if held:
+                    pyramided += 1
+                if entry_fill is EntryFill.OPEN:
+                    opened_now.append(next_id)
                 next_id += 1
-                open_positions[symbol] = position
                 cash -= price * plan.quantity
                 capacity -= 1
                 entries_today += 1
-                if entry_fill is EntryFill.OPEN:
-                    opened_now.append(symbol)
             # Filled at this bar's open, the trade lives through the rest of it,
             # and the next live scan would read this bar's close: probe it now,
             # or a stop crossed inside the entry bar waits five minutes to fire.
-            for symbol in opened_now:
-                advance(symbol, stamp, today, now, just_closed)
+            for pid in opened_now:
+                advance(pid, stamp, today, now, just_closed)
 
         for symbol, positions_index in index.items():
             i = positions_index.get(stamp)
@@ -927,7 +958,8 @@ def simulate(
                 last_close[symbol] = series[symbol][i].close
         if today >= trading_start:
             value = cash + sum(
-                (open_positions[s].quantity * last_close[s] for s in open_positions), Decimal(0)
+                (p.quantity * last_close[symbol_of[pid]] for pid, p in open_positions.items()),
+                Decimal(0),
             )
             if pending:
                 # Pending proceeds are the account's money, merely not spendable
@@ -972,6 +1004,8 @@ def simulate(
         settlement=settlement,
         cash_blocked=cash_blocked,
         rotations=rotations,
+        pyramided=pyramided,
+        max_per_symbol=max_per_symbol,
         bridge=bridge if settlement else None,
         equity=equity,
         start_value=start_value,
