@@ -196,6 +196,7 @@ def test_each_value_is_its_own_row_and_each_flag_its_own_axis() -> None:
     [
         ("entry_delay_minutes=10", "which trades exist"),
         ("regime_sma=100", "which trades exist"),
+        ("max_per_symbol=2", "which trades exist"),
         ("trail_mult=2", "Unknown exit param"),
         ("target_r=abc", "not a number"),
         ("target_r=-1", "cannot be negative"),

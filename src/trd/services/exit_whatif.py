@@ -55,7 +55,13 @@ from trd.services.outcomes import excursion, pooled_capture, window
 # entries fixed, so varying one of these would report the baseline under a new
 # name — refused rather than silently ignored.
 ENTRY_PARAMS = frozenset(
-    {"entry_delay_minutes", "regime_sma", "regime_vix_max", "rotate_min_score"}
+    {
+        "entry_delay_minutes",
+        "regime_sma",
+        "regime_vix_max",
+        "rotate_min_score",
+        "max_per_symbol",
+    }
 )
 
 # A paired difference this many standard errors from zero is the bar SB-1033

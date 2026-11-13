@@ -868,3 +868,75 @@ def test_rotation_waits_for_the_score_and_the_grace_period(monkeypatch):
         run(_rotation_book(), strategies=["scripted"], max_positions=1, exit_params=grace).rotations
         == 0
     )
+
+
+# ------------------------------------------------------------ pyramiding (SB-1655)
+
+
+class _ScriptedToo(_Scripted):
+    key = "scripted2"
+
+
+def _pyramid_book(signal_days: tuple[int, ...] = (15, 18, 21)) -> dict[str, list[DailyBar]]:
+    """One flat name that signals on the given days: never near its stop or
+    target, so every position it opens is still on the book at the end."""
+    start = date(2024, 1, 1)
+    return {
+        "AMD": [
+            bar(start + timedelta(days=i), 100.0, 101.0, 99.0, 100.0, 7 if i in signal_days else 1)
+            for i in range(25)
+        ]
+    }
+
+
+def _entries(result: BacktestResult) -> int:
+    return len(result.trades) + result.open_at_end
+
+
+def test_one_position_per_name_is_the_default(monkeypatch):
+    from trd.engine import REGISTRY
+
+    monkeypatch.setitem(REGISTRY, "scripted", _Scripted())
+    result = run(_pyramid_book(), strategies=["scripted"], max_positions=3)
+    assert _entries(result) == 1
+    assert result.max_per_symbol == 1 and result.pyramided == 0
+
+
+def test_max_per_symbol_adds_to_a_held_name_up_to_the_cap(monkeypatch):
+    from trd.engine import REGISTRY
+
+    monkeypatch.setitem(REGISTRY, "scripted", _Scripted())
+    params = dict(DEFAULT_EXIT_PARAMS, max_per_symbol=2)
+    result = run(_pyramid_book(), strategies=["scripted"], max_positions=3, exit_params=params)
+    # Day 15 opens, day 18 adds, day 21 is refused: two is the cap, not three.
+    assert _entries(result) == 2
+    assert result.pyramided == 1
+    assert result.max_per_symbol == 2
+
+
+def test_a_held_name_still_needs_a_free_slot(monkeypatch):
+    from trd.engine import REGISTRY
+
+    monkeypatch.setitem(REGISTRY, "scripted", _Scripted())
+    params = dict(DEFAULT_EXIT_PARAMS, max_per_symbol=3)
+    result = run(_pyramid_book(), strategies=["scripted"], max_positions=1, exit_params=params)
+    assert _entries(result) == 1
+    assert result.pyramided == 0
+
+
+def test_two_rules_on_one_bar_open_one_position(monkeypatch):
+    """A name gets one new entry per bar however many rules fire on it: two
+    strategies agreeing is one signal, not a reason to double the size."""
+    from trd.engine import REGISTRY
+
+    monkeypatch.setitem(REGISTRY, "scripted", _Scripted())
+    monkeypatch.setitem(REGISTRY, "scripted2", _ScriptedToo())
+    params = dict(DEFAULT_EXIT_PARAMS, max_per_symbol=2)
+    result = run(
+        _pyramid_book((15,)),
+        strategies=["scripted", "scripted2"],
+        max_positions=3,
+        exit_params=params,
+    )
+    assert _entries(result) == 1
+    assert result.pyramided == 0

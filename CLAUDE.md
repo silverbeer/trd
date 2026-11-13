@@ -582,6 +582,20 @@ trd engine rotation [--cost 0.1] [--start ISO] [--end ISO] [-n 10] [--json]
                                       # swing20 (5 slots, 2y, 353 trades) Δ +0.02R, t~0.3,
                                       # return 132% -> ~215%, DD unchanged. Not significant
                                       # either way: do not wire it into the live scan on this
+                                      # -p max_per_symbol=N (backtest/sweep ONLY, SB-1655; 1 =
+                                      # the live rule): up to N positions in one name at once —
+                                      # a fresh signal on a held name competes for a free slot
+                                      # like any other, one new entry per name per bar, each its
+                                      # own trade (stop/target/R). 'pyramided' in the result.
+                                      # Live scan does NOT read it; what-if refuses it.
+                                      # MEASURED 2026-11-13: swing (10 slots, 10y, 3,743 trades)
+                                      # N=2 Δ +0.004R t=0.19, N=3 Δ +0.013R t=0.56, max DD
+                                      # -22.3% unchanged, return 385% -> 394% / 439%; swing20
+                                      # (5 slots, 2y, 355 trades) N=2 Δ +0.06R t=0.71, return
+                                      # 151% -> 215%, DD -32.1% -> -33.3%. Stored signal
+                                      # outcomes agreed (held-name signals -0.24R vs taken
+                                      # -0.12R over 5 sessions, n=148, ~1 SE). Not significant:
+                                      # one position per symbol stays the live rule
 trd engine replay-match [--days 30] [--start ISO] [--end ISO] [--entry-fill open|close] [--json]
                                       # does the backtest trade the way the engine did? Replays
                                       # the window and pairs it with the live trades (same name,

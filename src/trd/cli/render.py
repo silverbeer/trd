@@ -2266,6 +2266,13 @@ def engine_backtest_renderables(
             else ""
         )
         + (
+            f"\npyramiding: up to {result.max_per_symbol} positions per name — "
+            f"{result.pyramided} entr{'y' if result.pyramided == 1 else 'ies'} "
+            "into a name already held"
+            if result.max_per_symbol > 1
+            else ""
+        )
+        + (
             f"\nyoung-listing slice: entries only in the first {result.young_sessions} "
             f"sessions of {len(result.young_names)} names that listed inside the stored "
             f"history — n = {len(result.trades)} closed"
