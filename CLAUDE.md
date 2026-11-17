@@ -77,8 +77,17 @@ trd import activity ACTIVITY.csv --account managed-ira [--create "Managed IRA"]
                                       # row (from the file's own Cash Balance column).
                                       # --positions reconciles every quantity (0.001 sh) and the
                                       # cash (core ** rows + Pending Activity); mismatch = exit 1.
-                                      # The POSITIONS PARSER IS UNVERIFIED against a real export
-                                      # (says so in its output) — check it on the first one
+                                      # Positions parser VERIFIED on a real export (SB-1733):
+                                      # headers match in any case (the real file is sentence
+                                      # case); a day's sells apply after its other rows (same-day
+                                      # reinvest-then-sell-out). Download the Activity range
+                                      # THROUGH the Positions date, or the gap shows as a cash
+                                      # diff (a missed quarterly fee looks exactly like that).
+                                      # Naming: --account "<owner initials> Managed IRA",
+                                      # --create adds " ·<last 4>" — never the full number, a
+                                      # real first name or the firm. Real exports stay out of
+                                      # the repo: tests use listed fixtures in tests/fixtures/
+                                      # (SYNTHETIC.md), never rows inline in a .py
 trd income add 2.50 --symbol VOO [--account brokerage] [--date ISO] [--kind dividend|interest|cash_sweep|capital_gain]
 trd income ls [--account N] [--json]  # cash a holding PAID you, as opposed to the price rising.
                                       # Not a buy: creates no shares, consumes none, never reaches
