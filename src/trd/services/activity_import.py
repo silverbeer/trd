@@ -193,10 +193,10 @@ def _lines(text: str) -> list[str]:
 
 
 def _header_index(lines: Sequence[str], first_cell: str | tuple[str, ...]) -> int | None:
-    wanted = (first_cell,) if isinstance(first_cell, str) else first_cell
+    wanted = {c.lower() for c in ((first_cell,) if isinstance(first_cell, str) else first_cell)}
     for i, line in enumerate(lines):
         cells = next(csv.reader([line]), [])
-        if cells and cells[0].strip() in wanted:
+        if cells and cells[0].strip().lower() in wanted:
             return i
     return None
 
@@ -443,7 +443,11 @@ def row_keys(rows_oldest_first: Iterable[ActivityRow]) -> list[str]:
 
 def plan_rows(rows: Sequence[ActivityRow]) -> list[PlannedWrite]:
     """Rows (file order) -> writes, oldest first: the order FIFO needs them in."""
-    oldest_first = list(reversed(rows))
+    # Oldest day first; within a day, sells last. The export lists a day's rows in
+    # no dependable order: a fund that reinvested its dividend and was then sold out
+    # the same day lists the sale BELOW the reinvestment, so replaying the file
+    # backwards sold the reinvested shares before they existed (SB-1733).
+    oldest_first = sorted(reversed(rows), key=lambda r: (r.run_date, r.kind == ActivityKind.SELL))
     return [
         _write_for(row, key) for row, key in zip(oldest_first, row_keys(oldest_first), strict=True)
     ]
@@ -464,14 +468,27 @@ def write_cash(write: PlannedWrite) -> Decimal:
 
 # --------------------------------------------------------------- positions
 #
-# UNTESTED AGAINST A REAL FILE. Written to the custodian's documented Positions
-# layout (Account Number, Account Name, Symbol, Description, Quantity, Last
-# Price, ..., Current Value, ...; the core as '<fund>**' with a value and no
-# quantity; a 'Pending Activity' row) before a real export was supplied.
-# Columns are read by NAME so a reordering is harmless; check the parsed rows
-# against the first real export before trusting a reconciliation.
+# Written to the custodian's documented Positions layout (Account Number, Account
+# Name, Symbol, Description, Quantity, Last Price, ..., Current Value, ...; the
+# core as '<fund>**' with a value and no quantity; a 'Pending Activity' row), then
+# checked against a real export (SB-1733): its headers are sentence case, and
+# every holding reconciled to the share. Columns are read by NAME, any case.
 
 _POSITIONS_FIRST_CELLS = ("Account Number", "Account Name", "Symbol")
+# The real export writes these in sentence case ('Account number', 'Current value');
+# the documented layout used title case. Read either (SB-1733).
+_POSITIONS_COLUMNS = {
+    c.lower(): c
+    for c in (
+        "Account Number",
+        "Account Name",
+        "Symbol",
+        "Description",
+        "Quantity",
+        "Last Price",
+        "Current Value",
+    )
+}
 _DOWNLOADED = re.compile(r"Date downloaded\s+(.+)$", re.IGNORECASE)
 _DOWNLOADED_FORMATS = ("%m/%d/%Y %I:%M %p", "%b-%d-%Y %I:%M %p", "%m/%d/%Y")
 
@@ -504,7 +521,10 @@ def parse_positions(
     header = _header_index(lines, _POSITIONS_FIRST_CELLS)
     if header is None:
         raise TrdError("Not a Positions export: no 'Account Number,...' header found.")
-    columns = [c.strip() for c in next(csv.reader([lines[header]]))]
+    columns = [
+        _POSITIONS_COLUMNS.get(c.strip().lower(), c.strip())
+        for c in next(csv.reader([lines[header]]))
+    ]
     for needed in ("Symbol", "Quantity", "Current Value"):
         if needed not in columns:
             raise TrdError(f"Positions export is missing the '{needed}' column.")

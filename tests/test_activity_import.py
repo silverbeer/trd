@@ -374,7 +374,7 @@ def test_positions_reconcile_match(importer: ActivityImportService) -> None:
     assert plan.positions is not None
     assert plan.positions.ok and not plan.positions.projected
     assert plan.positions.cash_broker == D("2279.45")
-    assert "not yet verified" in plan.positions.note
+    assert plan.positions.note is None  # verified against a real export (SB-1733)
 
 
 def test_positions_reconcile_mismatch(importer: ActivityImportService) -> None:
@@ -390,6 +390,26 @@ def test_positions_parser_reads_by_header_name() -> None:
     assert parsed.quantities() == {"FXAIX": D("20.2"), "FXNAX": D("400.9")}
     assert parsed.cash == D("2279.45")  # CORXX** is cash; '$5,454.00' parses
     assert parsed.downloaded_at == datetime(2025, 9, 3, 10, 5)
+
+
+def test_positions_parser_reads_sentence_case_headers() -> None:
+    """The real export writes 'Account number', 'Last price', 'Current value' —
+    sentence case, not the documented title case (SB-1733)."""
+    raw = text("positions.txt")
+    header, rest = raw.split("\n", 1)
+    parsed = parse_positions(header.capitalize() + "\n" + rest)
+    assert parsed.quantities() == {"FXAIX": D("20.2"), "FXNAX": D("400.9")}
+    assert parsed.cash == D("2279.45")
+
+
+def test_same_day_reinvest_then_sell_out_applies_the_sell_last() -> None:
+    """A fund reinvests its dividend and is sold out the same day; the export
+    lists the sale BELOW the reinvestment. Replayed file-backwards, the sale came
+    first and oversold by the reinvested shares (SB-1733)."""
+    rows = parse_activity(text("activity_same_day_sellout.txt"), CORE)
+    writes = [w for w in plan_rows(rows) if w.target == WriteTarget.TXN]
+    assert [w.kind for w in writes] == [Side.BUY.value, Side.SELL.value]
+    assert ActivityImportService._oversold({"FXNAX": D(10)}, writes) is None
 
 
 def test_positions_with_several_accounts_need_one_named() -> None:

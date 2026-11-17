@@ -2099,7 +2099,8 @@ def activity_import_renderables(plan: ImportPlan) -> list[RenderableType]:
                 else "[red]positions DO NOT match — exit 1[/red]"
             )
         )
-        out.append(Text(check.note, style="dim"))
+        if check.note:
+            out.append(Text(check.note, style="dim"))
     for warning in plan.warnings:
         out.append(Text.from_markup(f"[yellow]warning:[/yellow] {warning}"))
     if plan.refused:

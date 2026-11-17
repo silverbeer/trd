@@ -1,0 +1,8 @@
+﻿
+
+Run Date,Action,Symbol,Description,Type,Price ($),Quantity,Commission ($),Fees ($),Accrued Interest ($),Amount ($),Cash Balance ($),Settlement Date
+01/10/2025,REINVESTMENT EXAMPLE BOND FUND (FXNAX) (Cash),FXNAX,EXAMPLE BOND FUND,Cash,10,0.5,"","","","-5",100,
+01/10/2025,DIVIDEND RECEIVED EXAMPLE BOND FUND (FXNAX) (Cash),FXNAX,EXAMPLE BOND FUND,Cash,"",0,"","","",5,105,
+01/10/2025,YOU SOLD EXAMPLE BOND FUND (FXNAX) (Cash),FXNAX,EXAMPLE BOND FUND,Cash,10,"-10.5","","","",105,100,01/13/2025
+
+"SYNTHETIC TEST FIXTURE. Invented data: a fund reinvests its dividend and is sold out the same day."

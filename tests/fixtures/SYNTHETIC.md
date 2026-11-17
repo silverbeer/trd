@@ -19,3 +19,4 @@ listed files.
 - `tests/fixtures/activity/positions_mid_history.txt` — synthetic: invented data, public tickers
 - `tests/fixtures/activity/positions_mismatch.txt` — synthetic: invented data, public tickers
 - `tests/fixtures/activity/positions_two_accounts.txt` — synthetic: invented data, public tickers
+- `tests/fixtures/activity/activity_same_day_sellout.txt` — synthetic: invented data, public tickers

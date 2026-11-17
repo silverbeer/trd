@@ -132,13 +132,9 @@ class PositionsCheck(BaseModel):
     cash_broker: Decimal
     cash_ok: bool
     projected: bool  # True on --dry-run: trd's side is the DB plus the planned writes
-    # The Positions parser was written against the custodian's documented layout
-    # before a real export was available. Carried in the output until it has
-    # been checked against one, so nobody mistakes a pass for a proven parser.
-    note: str = (
-        "Positions parser not yet verified against a real the custodian Positions export; "
-        "check the rows above against the file."
-    )
+    # Was a caveat while the parser had only seen the documented layout; a real
+    # export reconciled to the share (SB-1733), so nothing to add by default.
+    note: str | None = None
 
     @computed_field  # type: ignore[prop-decorator]
     @property
