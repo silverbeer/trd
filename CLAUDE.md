@@ -158,6 +158,8 @@ trd alloc compare [-a NAME=LABEL ...] [--month YYYY-MM] [--since ISO] [--notify]
                                       # close: the provider's newest close can lag a day.
                                       # MEASURED 2026-11-17: a managed IRA valued at 10-31 to
                                       # within $0.02 of the custodian's statement
+                                      # Monthly process (4 exports, imports, report):
+                                      # docs/monthly-ira-upkeep.md
 trd alloc report [--notify] [--json]  # the daily performance message (SB-1384, SB-1416), Telegram
                                       # HTML: verdict on the day (GREAT/GOOD/FLAT/DOWN/BAD vs prior
                                       # close; flat < 0.25%, big >= 1.5%) and the funds vs the S&P
