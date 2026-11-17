@@ -46,6 +46,7 @@ from trd.notify.telegram import LIVE_LABEL
 from trd.services.benchmark import BENCHMARK
 from trd.services.daily_report import DailyReport, EngineDay, ExitEvent, TwinDivergence
 from trd.services.engine import ScanFill, ScanResult
+from trd.services.ira_compare import AccountResult, CompareReport, WindowResult
 from trd.services.live_report import LivePosition, LiveReport
 from trd.services.review import EnginePack, ReviewResult
 from trd.services.sunday_prep import FuturesQuote, KeyLevel, SectorMove, SundayPrepBriefing
@@ -1661,3 +1662,85 @@ def sunday_prep_message(briefing: SundayPrepBriefing) -> str:
             if section:
                 section.clear()
                 break
+
+
+Pick = Callable[[AccountResult], WindowResult]
+
+
+def ira_compare_message(report: CompareReport) -> str:
+    """The monthly head-to-head as Telegram HTML (SB-1420).
+
+    Labels only — never an account name, which is private. Every return is after
+    fees, money-weighted over the window, and the benchmarks are the same dollars
+    on the same days. A managed account whose imports do not reach past the
+    window is shown but kept out of the verdict, and says so."""
+    month = f"{report.month_start:%B %Y}"
+    through = f" (through {report.month_end:%b %-d})" if report.partial else ""
+    lines = [f"📊 <b>IRA head-to-head</b> · {month}{through}", ""]
+
+    def block(title: str, pick: Pick, leaders: list[str]) -> None:
+        lines.append(f"<b>{_h(title)}</b> · after fees, vs the same dollars in")
+        for a in report.accounts:
+            w = pick(a)
+            mark = " ⏳" if not a.fresh else ""
+            vs = " · ".join(
+                f"{_h(label)} {_pts(w.return_pct, w.benchmarks.get(key))}"
+                for key, label in report.benchmark_labels.items()
+            )
+            lines.append(f"  {_h(a.label)}: <b>{_pct(w.return_pct)}</b>{mark}  <i>{vs}</i>")
+        lines.append(_ira_verdict(report, pick, leaders))
+        lines.append("")
+
+    block(f"{report.month_start:%B}", lambda a: a.month, report.leaders_month)
+    block(f"Since {report.since:%b %-d}", lambda a: a.since, report.leaders_since)
+
+    managed = [a for a in report.accounts if a.fees is not None]
+    if managed:
+        lines.append("💸 <b>Advisory fees</b>")
+        for a in managed:
+            f = a.fees
+            assert f is not None
+            rate = f" · {float(f.annual_rate_pct):.2f}%/yr" if f.annual_rate_pct else ""
+            lines.append(
+                f"  {_h(a.label)}: ${_money(f.month)} this month · ${_money(f.ytd)} YTD"
+                f" · ${_money(f.trailing_12m)} 12 mo{rate}"
+            )
+            gross, net = a.month.before_fees_pct, a.month.return_pct
+            if gross is not None and net is not None and a.month.fees:
+                lines.append(
+                    f"    before fees {_pct(gross)} → kept {_pct(net)}"
+                    f" ({float(net - gross):+.2f} pts)"
+                )
+        lines.append("")
+
+    stale = [a for a in report.accounts if not a.fresh]
+    imported = [a for a in report.accounts if a.imported_through is not None]
+    if imported:
+        stamps = sorted({a.imported_through for a in imported if a.imported_through})
+        lines.append(f"🗂 Managed data imported {', '.join(f'{d:%b %-d}' for d in stamps)}")
+    if stale:
+        names = ", ".join(_h(a.label) for a in stale)
+        lines.append(f"⏳ {names}: last import is before the window ends — not in the verdict")
+    return "\n".join(lines).rstrip()
+
+
+def _pts(mine: Decimal | None, theirs: Decimal | None) -> str:
+    """How far ahead of a benchmark, in percentage points: "+0.4 pts"."""
+    if mine is None or theirs is None:
+        return "—"
+    return f"{float(mine - theirs):+.1f} pts"
+
+
+def _ira_verdict(report: CompareReport, pick: Pick, leaders: list[str]) -> str:
+    if not leaders:
+        return "  🏁 no verdict — an account is unpriced or out of date"
+    rest = [
+        r
+        for a in report.accounts
+        if a.fresh and a.label not in leaders and (r := pick(a).return_pct) is not None
+    ]
+    best = next(pick(a).return_pct for a in report.accounts if a.label == leaders[0])
+    head = " = ".join(_h(x) for x in leaders)
+    if not rest or best is None:
+        return f"  🏁 {head}: level"
+    return f"  🏁 {head} ahead by {float(best - max(rest)):.1f} pts"
