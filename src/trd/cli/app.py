@@ -1195,6 +1195,23 @@ def account_add(
     console.print(f"Account [bold]{account.name}[/bold] ({account.type.value}) created.")
 
 
+@account_app.command("rename")
+def account_rename(
+    old: Annotated[str, typer.Argument(help="The account's current name.")],
+    new: Annotated[str, typer.Argument(help="Its new name.")],
+) -> None:
+    """Rename an account. Everything it holds stays with it; the old name stops
+    resolving, so update any script or env var (ALLOC_ACCOUNT) that names it."""
+    settings = get_settings()
+    conn = connect(settings.db_path)
+    try:
+        account = AccountRepo(conn).rename(old, new)
+    except TrdError as exc:
+        err_console.print(f"[red]error:[/red] {exc}")
+        raise typer.Exit(code=1) from exc
+    console.print(f"Account [bold]{old}[/bold] is now [bold]{account.name}[/bold].")
+
+
 @account_app.command("ls")
 def account_ls() -> None:
     """List accounts."""

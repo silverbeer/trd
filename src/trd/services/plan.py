@@ -251,7 +251,7 @@ class PlanService:
             for r in self.conn.execute(
                 """
                 SELECT a.name FROM contribution_plan p
-                JOIN account a ON a.id = p.account_id
+                JOIN account_named a ON a.id = p.account_id
                 ORDER BY a.name
                 """
             ).fetchall()

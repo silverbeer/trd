@@ -127,7 +127,7 @@ def export_data(conn: duckdb.DuckDBPyConnection) -> dict:
     ]
     accounts = [
         {"name": r[0], "type": r[1], "currency": r[2]}
-        for r in rows("SELECT name, type, currency FROM account")
+        for r in rows("SELECT name, type, currency FROM account_named")
     ]
     transactions = [
         {
@@ -146,7 +146,8 @@ def export_data(conn: duckdb.DuckDBPyConnection) -> dict:
             """
             SELECT a.name, i.symbol, t.side, t.quantity, t.price, t.fees,
                    t.executed_at, t.note, t.plan_id
-            FROM txn t JOIN account a ON a.id=t.account_id JOIN instrument i ON i.id=t.instrument_id
+            FROM txn t JOIN account_named a ON a.id=t.account_id
+            JOIN instrument i ON i.id=t.instrument_id
             ORDER BY t.executed_at, t.id
             """
         )
@@ -156,7 +157,7 @@ def export_data(conn: duckdb.DuckDBPyConnection) -> dict:
         """
         SELECT a.name, p.id, p.monthly_amount, p.strategy, p.strategy_ticker,
                p.note, p.day_of_month, p.active
-        FROM contribution_plan p JOIN account a ON a.id=p.account_id
+        FROM contribution_plan p JOIN account_named a ON a.id=p.account_id
         """
     ):
         allocations = [
@@ -212,7 +213,7 @@ def export_data(conn: duckdb.DuckDBPyConnection) -> dict:
             """
             SELECT a.name, i.symbol, n.kind, n.amount, n.received_at, n.note
             FROM income n
-            JOIN account a ON a.id = n.account_id
+            JOIN account_named a ON a.id = n.account_id
             LEFT JOIN instrument i ON i.id = n.instrument_id
             ORDER BY n.received_at, n.id
             """
@@ -230,7 +231,7 @@ def export_data(conn: duckdb.DuckDBPyConnection) -> dict:
             """
             SELECT a.name, i.symbol, e.stop_price, e.target_price, e.note
             FROM exit_trigger e
-            JOIN account a ON a.id=e.account_id
+            JOIN account_named a ON a.id=e.account_id
             JOIN instrument i ON i.id=e.instrument_id
             """
         )
@@ -242,7 +243,7 @@ def export_data(conn: duckdb.DuckDBPyConnection) -> dict:
         SELECT a.name, c.watchlist, c.position_size, c.max_positions, c.strategies, c.exit_params,
                c.earnings_blackout_days, c.sizing_mode, c.timeframe, c.max_entries_per_day,
                c.capital, c.mode, c.bridge
-        FROM engine_config c JOIN account a ON a.id=c.account_id
+        FROM engine_config c JOIN account_named a ON a.id=c.account_id
         ORDER BY c.id DESC LIMIT 1
         """
     ):
@@ -318,7 +319,7 @@ def export_data(conn: duckdb.DuckDBPyConnection) -> dict:
                    p.last_bar_date, p.status, p.closed_at, p.exit_price, p.exit_reason,
                    p.exit_rule, s.bar_ts
             FROM engine_position p
-            JOIN account a ON a.id=p.account_id
+            JOIN account_named a ON a.id=p.account_id
             JOIN instrument i ON i.id=p.instrument_id
             LEFT JOIN engine_signal s ON s.id=p.signal_id
             ORDER BY p.opened_at, p.id
@@ -372,7 +373,7 @@ def export_data(conn: duckdb.DuckDBPyConnection) -> dict:
                    o.resolved_at, o.error, o.filled_quantity, o.fill_price, o.fees,
                    s.strategy, s.bar_ts, p.opened_at
             FROM order_intent o
-            JOIN account a ON a.id = o.account_id
+            JOIN account_named a ON a.id = o.account_id
             JOIN instrument i ON i.id = o.instrument_id
             LEFT JOIN engine_signal s ON s.id = o.signal_id
             LEFT JOIN engine_position p ON p.id = o.position_id
@@ -399,7 +400,7 @@ def export_data(conn: duckdb.DuckDBPyConnection) -> dict:
             """
             SELECT a.name, g.halted, g.halt_reason, g.halted_at, g.halted_by, g.max_order,
                    g.max_daily, g.max_positions, g.max_loss
-            FROM engine_guard g JOIN account a ON a.id = g.account_id
+            FROM engine_guard g JOIN account_named a ON a.id = g.account_id
             ORDER BY a.name
             """
         )
@@ -451,7 +452,7 @@ def export_data(conn: duckdb.DuckDBPyConnection) -> dict:
         for r in rows(
             """
             SELECT a.name, c.kind, c.amount, c.occurred_at, c.note
-            FROM cash_flow c JOIN account a ON a.id = c.account_id
+            FROM cash_flow c JOIN account_named a ON a.id = c.account_id
             ORDER BY c.occurred_at, c.id
             """
         )
@@ -461,7 +462,7 @@ def export_data(conn: duckdb.DuckDBPyConnection) -> dict:
         """
         SELECT a.name, p.id, p.name, p.account_kind, p.brokerage, p.capital,
                p.drift_threshold, p.created_at, p.note
-        FROM alloc_plan p JOIN account a ON a.id = p.account_id
+        FROM alloc_plan p JOIN account_named a ON a.id = p.account_id
         """
     ):
         alloc_plans.append(
@@ -527,7 +528,7 @@ def export_data(conn: duckdb.DuckDBPyConnection) -> dict:
         for r in rows(
             """
             SELECT a.name, i.source, i.row_key, i.imported_at
-            FROM import_row i JOIN account a ON a.id = i.account_id
+            FROM import_row i JOIN account_named a ON a.id = i.account_id
             ORDER BY a.name, i.source, i.row_key
             """
         )
@@ -537,7 +538,7 @@ def export_data(conn: duckdb.DuckDBPyConnection) -> dict:
         for r in rows(
             """
             SELECT a.name, i.source, i.display_name, i.created_at
-            FROM import_account i JOIN account a ON a.id = i.account_id
+            FROM import_account i JOIN account_named a ON a.id = i.account_id
             ORDER BY a.name
             """
         )
@@ -571,7 +572,7 @@ def export_data(conn: duckdb.DuckDBPyConnection) -> dict:
 def _is_user_data_present(conn: duckdb.DuckDBPyConnection) -> bool:
     """True if the DB already holds restorable user data beyond a bare init."""
     txns = conn.execute("SELECT count(*) FROM txn").fetchone()
-    accounts = conn.execute("SELECT count(*) FROM account WHERE name != 'main'").fetchone()
+    accounts = conn.execute("SELECT count(*) FROM account_named WHERE name != 'main'").fetchone()
     return bool((txns and txns[0]) or (accounts and accounts[0]))
 
 

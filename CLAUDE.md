@@ -20,6 +20,11 @@ trd init                              # create ~/.trd/trd.duckdb + 'main' accoun
                                       # refuses an explicit TRD_HOME with no trd.duckdb (SB-1366)
 trd account add ira                   # one account per brokerage (--type simulation for paper)
 trd account ls
+trd account rename OLD NEW            # everything stays with it (all tables hold the id); the old
+                                      # name stops resolving and is never handed out again. Not an
+                                      # UPDATE: DuckDB refuses one on a referenced row, so the new
+                                      # name is a row in account_rename read via the account_named
+                                      # view (migration 036) — read account names from the VIEW
 trd sync [--full] [--require-current] [--json]
                                       # refresh quotes + daily bars + earnings (--full = 2y backfill)
                                       # also pulls intraday bars for an intraday engine's universe,
