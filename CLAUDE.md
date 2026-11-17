@@ -140,6 +140,24 @@ trd alloc propose [--amount X | --milestone N] [--mode underweight|target] [--se
                                       # underweight: fill the gaps below (sleeve + D) x weight,
                                       # overweight funds get nothing; leftover split by weight
 trd alloc edit|history · trd alloc milestone postpone|cancel|resume|note N
+trd alloc compare [-a NAME=LABEL ...] [--month YYYY-MM] [--since ISO] [--notify] [--json]
+                                      # monthly head-to-head (SB-1420): retirement accounts vs each
+                                      # other, the S&P 500 and a 60/40 (SPY/AGG) mix, AFTER fees.
+                                      # Accounts from -a or TRD_IRA_COMPARE ("NAME=LABEL;..."):
+                                      # names are private, only LABELS are printed/sent. Modified
+                                      # Dietz (not annualized) for the month and since --since
+                                      # (default: the first day every account had money). A fee is
+                                      # a loss, not a flow; "before fees" hands it back as a
+                                      # withdrawal. Accounts on REAL closes (their dividends are
+                                      # already in them), benchmarks on ADJUSTED closes, the same
+                                      # dollars on the same days — mixing the two double-counts.
+                                      # Managed (imported) accounts add fees: month/YTD/12 mo and
+                                      # annual rate (12 mo fees / mean month-end value). An import
+                                      # older than the window's end = shown, not in the verdict.
+                                      # Ties (< 0.05 pts) share the lead. Ends at yesterday's
+                                      # close: the provider's newest close can lag a day.
+                                      # MEASURED 2026-11-17: a managed IRA valued at 10-31 to
+                                      # within $0.02 of the custodian's statement
 trd alloc report [--notify] [--json]  # the daily performance message (SB-1384, SB-1416), Telegram
                                       # HTML: verdict on the day (GREAT/GOOD/FLAT/DOWN/BAD vs prior
                                       # close; flat < 0.25%, big >= 1.5%) and the funds vs the S&P

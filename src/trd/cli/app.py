@@ -1,8 +1,11 @@
+import html as _html
 import json as _json
 import os
+import re
 import sys
 from contextlib import nullcontext, suppress
-from datetime import date, datetime
+from dataclasses import asdict
+from datetime import date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Annotated, Any
@@ -12,7 +15,9 @@ import typer
 from pydantic import ValidationError
 from rich.console import Console
 from rich.live import Live
+from rich.markup import escape as rich_escape
 from rich.table import Table
+from rich.text import Text
 from typer.core import TyperGroup
 
 from trd.build import build_version
@@ -113,6 +118,7 @@ from trd.notify.messages import (
     fill_alert_message,
     fill_messages,
     halt_message,
+    ira_compare_message,
     live_report_message,
     review_message,
     sunday_prep_message,
@@ -176,6 +182,7 @@ from trd.services.engine import (
 from trd.services.engine_performance import engine_performance
 from trd.services.exit_whatif import ExitWhatIfService, parse_variants
 from trd.services.indicators import seed_defaults
+from trd.services.ira_compare import IraCompareService
 from trd.services.live_report import live_report
 from trd.services.outcomes import OutcomeService
 from trd.services.plan import PlanStatus
@@ -5086,6 +5093,106 @@ def alloc_report(
         return
     for part in alloc_report_renderables(report):
         console.print(part)
+
+
+def _compare_accounts(raw: list[str] | None) -> list[tuple[str, str]]:
+    """NAME=LABEL pairs from --account, else TRD_IRA_COMPARE ("NAME=LABEL;...").
+    Account names are private, so they live in the environment, not the repo."""
+    items = raw or [p for p in os.environ.get("TRD_IRA_COMPARE", "").split(";") if p.strip()]
+    pairs: list[tuple[str, str]] = []
+    for item in items:
+        name, sep, label = item.partition("=")
+        if not sep or not name.strip() or not label.strip():
+            raise TrdError(f"--account wants NAME=LABEL, got {item!r}.")
+        pairs.append((name.strip(), label.strip()))
+    if len(pairs) < 2:
+        raise TrdError(
+            "Compare needs two or more accounts: --account NAME=LABEL (repeatable) "
+            "or TRD_IRA_COMPARE."
+        )
+    return pairs
+
+
+@alloc_app.command("compare")
+def alloc_compare(
+    accounts: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--account",
+            "-a",
+            help="NAME=LABEL, repeatable. Default: TRD_IRA_COMPARE ('NAME=LABEL;...').",
+        ),
+    ] = None,
+    month: Annotated[
+        str | None, typer.Option("--month", help="YYYY-MM. Default: last month.")
+    ] = None,
+    since: Annotated[
+        str | None,
+        typer.Option(
+            "--since",
+            help="ISO start of the since-start window. Default: the "
+            "first day every account had money.",
+        ),
+    ] = None,
+    notify: Annotated[
+        bool, typer.Option("--notify", help="Send it to your private Telegram chat.")
+    ] = False,
+    as_json: JsonOpt = False,
+) -> None:
+    """Monthly head-to-head (SB-1420): each account's return after fees this
+    month and since a common start, money-weighted, against the S&P 500 and a
+    60/40 mix bought with the same dollars on the same days (dividends
+    reinvested). Managed accounts add their advisory fees — month, year to date,
+    12 months, annual rate — and what they returned before fees. A managed
+    account whose last import is older than the window's end is shown but left
+    out of the verdict. A month not yet over is valued through yesterday's close.
+
+    Labels, not account names, are printed and sent. READ-ONLY, like alloc report.
+    """
+    _use_json(as_json)
+    try:
+        pairs = _compare_accounts(accounts)
+        today = date.today()
+        if month:
+            year_s, _, month_s = month.partition("-")
+            year_, month_ = int(year_s), int(month_s)
+        else:
+            last = today.replace(day=1) - timedelta(days=1)
+            year_, month_ = last.year, last.month
+        service = IraCompareService(connect_read_only(get_settings().db_path), YFinanceProvider())
+        start = date.fromisoformat(since) if since else service.common_start([n for n, _ in pairs])
+        with _spinner("Fetching closes..."):
+            report = service.report(pairs, year_, month_, start, today=today)
+    except (TrdError, ValueError) as exc:
+        _fail(exc if isinstance(exc, TrdError) else TrdError(str(exc)))
+        return
+    text = ira_compare_message(report)
+    if notify:
+        refused: list[str] = []
+        notifier = alert_notifier_from_env(error=refused.append)
+        if notifier is None:
+            _fail(TrdError(refused[0] if refused else "No TELEGRAM_BOT_TOKEN set."))
+            return
+        try:
+            notifier.send(text, html=True)
+        except TrdError as exc:
+            _fail(exc)
+            return
+    if as_json:
+        _emit_json({"message": text, "sent": notify, "report": asdict(report)})
+        return
+    console.print(Text.from_markup(_telegram_to_rich(text)))
+
+
+_TAG_MARKUP = {"<b>": "[bold]", "</b>": "[/bold]", "<i>": "[dim]", "</i>": "[/dim]"}
+
+
+def _telegram_to_rich(html: str) -> str:
+    """The message's <b>/<i> as rich markup; every other character literal."""
+    return "".join(
+        _TAG_MARKUP.get(part) or rich_escape(_html.unescape(part))
+        for part in re.split(r"(</?[bi]>)", html)
+    )
 
 
 @alloc_app.command("history")
