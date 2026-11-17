@@ -2,6 +2,13 @@ class TrdError(Exception):
     """Base for all trd domain errors. The CLI catches these and renders them cleanly."""
 
 
+class AccountNameTakenError(TrdError):
+    def __init__(self, name: str) -> None:
+        super().__init__(
+            f"An account is already called '{name}' (now or before a rename); pick another name."
+        )
+
+
 class UnknownAccountError(TrdError):
     def __init__(self, name: str) -> None:
         super().__init__(f"No account named '{name}'. Run 'trd init' or check the name.")

@@ -77,7 +77,7 @@ class ExitTriggerRepo:
                    a.name
             FROM exit_trigger e
             JOIN instrument i ON i.id = e.instrument_id
-            JOIN account a ON a.id = e.account_id
+            JOIN account_named a ON a.id = e.account_id
             {where}
             ORDER BY a.name, i.symbol
         """
