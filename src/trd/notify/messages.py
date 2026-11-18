@@ -40,6 +40,7 @@ from trd.models import (
     OutboxAck,
     Side,
     StrategyStat,
+    WaitingExit,
 )
 from trd.models.alloc import AllocReport, BenchmarkScore, FundScore
 from trd.notify.telegram import LIVE_LABEL
@@ -310,6 +311,55 @@ def approval_message(ack: OutboxAck, label: str | None = None) -> str:
             f"{_why(intent)}: {intent.reason}",
         ]
     )
+
+
+def expired_exit_messages(result: ScanResult, label: str | None = None) -> list[str]:
+    """An exit lapsed with nothing placed or approved (SB-1735). The position is
+    still open past the rule that said to close it — loud, one per exit."""
+    return [
+        "\n".join(
+            [
+                f"🚨 {_live_head(label)} {_why(row.intent).upper()} EXPIRED unfilled — "
+                f"{_h(row.instrument.symbol)} is still held",
+                f"{_order_terms(row.intent, _h(row.instrument.symbol))} was never filled: "
+                f"{_lapse_cause(row.intent)}.",
+                f"Why it wanted out: {_h(row.intent.reason)}",
+                "The next scan in session re-issues it. To get out now, sell in your broker "
+                "app, then ingest the fill ('trd engine fills').",
+            ]
+        )
+        for row in result.expired_exits
+    ]
+
+
+def exit_waiting_message(waiting: WaitingExit, minutes: int, label: str | None = None) -> str:
+    """A live exit still waiting after `minutes` (SB-1735). Repeated while it
+    waits: the push that should have reached the person may never have."""
+    if waiting.status == IntentStatus.AWAITING_APPROVAL:
+        where = (
+            "waiting on YOUR approval in the broker app. If no request shows there, "
+            "sell by hand and ingest the fill ('trd engine fills')"
+        )
+    else:
+        where = "not placed yet — check the live runner (~/Library/Logs/trd-live-runner.log)"
+    return "\n".join(
+        [
+            f"🚨 {_live_head(label)} {_why_rule(waiting.rule).upper()} waiting {minutes} min — "
+            f"{_h(waiting.symbol)} @ {_money(waiting.ref_price)} when decided",
+            f"{where}. Lapses unfilled at 16:00 ET.",
+            f"Why: {_h(waiting.reason)}",
+        ]
+    )
+
+
+def _lapse_cause(intent: OrderIntent) -> str:
+    if intent.approval_id:
+        return "the approval lapsed unanswered"
+    return "it never reached the broker"
+
+
+def _why_rule(rule: str | None) -> str:
+    return f"{_rule_name(rule) or 'exit'} exit"
 
 
 def fill_messages(result: FillIngestResult, label: str | None = None) -> list[str]:

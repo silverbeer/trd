@@ -61,6 +61,9 @@ for it. An order call nothing asked for halts the engine.
 | an order is waiting for you | private chat | `💵 LIVE: approve BUY NVDA 0.104712 sh (~$20.00 @ 191.00) in your broker app — expires 16:00 ET` + the reason |
 | it filled | channel | `[💵 live] filled BUY NVDA 0.104712 @ 190.88 (scan saw 191.00, -0.06%)`; a sell adds realized $ and R |
 | rejected, expired, or the broker's review flagged it | private chat | what happened; nothing for you to do |
+| an **exit** still waiting 15 min (SB-1735) | private chat | `🚨 💵 LIVE: STOP LOSS EXIT waiting 25 min — XYZ …` — waiting on your approval, or not placed. Repeats every 30 min until answered. **No request in the broker app? Sell by hand, then `trd engine fills`** |
+| an **exit** expired unfilled at 16:00 (SB-1735) | private chat | `🚨 💵 LIVE: STOP LOSS EXIT EXPIRED unfilled — XYZ is still held`; the next scan in session re-issues it |
+| an approval request could not be sent | private chat (runner) | `⚠ trd live runner: intent N is waiting on a broker approval, and the Telegram request did not go out` — check the broker app |
 | The broker login lapsed, or approvals switched off | private chat | how to fix it; reminders ≤ every 3h in the session; an all-clear |
 | the engine halted itself (loss stop) or the runner halted it | private chat | why, and what to check |
 | runner stopped / orders stuck | private chat (watchdog) | `🟠 trd live engine needs a person` |
@@ -80,7 +83,8 @@ approval, settled cash and stuck intents.
 | Stale buys | a buy sized off a quote older than 30 min is withheld and re-planned |
 | Kill switch | `trd engine halt` — see [Turn it off](#turn-it-off) |
 | Runner checks | an order call that doesn't match its intent halts the engine |
-| Watchdog | alarms if scans stop, the runner stops (25 min), or intents get stuck |
+| Watchdog | alarms if scans stop, the runner stops (25 min), intents get stuck, or an exit waits 30+ min (SB-1735) |
+| Exit reminders | `trd engine nudge`, every runner pass: an exit waiting 15 min is asked about, then every 30. On 2026-11-17 a stop-out's approval push never arrived and it lapsed after six silent hours |
 | Login check | hourly; Telegram when the broker's sign-in lapses |
 
 Stops are **not** resting orders at the broker — the broker will not rest a stop

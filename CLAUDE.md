@@ -324,6 +324,25 @@ trd engine outbox ack INTENT (--approval-id X | --broker-order-id Y | --error MS
                                       # A live scan's intents go to that chat too, not the channel —
                                       # only with TRD_LIVE_INTENT_ALERTS=1: with the live runner
                                       # (SB-1382) the approval request is the one message per order
+                                      # --json carries 'notified' (SB-1735): True/False =
+                                      # the approval request was / was NOT delivered, None
+                                      # = nothing to send. The runner logs it, and alerts
+                                      # on False
+trd engine nudge [--notify] [--after 15] [--every 30] [--json]
+                                      # a LIVE exit nobody has acted on (SB-1735): every SELL
+                                      # intent pending or awaiting_approval, with minutes
+                                      # waiting (from the session open if decided before
+                                      # it). Due after --after min, then every --every min,
+                                      # in session only. --notify sends due ones to the
+                                      # ALERT chat and records delivery in TRD_HOME/
+                                      # .exit-nudges.json. Read-only connection. The live
+                                      # runner runs it at the end of every pass. Measured
+                                      # 2026-11-17: a stop-out waited 6 h on an approval
+                                      # whose push never arrived and lapsed unannounced.
+                                      # Also: a live scan whose sweep EXPIRES a sell sends
+                                      # "EXIT EXPIRED unfilled" to the alert chat (scan
+                                      # --notify), and status.json carries 'waiting_exits'
+                                      # — the watchdog alarms on one waiting 30+ min
 trd engine halt [--reason TEXT] [--json]
 trd engine resume [--json]            # a LIVE engine's kill switch. Halted: the scan writes no buy
                                       # intents (sells still recorded, so the book shows what it

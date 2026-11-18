@@ -76,3 +76,6 @@ class OutboxAck(BaseModel):
     to_status: IntentStatus
     changed: bool
     intent: OrderIntent
+    # With --notify: whether the "approve in your broker app" message was
+    # delivered. None when nothing was meant to be sent (SB-1735).
+    notified: bool | None = None

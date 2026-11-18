@@ -119,7 +119,26 @@ open(tmp, "w").write(json.dumps(doc) + "\n")
 import os; os.replace(tmp, path)
 ' "$STATUS" "$DETAIL" "$PLACED" "$BOOKED" "$(cat "$RUNNER_HOME/VERSION" 2>/dev/null || echo dev)" "$HEARTBEAT"
 }
-finish() { heartbeat; rh_log "$STATUS placed=$PLACED booked=$BOOKED ${DETAIL}"; exit "${1:-0}"; }
+# Every pass ends here, failed or not, so an exit nobody has acted on is asked
+# about again whatever went wrong this time (SB-1735). On 2026-11-17 a stop-out
+# waited six hours on an approval whose push never arrived, and every pass of
+# this script logged it exactly like an idle one.
+NUDGED=0
+nudge_exits() {
+    [[ "$NUDGED" == 1 || -z "${TRD:-}" ]] && return 0
+    NUDGED=1
+    local out counts
+    if out=$(trd_retry engine nudge --notify --json); then
+        counts=$(py 'import json,sys; r=json.loads(sys.argv[1]); print(len(r["waiting"]), len(r["sent"]))' "$out" 2>/dev/null) || return 0
+        read -r n_wait n_sent <<<"$counts"
+        if [[ "${n_wait:-0}" -gt 0 ]]; then
+            DETAIL="${DETAIL:+$DETAIL; }${n_wait} exit(s) waiting, ${n_sent} reminded"
+        fi
+    else
+        rh_log "nudge failed: ${out:0:200}"
+    fi
+}
+finish() { nudge_exits; heartbeat; rh_log "$STATUS placed=$PLACED booked=$BOOKED ${DETAIL}"; exit "${1:-0}"; }
 fail() { STATUS="$1"; DETAIL="$2"; finish 1; }
 
 rh_load_env || fail error "no $RH_ENV_FILE"
@@ -253,7 +272,10 @@ json.dump([s for s in json.load(open(sys.argv[2])) if s["intent_id"] in clean], 
             esac
             if out=$(trd_retry engine outbox ack "$intent" "$flag" "$value" --notify --json); then
                 [[ "$kind" == error ]] || PLACED=$((PLACED + 1))
-                rh_log "ack $intent $kind ${value:0:80}"
+                # Whether the person was actually told (SB-1735): "None" = nothing to send.
+                told=$(py 'import json,sys; print(json.loads(sys.argv[1]).get("notified"))' "$out" 2>/dev/null || echo unknown)
+                rh_log "ack $intent $kind ${value:0:80} notified=$told"
+                [[ "$kind" == approval && "$told" == False ]] && rh_alert "⚠ trd live runner: intent $intent is waiting on a broker approval, and the Telegram request did not go out (notified=$told). Check the broker app."
             else
                 rh_log "ACK FAILED $intent $kind $value: ${out:0:200}"
                 rh_alert "⚠ trd live runner: placed but could not record it — intent $intent, $kind $value. Do NOT re-place; run: trd engine outbox ack $intent $flag '$value'"

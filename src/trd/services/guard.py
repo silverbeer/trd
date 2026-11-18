@@ -32,9 +32,12 @@ from trd.models import (
     EngineConfig,
     EngineGuard,
     HaltCause,
+    Instrument,
     IntentStatus,
     OrderIntent,
     Quote,
+    Side,
+    WaitingExit,
     intent_expiry_cutoff,
 )
 from trd.repos import PriceRepo
@@ -129,6 +132,31 @@ def stuck_intents(intents: list[OrderIntent], now: datetime) -> int:
         elif intent.status == IntentStatus.AWAITING_APPROVAL and intent.created_at < lapsed_before:
             count += 1
     return count
+
+
+def waiting_exits(rows: list[tuple[OrderIntent, Instrument]]) -> list[WaitingExit]:
+    """Open SELL intents not yet an order at the broker, longest-waiting first.
+
+    A buy that waits costs an opportunity; an exit that waits leaves a position
+    running past the rule that said to close it. So only sells are tracked here
+    (SB-1735). SUBMITTED is left out: the broker holds an order, and the
+    stuck-order check covers one it holds too long.
+    """
+    waiting = [
+        WaitingExit(
+            intent_id=intent.id,
+            symbol=instrument.symbol,
+            rule=intent.rule,
+            status=intent.status,
+            since=intent.submitted_at or intent.created_at,
+            ref_price=intent.ref_price,
+            reason=intent.reason,
+        )
+        for intent, instrument in rows
+        if intent.side == Side.SELL
+        and intent.status in (IntentStatus.PENDING, IntentStatus.AWAITING_APPROVAL)
+    ]
+    return sorted(waiting, key=lambda w: w.since)
 
 
 def _sessions_back(day: date, sessions: int) -> date:

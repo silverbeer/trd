@@ -64,6 +64,11 @@ RUNNER_MAX_AGE_MINUTES = 25
 # Its first pass lands at 09:30-09:40; no alarm before it could have run.
 RUNNER_GRACE_UNTIL = 950
 
+# A live exit not yet an order at the broker this long is an alarm (SB-1735).
+# Twice the runner's first reminder: this is the backstop for a runner that is
+# not reminding, so it fires only once the runner has had its chance.
+EXIT_WAIT_ALARM_MINUTES = 30
+
 
 def in_session(moment: datetime) -> bool:
     """Whether a scan is expected right now.
@@ -154,7 +159,7 @@ def read_pulse(engine: str, home: Path, now: datetime, max_age: int) -> EnginePu
         pulse.problem = f"{STATUS_FILENAME} could not be read: {exc}"
         return pulse
 
-    pulse.alarms = guard_alarms(payload)
+    pulse.alarms = guard_alarms(payload, now)
     if payload.get("mode") == "live":
         pulse.alarms += runner_alarms(home, now)
     raw = payload.get("last_scan")
@@ -181,7 +186,7 @@ def read_pulse(engine: str, home: Path, now: datetime, max_age: int) -> EnginePu
     return pulse
 
 
-def guard_alarms(payload: dict) -> list[str]:
+def guard_alarms(payload: dict, now: datetime | None = None) -> list[str]:
     """What a live engine's published status says needs a person.
 
     Stuck intents (`stuck_intents` > 0) and a halt thrown by the loss stop
@@ -202,6 +207,42 @@ def guard_alarms(payload: dict) -> list[str]:
         )
     if payload.get("halted") and payload.get("halted_by") == "max_loss":
         alarms.append(f"HALTED by its loss stop — {payload.get('halt_reason') or 'no reason'}")
+    if now is not None:
+        alarms += exit_wait_alarms(payload, now)
+    return alarms
+
+
+def exit_wait_alarms(payload: dict, now: datetime) -> list[str]:
+    """Live exits waiting EXIT_WAIT_ALARM_MINUTES or more in the session (SB-1735).
+
+    On 2026-11-17 a stop-out waited six hours on an approval whose push never
+    arrived, then lapsed. `stuck_intents` only counts it after 16:00 — too late to
+    matter. A malformed entry is skipped, never raised: a watchdog that crashes is
+    worse than one that misses a line.
+    """
+    from trd.models import WaitingExit
+    from trd.services.exit_nudge import minutes_waiting
+
+    local = now.astimezone(MARKET_TZ).replace(tzinfo=None) if now.tzinfo else now
+    if not in_session(local):
+        return []
+    alarms = []
+    for raw in payload.get("waiting_exits") or []:
+        try:
+            waiting = WaitingExit.model_validate(raw)
+        except ValueError:
+            continue
+        minutes = minutes_waiting(waiting, local)
+        if minutes >= EXIT_WAIT_ALARM_MINUTES:
+            where = (
+                "waiting on approval in the broker app"
+                if waiting.status == "awaiting_approval"
+                else "not placed by the runner"
+            )
+            alarms.append(
+                f"exit SELL {waiting.symbol} ({waiting.rule or 'exit'}) {where} for "
+                f"{minutes} min — the position is open past its exit rule"
+            )
     return alarms
 
 

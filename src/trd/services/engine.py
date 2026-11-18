@@ -89,7 +89,7 @@ from trd.repos.engine import (
     EngineSignalRepo,
     OrderIntentRepo,
 )
-from trd.services.guard import CapTally, GuardService, stuck_intents
+from trd.services.guard import CapTally, GuardService, stuck_intents, waiting_exits
 from trd.timeframes import SESSION_OPEN_MINUTE
 
 DEFAULT_ENGINE_ACCOUNT = "engine-sim"
@@ -242,6 +242,9 @@ class ScanResult(BaseModel):
     # are the session's first, so a notifier alerts once a session, not per scan.
     cash_refused: list[CashRefusal] = []
     cash_alert: bool = False
+    # SB-1735: SELL intents this pass's sweep expired — a stop or exit whose
+    # approval lapsed unanswered. The position is still open.
+    expired_exits: list[OrderIntentRow] = []
 
     @property
     def quiet(self) -> bool:
@@ -964,6 +967,13 @@ class EngineService:
             if lapsed:
                 names = ", ".join(f"{i.side.value} {inst.symbol}" for i, inst in lapsed)
                 result.skipped.append(f"expired {len(lapsed)} stale intent(s): {names}")
+            # An exit that lapses leaves its position open past the rule that said
+            # to close it, and nobody had been told (SB-1735). Notified separately.
+            result.expired_exits = [
+                OrderIntentRow(intent=i, instrument=inst)
+                for i, inst in lapsed
+                if i.side == Side.SELL
+            ]
             # The loss stop, before anything is decided: a book already past its
             # limit must not be added to on this pass. Marked at this pass's quotes.
             if paper:
@@ -1866,7 +1876,8 @@ class EngineService:
         midnight = datetime.combine(date.today(), datetime.min.time())
         cash = self._ledger(config, account, date.today()) if config.capital is not None else None
         nxt = cash.next_settle if cash is not None else None
-        in_flight = [intent for intent, _ in self.intents.list_open(account.id)]
+        in_flight_rows = self.intents.list_open(account.id)
+        in_flight = [intent for intent, _ in in_flight_rows]
         guard = self.guards.guard(config)
         free_slots = max(
             0,
@@ -1907,6 +1918,7 @@ class EngineService:
                 1 for i in in_flight if i.status == IntentStatus.AWAITING_APPROVAL
             ),
             stuck_intents=stuck_intents(in_flight, datetime.now()),
+            waiting_exits=waiting_exits(in_flight_rows),
             halted=guard.halted if guard is not None else False,
             halt_reason=guard.halt_reason if guard is not None else None,
             halted_at=guard.halted_at if guard is not None else None,

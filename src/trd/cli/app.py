@@ -115,6 +115,8 @@ from trd.notify.messages import (
     approval_message,
     cash_alert_message,
     daily_report_message,
+    exit_waiting_message,
+    expired_exit_messages,
     fill_alert_message,
     fill_messages,
     halt_message,
@@ -180,6 +182,18 @@ from trd.services.engine import (
     scan_events,
 )
 from trd.services.engine_performance import engine_performance
+from trd.services.exit_nudge import AFTER_MINUTES as NUDGE_AFTER
+from trd.services.exit_nudge import EVERY_MINUTES as NUDGE_EVERY
+from trd.services.exit_nudge import STATE_FILENAME as NUDGE_STATE_FILENAME
+from trd.services.exit_nudge import (
+    ExitNudgeService,
+    NudgeResult,
+    due_nudges,
+)
+from trd.services.exit_nudge import in_session as nudge_in_session
+from trd.services.exit_nudge import load_state as load_nudge_state
+from trd.services.exit_nudge import minutes_waiting as nudge_minutes
+from trd.services.exit_nudge import save_state as save_nudge_state
 from trd.services.exit_whatif import ExitWhatIfService, parse_variants
 from trd.services.indicators import seed_defaults
 from trd.services.ira_compare import IraCompareService
@@ -2386,14 +2400,20 @@ def _notify_scan(result: ScanResult, label: str | None = None) -> None:
     cash_alert = cash_alert_message(result, label)
     if cash_alert:
         _send([cash_alert], alert=True)
+    expired = expired_exit_messages(result, label)
+    if expired:
+        _send(expired, alert=True)
 
 
-def _send(messages: list[str], alert: bool = False) -> None:
+def _send(messages: list[str], alert: bool = False) -> bool:
     """Deliver to the channel, or with `alert` to the live alert chat. Missing
     configuration and delivery failures are warnings, never errors: whatever the
-    message reports has already been recorded."""
+    message reports has already been recorded.
+
+    True only when every message was delivered — so a caller can record that a
+    person was told, rather than assume it (SB-1735)."""
     if not messages:
-        return
+        return True
     warn = lambda text: err_console.print(f"[yellow]warning:[/yellow] {text}")  # noqa: E731
     refused: list[str] = []
 
@@ -2404,17 +2424,20 @@ def _send(messages: list[str], alert: bool = False) -> None:
     notifier = alert_notifier_from_env(warn=warn, error=error) if alert else notify_from_env()
     if notifier is None:
         if refused:
-            return  # already said why, and it is not a missing token
+            return False  # already said why, and it is not a missing token
         warn(
             "--notify set but TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID are not configured "
             "— nothing sent."
         )
-        return
+        return False
+    delivered = True
     for message in messages:
         try:
             notifier.send(message)
         except TrdError as exc:
             warn(f"notification failed: {exc}")
+            delivered = False
+    return delivered
 
 
 @engine_app.command("add")
@@ -4090,6 +4113,10 @@ def engine_outbox_ack(
     except TrdError as exc:
         _fail(exc)
         return
+    # Sent before the answer is printed, so the answer can say whether the person
+    # was actually told — the runner logs it (SB-1735).
+    if notify and approval_id and ack.changed:
+        ack.notified = _send([approval_message(ack, label_from_env(live=True))], alert=True)
     if as_json:
         _emit_json(ack)
     else:
@@ -4101,8 +4128,76 @@ def engine_outbox_ack(
         console.print(
             f"Intent #{ack.intent.id} {ack.intent.side.value} [bold]{ack.symbol}[/bold]: {verb}"
         )
-    if notify and approval_id and ack.changed:
-        _send([approval_message(ack, label_from_env(live=True))], alert=True)
+
+
+@engine_app.command("nudge")
+def engine_nudge(
+    notify: Annotated[
+        bool,
+        typer.Option("--notify", help="Send each due reminder to the live alert chat."),
+    ] = False,
+    after: Annotated[
+        int, typer.Option("--after", help="Minutes an exit waits before the first reminder.")
+    ] = NUDGE_AFTER,
+    every: Annotated[
+        int, typer.Option("--every", help="Minutes between reminders while it still waits.")
+    ] = NUDGE_EVERY,
+    as_json: JsonOpt = False,
+) -> None:
+    """Remind, again and again, about a live exit nobody has acted on (SB-1735).
+
+    Lists every SELL intent decided but not yet an order at the broker — unplaced,
+    or waiting on a trade approval. One waiting AFTER minutes (counted from the
+    session open if it was decided before it) is due a reminder, and again every
+    EVERY minutes until it is answered. Nothing is due outside the session.
+
+    --notify sends the due ones to the live alert chat and records what was
+    delivered in TRD_HOME/.exit-nudges.json; without it nothing is sent or
+    recorded. Read-only connection: safe beside a scan. The live runner runs
+    this every pass.
+    """
+    _use_json(as_json)
+    settings = get_settings()
+    now = datetime.now()
+    try:
+        conn = connect_read_only(settings.db_path)
+        try:
+            waiting = ExitNudgeService(conn).waiting()
+        finally:
+            conn.close()
+    except TrdError as exc:
+        _fail(exc)
+        return
+    state_path = settings.db_path.parent / NUDGE_STATE_FILENAME
+    state = load_nudge_state(state_path)
+    result = NudgeResult(
+        at=now,
+        in_session=nudge_in_session(now),
+        waiting=waiting,
+        due=due_nudges(waiting, now, state, after=after, every=every),
+    )
+    if notify and result.due:
+        label = label_from_env(live=True)
+        for nudge in result.due:
+            if _send([exit_waiting_message(nudge.waiting, nudge.minutes, label)], alert=True):
+                state[nudge.waiting.intent_id] = now
+                result.sent.append(nudge.waiting.intent_id)
+        save_nudge_state(state_path, state, {w.intent_id for w in waiting})
+    if as_json:
+        _emit_json(result)
+        return
+    if not waiting:
+        console.print("No live exit is waiting.")
+        return
+    for exit_ in waiting:
+        minutes = nudge_minutes(exit_, now)
+        mark = "🚨" if any(n.waiting.intent_id == exit_.intent_id for n in result.due) else "·"
+        console.print(
+            f"{mark} intent #{exit_.intent_id} SELL [bold]{exit_.symbol}[/bold] "
+            f"({exit_.rule or 'exit'}) {exit_.status.value}, waiting {minutes} min"
+        )
+    if notify:
+        console.print(f"[dim]reminded: {len(result.sent)} of {len(result.due)} due[/dim]")
 
 
 @engine_app.command("backtest")
