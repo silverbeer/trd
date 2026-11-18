@@ -347,6 +347,25 @@ class OrderIntentRow(BaseModel):
     instrument: Instrument
 
 
+class WaitingExit(BaseModel):
+    """A live SELL decided but not yet at the broker as an order (SB-1735).
+
+    PENDING (the runner has not placed it) or AWAITING_APPROVAL (placed, waiting
+    on a person's tap). Either way the position is past an exit rule and still
+    open. On 2026-11-17 a stop-out sat AWAITING_APPROVAL for six hours, its push
+    never arrived, and it lapsed at 16:00 with nobody told. `since` is when it
+    reached the broker, or when the scan wrote it if it never did.
+    """
+
+    intent_id: int
+    symbol: str
+    rule: str | None = None
+    status: IntentStatus
+    since: datetime
+    ref_price: Decimal
+    reason: str
+
+
 class HaltCause(StrEnum):
     """Who stopped a live engine. MAX_LOSS is the engine stopping itself, which is
     the one a watchdog has to shout about: nobody chose it."""
@@ -661,6 +680,9 @@ class EngineStatus(BaseModel):
     # something between trd and the broker stopped moving (STUCK_SUBMITTED_SESSIONS
     # in trd.services.guard). Published in status.json for the watchdog.
     stuck_intents: int = 0
+    # Live only (SB-1735). Every exit decided but not yet an order at the broker,
+    # with when it started waiting — the watchdog alarms on one waiting too long.
+    waiting_exits: list[WaitingExit] = []
     # The kill switch and hard caps (live only; None on paper). The four halt
     # fields are flattened out of `guard` because they are what a reader, the
     # watchdog and the bot look for first.
