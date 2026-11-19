@@ -320,7 +320,8 @@ def alert_message(result: WatchdogResult) -> str:
         lines += [
             "",
             "Scans are landing. A halted engine writes no buys and its outbox emits "
-            "nothing; stuck intents still hold their slots and cash until resolved.",
+            "nothing except manual closes ('trd engine close'); stuck intents still hold "
+            "their slots and cash until resolved.",
         ]
     return "\n".join(lines)
 

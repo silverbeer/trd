@@ -745,20 +745,34 @@ class OrderIntentRepo:
         assert row is not None
         return _row_to_intent(row)
 
+    def relabel(self, intent_id: int, rule: str, reason: str) -> OrderIntent:
+        """Give an intent a new rule and reason and nothing else — id, ref_id,
+        status and quantity stand. How a manual close adopts a pending exit the
+        runner may already have placed (SB-1741)."""
+        return self.update(intent_id, rule=rule, reason=reason)
+
     def expire_before(
-        self, account_id: int, cutoff: datetime, resolved_at: datetime
+        self,
+        account_id: int,
+        cutoff: datetime,
+        resolved_at: datetime,
+        instrument_id: int | None = None,
     ) -> list[tuple[OrderIntent, Instrument]]:
-        """Expire every unplaced or unapproved intent created before `cutoff`.
+        """Expire every unplaced or unapproved intent created before `cutoff` —
+        only those on `instrument_id` when given (a manual close sweeps its own
+        name and leaves the rest, and their alert, to the scan).
 
         Returns what it expired, as it was before the change, so the caller can
         say what lapsed. SUBMITTED is never touched: the broker holds an order for
         it, and only the broker's answer may resolve that one.
         """
         marks = ", ".join("?" for _ in EXPIRABLE_INTENT_STATUSES)
-        stale = self._list(
-            f"WHERE o.account_id = ? AND o.status IN ({marks}) AND o.created_at < ?",
-            [account_id, *(s.value for s in EXPIRABLE_INTENT_STATUSES), cutoff],
-        )
+        where = f"WHERE o.account_id = ? AND o.status IN ({marks}) AND o.created_at < ?"
+        params: list[object] = [account_id, *(s.value for s in EXPIRABLE_INTENT_STATUSES), cutoff]
+        if instrument_id is not None:
+            where += " AND o.instrument_id = ?"
+            params.append(instrument_id)
+        stale = self._list(where, params)
         for intent, _ in stale:
             self.update(intent.id, status=IntentStatus.EXPIRED, resolved_at=resolved_at)
         return stale

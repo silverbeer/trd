@@ -39,7 +39,7 @@ from statistics import median
 from pydantic import BaseModel, computed_field
 
 from trd.build import build_version
-from trd.engine import EXIT_REGISTRY
+from trd.engine import EXIT_REGISTRY, is_manual_exit
 from trd.engine import REGISTRY as STRATEGIES
 from trd.models import EngineConfig, SignalOutcome, TradeOutcome
 from trd.services.daily_report import EngineDay, engine_day
@@ -351,7 +351,16 @@ def engine_pack(
     for position, instrument in engine.positions.list_closed(account.id):
         outcome = measured.get(position.id)
         closed_on = position.closed_at.date() if position.closed_at else None
-        if outcome is not None and closed_on is not None and cutoff < closed_on <= on:
+        # A manual close (`trd engine close`) stays out of the window every finding
+        # and the model's summary are drawn from, as it stays out of strategy_stats:
+        # its exit was the owner's, and a detector would judge a rule by it. The
+        # day's trade list below still describes it.
+        if (
+            outcome is not None
+            and closed_on is not None
+            and cutoff < closed_on <= on
+            and not is_manual_exit(position.exit_rule)
+        ):
             window_trades.append(
                 WindowTrade(
                     position_id=position.id,

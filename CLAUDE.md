@@ -301,7 +301,8 @@ trd engine outbox [--include-stale] [--json]
                                       # "Draining the outbox"
                                       # GUARDRAILS (SB-1377), applied again here against the caps
                                       # as they stand NOW: halted = "halted": true, halt_reason,
-                                      # orders EMPTY (sells too). A buy that breaks a hard cap, or
+                                      # orders EMPTY (sells too) EXCEPT manual closes (rule
+                                      # 'manual', 'trd engine close'). A buy that breaks a hard cap, or
                                       # one older than STALE_INTENT_MINUTES (30) — "stale — sized
                                       # off a quote from HH:MM" — goes to "withheld" with its
                                       # reason, never "orders". --include-stale lists stale buys
@@ -321,6 +322,9 @@ trd engine outbox ack INTENT (--approval-id X | --broker-order-id Y | --error MS
                                       # TRD_BOT_ALLOWED_USER_IDS id, else REFUSED with an error —
                                       # a call to action on real money never falls back to the
                                       # public channel (SB-1377). Fill reports still go there.
+                                      # --notify with --error on a SELL: "REJECTED by the broker"
+                                      # to the same ALERT chat (manual: "run 'trd engine close X'
+                                      # again" — no scan re-issues it, SB-1741). The runner passes it
                                       # A live scan's intents go to that chat too, not the channel —
                                       # only with TRD_LIVE_INTENT_ALERTS=1: with the live runner
                                       # (SB-1382) the approval request is the one message per order
@@ -346,7 +350,10 @@ trd engine nudge [--notify] [--after 15] [--every 30] [--json]
 trd engine halt [--reason TEXT] [--json]
 trd engine resume [--json]            # a LIVE engine's kill switch. Halted: the scan writes no buy
                                       # intents (sells still recorded, so the book shows what it
-                                      # wants; signals still logged) and the outbox emits nothing.
+                                      # wants; signals still logged) and the outbox emits nothing
+                                      # but manual closes ('trd engine close'). Halt on an engine
+                                      # already halted keeps the first halted_by/halted_at (a
+                                      # max_loss halt stays one) and appends the new reason.
                                       # Stored in engine_guard (migration 028), keyed by account,
                                       # so it survives 'engine cash --set', a re-init and
                                       # backup/restore (v7). Paper refused. 'trd learn kill-switch'
@@ -379,14 +386,39 @@ trd engine rm SYMBOL                  # drop a name from the universe. An OPEN P
 trd engine trim SYM --pct 50          # sell part of an open position, leave the rest running.
                       [--quantity N] [--price P]   # for taking cash out without abandoning the
                                       # trade. Stop/target/trail untouched — trimming changes the
-                                      # size, not the plan. Trimming ALL of it is refused: closing
-                                      # goes through an exit rule so the trade records why it ended.
+                                      # size, not the plan. Trimming ALL of it is refused: to close
+                                      # by hand use 'trd engine close', so the trade records why.
                                       # R stays honest — 90% at +2R then -1R on the rest = +1.7R,
                                       # measured against the size taken at entry.
                                       # NOTE 'trd sell' on an engine-held symbol is refused; it
                                       # would desync engine_position and take the account short
+trd engine close SYM [--reason TEXT] [--rm] [--notify] [--json]
+                                      # exit ONE position by hand, all of what is left (SB-1741),
+                                      # exit_rule 'manual' (MANUAL_EXIT_RULE — not in the exit
+                                      # registry, never evaluated). Paper: sells at the quote now.
+                                      # LIVE: a SELL intent exactly as an exit rule writes one — no
+                                      # txn, position open until the fill; handed over by the
+                                      # outbox EVEN WHILE HALTED (the runner must be re-pinned with
+                                      # 'live-runner.sh install'). A PENDING engine exit for the
+                                      # whole position is ADOPTED — relabelled manual in place, same
+                                      # id and ref_id (the runner may already have placed it), never
+                                      # a second order; a partial one, one submitted/awaiting
+                                      # approval, an open buy, or an open manual close refuses.
+                                      # Every refusal (and the quote) before any write. Refused after
+                                      # 16:00 ET and at weekends (it would lapse unplaced). Sweeps
+                                      # only THIS name's lapsed intents; the rest are the scan's, so
+                                      # its expired-exit alert still fires. --rm = also 'engine rm'.
+                                      # --notify: paper → channel, live → PRIVATE alert chat. Never
+                                      # re-issued by a scan: a broker rejection ('outbox ack --error
+                                      # --notify') and a 16:00 lapse alert the private chat to run
+                                      # it again. Run it INSTEAD of selling in the app, never after.
+                                      # Left out of strategy_stats (engine report, daily report's
+                                      # best/worst), the nightly review's window/findings,
+                                      # replay-match (with its replay twin) and what-if's actual arm
+                                      # and replay error; money totals keep it
 trd engine signals [-n 25] [-s KEY]   # every signal fired, taken or passed over, with its reason
 trd engine report                     # per-strategy scorecard: win%, avg win/loss, expectancy in R
+                                      # (manual closes excluded — the owner's call, not the rule's)
 trd engine edge [--samples K] [--seed N] [--json]
                                       # do the entries beat CHANCE? Every taken signal beside K
                                       # random entries in the same name and session (only bars

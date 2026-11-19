@@ -464,6 +464,18 @@ RULES: list[ExitRule] = [
 ]
 REGISTRY: dict[str, ExitRule] = {rule.key: rule for rule in RULES}
 
+# The rule recorded on an exit a person asked for (`trd engine close`, SB-1741).
+# Deliberately NOT in RULES/REGISTRY: `evaluate` runs every registered rule, and a
+# manual close is never decided by one. Its trades are the owner's call, so the
+# per-strategy scorecards leave them out (`is_manual_exit`).
+MANUAL_EXIT_RULE = "manual"
+
+
+def is_manual_exit(rule: str | None) -> bool:
+    """Whether an exit was a person's decision rather than the strategy's."""
+    return rule == MANUAL_EXIT_RULE
+
+
 # Exit params that are inert without their rule. A stored config can outlive the
 # build that understands it — a database configured by a current CLI, read by a
 # pod running older code — and the failure is silent: the param is simply never

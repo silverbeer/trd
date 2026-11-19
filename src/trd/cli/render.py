@@ -2,6 +2,7 @@ from datetime import date, datetime, timedelta
 from decimal import ROUND_DOWN, Decimal
 
 from rich.console import Group, RenderableType
+from rich.markup import escape
 from rich.padding import Padding
 from rich.panel import Panel
 from rich.table import Table
@@ -1432,9 +1433,11 @@ def engine_intents_table(rows: list[OrderIntentRow], title: str = "Order intents
         status = intent.status.value
         if intent.is_open:
             status = f"[yellow]{status}[/yellow]"
-        why = intent.reason if intent.rule is None else f"{intent.rule}: {intent.reason}"
+        # Stored free text (a manual close's --reason, a broker error): escaped, so
+        # a bracket prints as typed instead of being read as markup.
+        why = escape(intent.reason if intent.rule is None else f"{intent.rule}: {intent.reason}")
         if intent.error:
-            why = f"{why} [red]({intent.error})[/red]"
+            why = f"{why} [red]({escape(intent.error)})[/red]"
         table.add_row(
             intent.created_at.strftime("%m-%d %H:%M"),
             side,
@@ -1468,7 +1471,7 @@ def outbox_table(outbox: Outbox) -> Table:
         expires = order.expires_at.strftime("%H:%M")
         if order.late:
             expires = f"[yellow]{expires} late[/yellow]"
-        why = order.reason if order.rule is None else f"{order.rule}: {order.reason}"
+        why = escape(order.reason if order.rule is None else f"{order.rule}: {order.reason}")
         table.add_row(
             str(order.intent_id),
             order.created_at.strftime("%m-%d %H:%M"),
@@ -1644,7 +1647,7 @@ def engine_positions_table(
             )
         if show_exit:
             cells.append(
-                position.exit_reason or ""
+                escape(position.exit_reason or "")
                 if position.status == PositionStatus.CLOSED
                 else "[green]open[/green]"
             )
@@ -2152,6 +2155,13 @@ def replay_match_renderables(result: ReplayMatchResult) -> list[RenderableType]:
     out: list[RenderableType] = [Panel(header, expand=False, border_style="cyan"), table]
     if unmatched:
         out.append(Text(unmatched))
+    if result.excluded:
+        out.append(
+            Text(
+                "left out: " + ", ".join(f"{n} {why}" for why, n in result.excluded.items()),
+                style="dim",
+            )
+        )
     out.append(Text(result.caveat, style="dim"))
     return out
 
@@ -2562,8 +2572,10 @@ def engine_status_renderables(status: EngineStatus) -> list[RenderableType]:
         when = f" at {status.halted_at:%Y-%m-%d %H:%M}" if status.halted_at else ""
         out.append(
             Panel(
-                f"[bold red]HALTED[/bold red] by {who}{when}\n[red]{status.halt_reason}[/red]\n"
-                "No buy intents, and the outbox emits nothing. 'trd engine resume' to restart.",
+                f"[bold red]HALTED[/bold red] by {who}{when}\n"
+                f"[red]{escape(status.halt_reason or '')}[/red]\n"
+                "No buy intents, and the outbox emits nothing except manual closes "
+                "('trd engine close'). 'trd engine resume' to restart.",
                 title="[red]kill switch on[/red]",
                 title_align="left",
                 expand=False,
@@ -2687,12 +2699,15 @@ def outbox_renderables(outbox: Outbox) -> list[RenderableType]:
     """The outbox for a person: halted, the orders an agent would place, and what
     was withheld and why."""
     if outbox.halted:
-        return [
+        halted: list[RenderableType] = [
             Text.from_markup(
-                f"[bold red]HALTED[/bold red] on [bold]{outbox.account}[/bold] — the outbox "
-                f"emits nothing. {outbox.halt_reason}"
+                f"[bold red]HALTED[/bold red] on [bold]{outbox.account}[/bold] — only manual "
+                f"closes are handed over. {escape(outbox.halt_reason or '')}"
             )
         ]
+        if outbox.orders:
+            halted.append(outbox_table(outbox))
+        return halted
     out: list[RenderableType] = []
     if outbox.orders:
         out.append(outbox_table(outbox))

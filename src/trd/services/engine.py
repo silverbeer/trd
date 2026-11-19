@@ -38,13 +38,14 @@ from trd.engine.bars import (
     validate_timeframe,
 )
 from trd.engine.base import StrategyContext, indicator, last
-from trd.engine.exits import exit_quantity
+from trd.engine.exits import MANUAL_EXIT_RULE, exit_quantity, is_manual_exit
 from trd.engine.regime import REGIME_SYMBOLS
 from trd.engine.settlement import CashLedger, ledger, unsettled_funding
 from trd.engine.temperature import market_temperature
 from trd.errors import ProviderError, TrdError
 from trd.learn import GLOSSARY
 from trd.models import (
+    EXPIRABLE_INTENT_STATUSES,
     Account,
     AccountType,
     Bar,
@@ -69,6 +70,7 @@ from trd.models import (
     SizingMode,
     StrategyStat,
     TradeExplanation,
+    intent_expires_at,
     intent_expiry_cutoff,
 )
 from trd.models.engine import STALE_INTENT_MINUTES, ShortName
@@ -93,6 +95,8 @@ from trd.services.guard import CapTally, GuardService, stuck_intents, waiting_ex
 from trd.timeframes import SESSION_OPEN_MINUTE
 
 DEFAULT_ENGINE_ACCOUNT = "engine-sim"
+# What a manual close records as its reason when none is given (SB-1741).
+DEFAULT_MANUAL_REASON = "closed by hand (trd engine close)"
 DEFAULT_ENGINE_WATCHLIST = "engine"
 DEFAULT_POSITION_SIZE = Decimal("1000")
 DEFAULT_MAX_POSITIONS = 5
@@ -213,6 +217,33 @@ class ScanFill(BaseModel):
         if self.opened_at is None or self.closed_at is None:
             return None
         return self.closed_at - self.opened_at
+
+
+class ManualClose(BaseModel):
+    """What one `trd engine close` did (SB-1741).
+
+    Paper: `fill` is the sale, booked at the quote, and the position is closed.
+    Live: `intent` is the SELL handed to the outbox — nothing is sold until the
+    broker's fill is ingested, and the position stays open until then.
+    """
+
+    symbol: str
+    mode: EngineMode
+    intent: OrderIntentRow | None = None
+    fill: ScanFill | None = None
+    # A PENDING exit the engine had already decided for the whole position,
+    # relabelled manual in place (same id and ref_id) rather than replaced: the
+    # runner may already have placed it. `intent` is that row. With the rule it had.
+    adopted: int | None = None
+    adopted_rule: str | None = None
+    # This name's lapsed intents, swept so they are not mistaken for an exit
+    # still at the broker (ids). Other names' are left to the scan.
+    expired: list[int] = []
+    # Live only: the kill switch was on. A manual close is still handed over.
+    halted: bool = False
+    warning: str | None = None
+    # Set by the CLI when --rm took the name out of the universe as well.
+    removed: str | None = None
 
 
 class ScanResult(BaseModel):
@@ -358,10 +389,16 @@ def strategy_stats(
     closed: list[EnginePosition], open_counts: dict[str, int] | None = None
 ) -> list[StrategyStat]:
     """Group closed trades into the per-strategy scorecard. Shared by the live
-    report and the backtest so the two read on the same scale."""
+    report and the backtest so the two read on the same scale.
+
+    A manual close (`trd engine close`) is left out: its exit was the owner's
+    decision, and scoring it would credit or blame the strategy for it. Its money
+    still counts everywhere dollars are summed — just not here."""
     open_counts = open_counts or {}
     grouped: dict[str, list[EnginePosition]] = {}
     for position in closed:
+        if is_manual_exit(position.exit_rule):
+            continue
         grouped.setdefault(position.strategy, []).append(position)
 
     stats: list[StrategyStat] = []
@@ -722,8 +759,10 @@ class EngineService:
 
     def halt(self, reason: str | None = None, at: datetime | None = None) -> EngineGuard:
         """Throw the kill switch: no buy intents from the scan, nothing from the
-        outbox. Sells are still decided and recorded, so the book shows what the
-        engine would do — they are simply not handed to anyone to place."""
+        outbox except manual closes (`trd engine close`). Sells are still decided
+        and recorded, so the book shows what the engine would do — they are simply
+        not handed to anyone to place. Already halted, the first halt's cause and
+        time stand; the reason is added."""
         return self.guards.halt(self.config(), reason, at or datetime.now())
 
     def resume(self, at: datetime | None = None) -> EngineGuard:
@@ -1101,30 +1140,8 @@ class EngineService:
             # runner. Sized by the shared helper the backtest also calls, so the
             # two cannot round a scaled-out trade differently.
             sold = exit_quantity(live, decision)
-            pnl = (price - position.entry_price) * sold
-            # The signal this trade was opened on — the setup, in the words the
-            # rule used at entry. One lookup per close, and closes are rare.
-            signal = self.signals.by_id(position.signal_id) if position.signal_id else None
-            fill = ScanFill(
-                symbol=instrument.symbol,
-                strategy=position.strategy,
-                quantity=sold,
-                price=price,
-                reason=decision.reason,
-                rule=decision.rule,
-                pnl=pnl,
-                r_multiple=live.r_multiple_at(price),
-                entry_price=position.entry_price,
-                opened_at=position.opened_at,
-                closed_at=now,
-                stop_price=position.stop_price,
-                target_price=position.target_price,
-                risk_per_share=position.risk_per_share,
-                # Against the size taken at entry, which is what R is measured in —
-                # not against the remainder, which a trim would have changed.
-                planned_1r=position.risk_per_share * position.quantity,
-                setup=signal.reason if signal else None,
-                trigger_price=decision.level,
+            fill = self._exit_fill(
+                live, instrument, sold, price, decision.reason, decision.rule, now, decision.level
             )
             if paper and config.is_live:
                 warning = self._good_faith_warning(config, account, position, instrument, today)
@@ -1133,47 +1150,131 @@ class EngineService:
                 # The exit is decided, not done: the position stays open and keeps
                 # its slot until the broker's fill says it sold. Sized exactly as
                 # paper would sell, so a partial (scale_out) asks for the same piece.
-                intent = self.intents.insert(
-                    account_id=account.id,
-                    instrument_id=instrument.id,
-                    side=Side.SELL,
-                    quantity=sold,
-                    ref_price=price,
-                    reason=decision.reason,
-                    strategy=position.strategy,
-                    created_at=now,
-                    rule=decision.rule,
-                    position_id=position.id,
+                row = self._queue_exit(
+                    account, position, instrument, sold, price, decision.reason, decision.rule, now
                 )
                 self.positions.touch(
                     position.id, live.trail_high, live.bars_held, source.session(bars[-1])
                 )
-                result.intents.append(OrderIntentRow(intent=intent, instrument=instrument))
+                result.intents.append(row)
                 continue
             if paper:
-                self.txns.insert(
-                    account_id=account.id,
-                    instrument_id=instrument.id,
-                    side=Side.SELL,
-                    quantity=sold,
-                    price=price,
-                    fees=Decimal(0),
-                    executed_at=now,
-                    note=f"engine {position.strategy} exit: {decision.rule}",
-                )
                 self.positions.touch(
                     position.id, live.trail_high, live.bars_held, source.session(bars[-1])
                 )
-                if decision.partial:
-                    # The trade is not over: cash and part of the R are booked,
-                    # the stop, target and trail are untouched, and the slot stays
-                    # occupied. No exit reason is written, because nothing ended.
-                    self.positions.trim(position.id, sold, price)
-                else:
-                    self.positions.close(position.id, now, price, decision.reason, decision.rule)
+                self._book_paper_exit(
+                    account,
+                    position,
+                    instrument,
+                    sold,
+                    price,
+                    now,
+                    decision.reason,
+                    decision.rule,
+                    decision.partial,
+                )
+                if not decision.partial:
                     closed_ids.add(position.id)
             result.closed.append(fill)
         return closed_ids
+
+    def _exit_fill(
+        self,
+        position: EnginePosition,
+        instrument: Instrument,
+        sold: Decimal,
+        price: Decimal,
+        reason: str,
+        rule: str,
+        now: datetime,
+        level: Decimal | None = None,
+    ) -> ScanFill:
+        """The fill an exit reports, with the trade's context. Shared by the scan's
+        exits and a manual close, so both describe a sale the same way."""
+        # The signal this trade was opened on — the setup, in the words the
+        # rule used at entry. One lookup per close, and closes are rare.
+        signal = self.signals.by_id(position.signal_id) if position.signal_id else None
+        return ScanFill(
+            symbol=instrument.symbol,
+            strategy=position.strategy,
+            quantity=sold,
+            price=price,
+            reason=reason,
+            rule=rule,
+            pnl=(price - position.entry_price) * sold,
+            r_multiple=position.r_multiple_at(price),
+            entry_price=position.entry_price,
+            opened_at=position.opened_at,
+            closed_at=now,
+            stop_price=position.stop_price,
+            target_price=position.target_price,
+            risk_per_share=position.risk_per_share,
+            # Against the size taken at entry, which is what R is measured in —
+            # not against the remainder, which a trim would have changed.
+            planned_1r=position.risk_per_share * position.quantity,
+            setup=signal.reason if signal else None,
+            trigger_price=level,
+        )
+
+    def _queue_exit(
+        self,
+        account: Account,
+        position: EnginePosition,
+        instrument: Instrument,
+        sold: Decimal,
+        price: Decimal,
+        reason: str,
+        rule: str,
+        now: datetime,
+    ) -> OrderIntentRow:
+        """A live exit, decided but not done: the SELL intent the outbox hands over.
+        Shared by the scan's exits and a manual close, so both ask the same way."""
+        intent = self.intents.insert(
+            account_id=account.id,
+            instrument_id=instrument.id,
+            side=Side.SELL,
+            quantity=sold,
+            # What was seen when deciding — a reference, never a fill. The order is market.
+            ref_price=price,
+            reason=reason,
+            strategy=position.strategy,
+            created_at=now,
+            rule=rule,
+            position_id=position.id,
+        )
+        return OrderIntentRow(intent=intent, instrument=instrument)
+
+    def _book_paper_exit(
+        self,
+        account: Account,
+        position: EnginePosition,
+        instrument: Instrument,
+        sold: Decimal,
+        price: Decimal,
+        now: datetime,
+        reason: str,
+        rule: str,
+        partial: bool = False,
+    ) -> None:
+        """A paper exit filled at `price`: the sell txn, then the position booked.
+        Shared by the scan's exits and a manual close."""
+        self.txns.insert(
+            account_id=account.id,
+            instrument_id=instrument.id,
+            side=Side.SELL,
+            quantity=sold,
+            price=price,
+            fees=Decimal(0),
+            executed_at=now,
+            note=f"engine {position.strategy} exit: {rule}",
+        )
+        if partial:
+            # The trade is not over: cash and part of the R are booked,
+            # the stop, target and trail are untouched, and the slot stays
+            # occupied. No exit reason is written, because nothing ended.
+            self.positions.trim(position.id, sold, price)
+        else:
+            self.positions.close(position.id, now, price, reason, rule)
 
     def _good_faith_warning(
         self,
@@ -1668,7 +1769,8 @@ class EngineService:
         if self.config().is_live:
             raise TrdError(
                 "trim is paper-only. A live engine's position is sold by the broker, and a "
-                "manual sell recorded here would not match what the account actually did."
+                "manual sell recorded here would not match what the account actually did. "
+                f"To close it by hand, use 'trd engine close {symbol.upper()}'."
             )
         account = self.account()
         instrument = self.instruments.get_by_symbol(symbol.upper())
@@ -1686,7 +1788,10 @@ class EngineService:
             raise TrdError("Give exactly one of --pct or --quantity.")
         if pct is not None:
             if not (0 < pct < 100):
-                raise TrdError("--pct must be between 0 and 100 exclusive. Use an exit to close.")
+                raise TrdError(
+                    "--pct must be between 0 and 100 exclusive. To close, use "
+                    f"'trd engine close {instrument.symbol}'."
+                )
             sell = (position.remaining_quantity * pct / 100).quantize(
                 Decimal("0.000001"), rounding=ROUND_DOWN
             )
@@ -1698,8 +1803,9 @@ class EngineService:
         if sell >= position.remaining_quantity:
             raise TrdError(
                 f"Only {position.remaining_quantity.normalize():f} left. Trimming all of it "
-                "would close the position — let an exit rule do that, so the trade records "
-                "why it ended."
+                "would close the position — close it with "
+                f"'trd engine close {instrument.symbol}' (recorded as closed by hand), or "
+                "let an exit rule do it, so the trade records why it ended."
             )
 
         if price is None:
@@ -1733,6 +1839,157 @@ class EngineService:
             ),
             rule="trim",
             pnl=(price - position.entry_price) * sell,
+        )
+
+    def close(
+        self, symbol: str, reason: str | None = None, at: datetime | None = None
+    ) -> ManualClose:
+        """Exit ONE open engine position by hand (SB-1741), all of what is left.
+
+        The owner's decision, not the strategy's: recorded with the rule
+        MANUAL_EXIT_RULE, which the per-strategy scorecards leave out.
+
+        Paper sells at the quote now. Live writes a SELL intent exactly as a
+        scan's exit would — no txn, the position untouched until the broker's
+        fill is ingested — and hands it over even while the engine is halted,
+        because a person's own exit is what a halt is for.
+
+        A PENDING exit the engine already decided for the whole position is
+        ADOPTED, not replaced: relabelled manual in place, same id and ref_id.
+        The outbox read is read-only and the runner acks minutes after placing,
+        so a pending intent may already be an order at the broker — a second
+        intent would be a second order for the same shares. One already with the
+        broker (submitted or awaiting approval), or a pending one for only part
+        of the position, refuses the close.
+
+        Every refusal and the price come before any write, so a refused close
+        changes nothing. The only lapsed intents it sweeps are this name's: the
+        rest are the scan's, whose sweep is what alerts on an expired exit.
+        """
+        config = self.config()
+        account = self.account()
+        now = at or datetime.now()
+        why = reason or DEFAULT_MANUAL_REASON
+        instrument = self.instruments.get_by_symbol(symbol.upper())
+        if instrument is None:
+            raise TrdError(f"Unknown symbol {symbol.upper()}.")
+        pairs = [(p, i) for p, i in self.positions.list_open(account.id) if i.id == instrument.id]
+        if not pairs:
+            raise TrdError(
+                f"The engine holds no open position in {instrument.symbol} on "
+                f"'{account.name}'. 'trd engine positions' shows what it does hold."
+            )
+        position, _ = pairs[0]
+        sold = position.remaining_quantity
+
+        if not config.is_live:
+            quote = self._quotes([instrument.symbol]).get(instrument.symbol)
+            if quote is None:
+                raise TrdError(
+                    f"No quote for {instrument.symbol} — a paper close fills at the live "
+                    "price, so it needs one. Try again in a moment."
+                )
+            fill = self._exit_fill(
+                position, instrument, sold, quote.price, why, MANUAL_EXIT_RULE, now
+            )
+            self._book_paper_exit(
+                account, position, instrument, sold, quote.price, now, why, MANUAL_EXIT_RULE
+            )
+            return ManualClose(symbol=instrument.symbol, mode=config.mode, fill=fill)
+
+        # An intent written after the close or on a weekend is stale the moment it
+        # exists: the 16:00 sweep would expire it before anything could place it.
+        if now.weekday() > 4:
+            raise TrdError(
+                "The market is closed for the weekend — a sell written now would lapse "
+                "before it could be placed. Run 'trd engine close' on the next weekday."
+            )
+        if now >= intent_expires_at(now):
+            raise TrdError(
+                "It is past the 16:00 ET close — a sell written now would lapse before it "
+                "could be placed. Run 'trd engine close' tomorrow, before or during the "
+                "session."
+            )
+
+        # An approval or a placement that lapsed at an earlier close must not be
+        # mistaken for an exit still at the broker. Set aside here, expired below
+        # once nothing can refuse.
+        cutoff = intent_expiry_cutoff(now)
+        open_here = [
+            i for i, inst in self.intents.list_open(account.id) if inst.id == instrument.id
+        ]
+        lapsed = {
+            i.id
+            for i in open_here
+            if i.status in EXPIRABLE_INTENT_STATUSES and i.created_at < cutoff
+        }
+        current = [i for i in open_here if i.id not in lapsed]
+        buying = next((i for i in current if i.side == Side.BUY), None)
+        if buying is not None:
+            raise TrdError(
+                f"A buy of {instrument.symbol} is still open: intent #{buying.id}, status "
+                f"{buying.status.value}. Close after it resolves ('trd engine intents')."
+            )
+        sells = [i for i in current if i.side == Side.SELL]
+        manual = next((i for i in sells if is_manual_exit(i.rule)), None)
+        if manual is not None:
+            raise TrdError(
+                f"{instrument.symbol} is already being closed by hand: intent #{manual.id}, "
+                f"status {manual.status.value}. Approve it in your broker app when asked."
+            )
+        placed = next((i for i in sells if i.status != IntentStatus.PENDING), None)
+        if placed is not None:
+            raise TrdError(
+                f"An exit for {instrument.symbol} is already with the broker: intent "
+                f"#{placed.id} ({placed.rule}), status {placed.status.value}. Approve or "
+                "decline it in your broker app; if the broker already dropped it, "
+                "ingest fills first ('trd engine fills')."
+            )
+        pending = next(iter(sells), None)
+        if pending is not None and pending.quantity != sold:
+            raise TrdError(
+                f"An exit selling part of {instrument.symbol} is waiting to be placed: intent "
+                f"#{pending.id} ({pending.rule}), {pending.quantity.normalize():f} of "
+                f"{sold.normalize():f} sh. It may already be an order at the broker, so it "
+                "is neither replaced nor doubled — let it fill, then close the rest."
+            )
+
+        price: Decimal | None = None
+        if pending is None:
+            # The network only once nothing can refuse on what trd already knows.
+            quote = self._quotes([instrument.symbol]).get(instrument.symbol)
+            price = quote.price if quote is not None else self.prices.latest_close(instrument.id)
+            if price is None:
+                raise TrdError(f"No quote and no stored close for {instrument.symbol}.")
+        warning = self._good_faith_warning(config, account, position, instrument, now.date())
+        guard = self.guards.guard(config)
+
+        # Writes, now that nothing can refuse.
+        expired = (
+            self.intents.expire_before(account.id, cutoff, now, instrument_id=instrument.id)
+            if lapsed
+            else []
+        )
+        if pending is not None:
+            # The engine's exit becomes the owner's: same order, same ref_id.
+            row = OrderIntentRow(
+                intent=self.intents.relabel(pending.id, MANUAL_EXIT_RULE, why),
+                instrument=instrument,
+            )
+        else:
+            assert price is not None
+            row = self._queue_exit(
+                account, position, instrument, sold, price, why, MANUAL_EXIT_RULE, now
+            )
+        return ManualClose(
+            symbol=instrument.symbol,
+            mode=config.mode,
+            intent=row,
+            adopted=pending.id if pending is not None else None,
+            adopted_rule=pending.rule if pending is not None else None,
+            expired=[i.id for i, _ in expired],
+            halted=guard is not None and guard.halted,
+            warning=warning,
         )
 
     # ----------------------------------------------------------------- views
@@ -2095,6 +2352,14 @@ class EngineService:
         for position, _ in self.positions.list_open(account.id):
             open_counts[position.strategy] = open_counts.get(position.strategy, 0) + 1
         return strategy_stats(closed, open_counts)
+
+    def manual_close_count(self) -> int:
+        """Closed trades the scorecard leaves out because a person closed them
+        (`trd engine close`) — so an empty scorecard is not read as no trades."""
+        account = self.account()
+        return sum(
+            1 for p, _ in self.positions.list_closed(account.id) if is_manual_exit(p.exit_rule)
+        )
 
 
 def scan_events(result: ScanResult) -> list[dict]:

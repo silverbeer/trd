@@ -267,9 +267,11 @@ Follow these steps exactly, in order.
    ```
 
    **Check `halted` first.** `"halted": true` means the kill switch is on (`trd
-   engine halt`, or the engine's own loss stop): `orders` is empty and
-   `halt_reason` says why. Place nothing, show the user the reason, and stop.
-   Never work around a halt by placing from `intents` or `withheld`.
+   engine halt`, or the engine's own loss stop) and `halt_reason` says why.
+   `orders` then holds only manual closes — sells the owner asked for with `trd
+   engine close` (`rule: "manual"`) — and is empty otherwise. Place those, exactly
+   as below, and nothing else; show the user the reason. Never work around a halt
+   by placing from `intents` or `withheld`.
 
    `orders` is every PENDING intent still actionable, oldest first. Each carries
    `intent_id`, `ref_id`, `symbol`, `side`, `quantity` (a 6dp string), `type`
@@ -309,7 +311,10 @@ Follow these steps exactly, in order.
      in the live alert chat.
    - An **order** (no approval needed): `--broker-order-id <order id>`.
    - An **error** (the place call failed, nothing reached the broker):
-     `--error "<the error text>"`.
+     `--error "<the error text>" --notify`. On a sell, `--notify` tells the user
+     in the live alert chat that the exit was rejected — a manual close (`rule:
+     "manual"`) is never re-issued by a scan, so they must run `trd engine close`
+     again.
 
    The same ack twice is a no-op. An ack against an intent already resolved, or
    with a different approval or order id than the one recorded, is refused and
@@ -435,7 +440,8 @@ are switched off, trd enforces its own limits, independent of the strategy
 config:
 
 - **Kill switch** — `trd engine halt [--reason]` / `trd engine resume`. Halted, a
-  scan writes no buys (exits are still recorded) and the outbox emits nothing.
+  scan writes no buys (exits are still recorded) and the outbox emits nothing
+  but manual closes (`trd engine close`, rule `manual`).
 - **Hard caps** — `trd engine guard [--max-order D] [--max-daily D]
   [--max-positions N] [--max-loss D]`. Defaults at `init --live`: max-order =
   size x 1.25, max-daily = capital, max-positions = `--max`, max-loss = 20% of

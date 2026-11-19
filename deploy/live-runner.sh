@@ -167,7 +167,10 @@ py() { "$RH_PY" -c "$@"; }
 OUTBOX=$(trd_retry engine outbox --json) || fail error "outbox: ${OUTBOX:0:200}"
 printf '%s' "$OUTBOX" > "$WORK/outbox.json"
 HALTED=$(py 'import json,sys; print(int(bool(json.load(open(sys.argv[1])).get("halted"))))' "$WORK/outbox.json")
-py 'import json,sys; d=json.load(open(sys.argv[1])); json.dump([] if d.get("halted") else d.get("orders") or [], open(sys.argv[2],"w"))' \
+# Halted, trd's outbox lists only manual closes (`trd engine close`, SB-1741) —
+# the owner's own exit, which a halt must not block. Filtered here as well, so a
+# halted outbox can never hand this runner anything the engine decided.
+py 'import json,sys; d=json.load(open(sys.argv[1])); o=d.get("orders") or []; json.dump([s for s in o if s.get("side")=="sell" and s.get("rule")=="manual"] if d.get("halted") else o, open(sys.argv[2],"w"))' \
     "$WORK/outbox.json" "$WORK/specs.json"
 N_SPECS=$(py 'import json,sys; print(len(json.load(open(sys.argv[1]))))' "$WORK/specs.json")
 
@@ -276,6 +279,9 @@ json.dump([s for s in json.load(open(sys.argv[2])) if s["intent_id"] in clean], 
                 told=$(py 'import json,sys; print(json.loads(sys.argv[1]).get("notified"))' "$out" 2>/dev/null || echo unknown)
                 rh_log "ack $intent $kind ${value:0:80} notified=$told"
                 [[ "$kind" == approval && "$told" == False ]] && rh_alert "⚠ trd live runner: intent $intent is waiting on a broker approval, and the Telegram request did not go out (notified=$told). Check the broker app."
+                # A rejected SELL is alerted by the ack itself (SB-1741): a manual
+                # close is never re-issued, so a silent rejection leaves it held.
+                [[ "$kind" == error && "$told" == False ]] && rh_alert "⚠ trd live runner: sell intent $intent was REJECTED by the broker (${value:0:120}) and the Telegram alert did not go out. Check 'trd engine intents'."
             else
                 rh_log "ACK FAILED $intent $kind $value: ${out:0:200}"
                 rh_alert "⚠ trd live runner: placed but could not record it — intent $intent, $kind $value. Do NOT re-place; run: trd engine outbox ack $intent $flag '$value'"

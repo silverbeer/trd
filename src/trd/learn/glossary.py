@@ -815,9 +815,11 @@ _ENTRIES: list[GlossaryEntry] = [
             "what has to exist before trade approvals are switched off and no person reads "
             "an order before it fills.\n\n"
             "The kill switch (trd engine halt / resume) stops all new buying: a halted scan "
-            "writes no buy intents and the outbox emits nothing at all. Exits are still "
-            "decided and recorded, so the book shows what the engine wants. It survives "
-            "restarts, reconfiguring and a backup/restore.\n\n"
+            "writes no buy intents and the outbox emits nothing the engine decided. Exits "
+            "are still decided and recorded, so the book shows what the engine wants. The "
+            "one thing still handed over is a manual close (trd engine close) — your own "
+            "exit, which is what a halt is usually for. It survives restarts, reconfiguring "
+            "and a backup/restore.\n\n"
             "Four hard caps (trd engine guard) bound the buys: the most one order may cost, "
             "the most the engine may buy in a session, the most positions (and open buys) "
             "it may hold, and the loss at which it halts itself. Each is checked twice — "
@@ -845,7 +847,7 @@ _ENTRIES: list[GlossaryEntry] = [
             "Its book falls to -$20.40 on a gap: the next scan halts it, writes no buys, "
             "and the alert chat hears why."
         ),
-        related=["order-intent", "settlement", "risk-at-stop"],
+        related=["order-intent", "settlement", "risk-at-stop", "manual-close"],
         used_in=[
             "trd engine halt",
             "trd engine resume",
@@ -853,6 +855,36 @@ _ENTRIES: list[GlossaryEntry] = [
             "trd engine outbox",
             "trd engine status",
         ],
+    ),
+    GlossaryEntry(
+        key="manual-close",
+        term="Manual close (trd engine close)",
+        category=Category.ENGINE,
+        definition=(
+            "Closing one engine position yourself, all of what is left, without corrupting "
+            "the book. 'trd sell' cannot do it — the engine would still think it holds the "
+            "position — and selling in the broker app leaves trd a fill it never asked for.\n\n"
+            "A paper engine sells at the quote immediately. A live engine writes a sell order "
+            "intent, exactly as an exit rule would, with the rule 'manual': nothing is sold "
+            "until the broker fills it and you approve it in the app. It is handed over even "
+            "while the engine is halted. An exit the engine already queued for the whole "
+            "position is adopted — relabelled manual, the same order — since the runner may "
+            "already have placed it; one already at the broker blocks the close. Either way "
+            "the position is never sold twice. Run it instead of selling in the broker app, "
+            "never after: a sale already made there needs the book fixed, not a second "
+            "sell.\n\n"
+            "The trade's money counts like any other. Its exit does not count for the "
+            "strategy: the per-strategy scorecard (win rate, expectancy) leaves manual closes "
+            "out, because crediting or blaming a rule for your decision would teach the "
+            "wrong thing about the rule."
+        ),
+        example=(
+            "A position is +0.8R and you want out before an announcement. trd engine close "
+            "AAPL --reason 'before the event' records the sale with that reason; "
+            "'trd engine report' scores the strategy without it."
+        ),
+        related=["order-intent", "kill-switch", "expectancy", "r-multiple"],
+        used_in=["trd engine close", "trd engine outbox", "trd engine report"],
     ),
     GlossaryEntry(
         key="order-intent",
@@ -868,7 +900,8 @@ _ENTRIES: list[GlossaryEntry] = [
             "from). When the fill arrives the position opens at the price actually paid and "
             "the stop is re-derived from that ATR, so the trade's R is measured from the real "
             "entry rather than from the price the scan hoped for. A sell intent names the "
-            "exit rule that wanted it; the position stays open until the sale fills.\n\n"
+            "exit rule that wanted it — or 'manual' when you asked for it with trd engine "
+            "close; the position stays open until the sale fills.\n\n"
             "Until it is resolved an intent still claims what it asked for: an open buy "
             "holds a position slot, the symbol, its place in the day's entry budget and its "
             "cash in the settled-cash ledger; an open sell stops the engine asking to sell "
