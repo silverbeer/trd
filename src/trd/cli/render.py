@@ -37,6 +37,7 @@ from trd.models import (
     StrategyStat,
     TradeExplanation,
     TradeOutcome,
+    is_human,
 )
 from trd.models.activity_import import ImportPlan
 from trd.models.alloc import (
@@ -62,6 +63,7 @@ from trd.services.engine_performance import EnginePerformance
 from trd.services.equity_curve import EquityCurve
 from trd.services.exit_whatif import WhatIfArm, WhatIfResult
 from trd.services.history import HistoryResult
+from trd.services.human import HumanBuy, HumanView
 from trd.services.live_report import LiveReport
 from trd.services.movers import MoverRow
 from trd.services.outcomes import OutcomeSummary
@@ -1657,14 +1659,15 @@ def engine_positions_table(
     if open_rows:
         committed = sum((r.position.cost for r in open_rows), Decimal(0))
         pnl = sum((r.position.pnl_at(r.mark) or Decimal(0) for r in open_rows), Decimal(0))
+        # Engine slots only; human slots (SB-1742) are counted beside them.
+        engine_open = sum(1 for r in open_rows if not is_human(r.position.strategy))
+        humans = len(open_rows) - engine_open
         held = (
-            f"{len(open_rows)} of {max_positions} open"
-            if max_positions
-            else f"{len(open_rows)} open"
-        )
+            f"{engine_open} of {max_positions} open" if max_positions else f"{engine_open} open"
+        ) + (f" + {humans} human" if humans else "")
         parts = [held]
         if max_positions is not None:
-            room = max_positions - len(open_rows)
+            room = max_positions - engine_open
             parts.append(
                 "no capacity — nothing new can be taken" if room <= 0 else f"room for {room}"
             )
@@ -1686,21 +1689,25 @@ def engine_positions_summary(rows: list[PositionRow], max_positions: int | None)
     committed = sum((r.position.cost for r in open_rows), Decimal(0))
     pnl = sum((r.position.pnl_at(r.mark) or Decimal(0) for r in open_rows), Decimal(0))
     risk = sum((r.risk_at_stop or Decimal(0) for r in open_rows), Decimal(0))
-    slots = max_positions or len(open_rows)
-    full = len(open_rows) >= slots
+    # Engine slots only; human slots (SB-1742) are counted beside them.
+    engine_open = sum(1 for r in open_rows if not is_human(r.position.strategy))
+    humans = len(open_rows) - engine_open
+    slots = max_positions or max(engine_open, 1)
+    full = engine_open >= slots
     color = "yellow" if full else "cyan"
     color_pnl, arrow = tone(pnl)
     top = hero(
         "Open book",
         [
             Text.from_markup(
-                f"[dim]slots[/dim] {gauge(len(open_rows) / slots, slots, color)} "
-                f"[{color}]{len(open_rows)}/{slots}[/{color}]"
+                f"[dim]slots[/dim] {gauge(engine_open / slots, slots, color)} "
+                f"[{color}]{engine_open}/{slots}[/{color}]"
                 + (
                     "  [yellow]full[/yellow]"
                     if full
-                    else f"  [dim]room for {slots - len(open_rows)}[/dim]"
+                    else f"  [dim]room for {slots - engine_open}[/dim]"
                 )
+                + (f"  [cyan]+ {humans} human[/cyan]" if humans else "")
             ),
             Text.from_markup(
                 f"[dim]committed[/dim] {fmt_money(committed)}   [dim]unrealized[/dim] "
@@ -4383,3 +4390,114 @@ def engine_performance_renderables(
         )
     )
     return out
+
+
+# ----------------------------------------------------------- human slots (SB-1742)
+
+
+def human_renderables(view: HumanView) -> list[RenderableType]:
+    """`trd engine human`: the sleeve in one glance, its cash, then its positions."""
+    sleeve = view.sleeve
+    if sleeve is None:
+        return [
+            Text(
+                "No human slots on this engine. Create them: "
+                "trd engine human set --slots 2 --capital C"
+            )
+        ]
+    free = max(0, sleeve.slots - view.used - view.open_buys)
+    net = view.realized + view.unrealized
+    lines: list[RenderableType | None] = [
+        Text.from_markup(
+            f"slots [bold]{gauge(view.used / sleeve.slots if sleeve.slots else 0, sleeve.slots)}"
+            f"[/bold] {view.used}/{sleeve.slots} held"
+            + (f" · {view.open_buys} buy(s) in flight" if view.open_buys else "")
+            + f" · room for {free}"
+        ),
+        Text.from_markup(
+            f"realized {fmt_signed(view.realized)}   unrealized {fmt_signed(view.unrealized)}"
+            f"   net [{tone(net)[0]}]{tone(net)[1]} {fmt_signed(net)}[/]"
+        ),
+        Text.from_markup("[red bold]HALTED[/red bold] " + escape(sleeve.halt_reason or ""))
+        if sleeve.halted
+        else None,
+    ]
+    top = hero("Human slots", lines, border="red" if sleeve.halted else "cyan")
+    money: list[Row] = [
+        ("capital (human)", fmt_money(sleeve.capital)),
+        ("per slot", fmt_money(sleeve.size)),
+        ("engine sleeve", fmt_money(view.engine_capital)),
+        ("total capital", fmt_money(view.capital_total)),
+    ]
+    cash_rows: list[Row] = []
+    if view.cash is not None:
+        cash = view.cash
+        cash_rows = [
+            ("buying power", fmt_money(cash.buying_power.quantize(Decimal("0.01"), ROUND_DOWN))),
+            ("settled", fmt_money(cash.settled)),
+            ("unsettled", fmt_money(cash.unsettled)),
+            ("bridge", fmt_money(cash.bridge) if cash.bridge else "off"),
+        ]
+    guard_rows: list[Row] = [
+        ("loss stop", f"-{fmt_money(sleeve.max_loss)}" if sleeve.max_loss else "off"),
+        ("status", "[red]halted[/red]" if sleeve.halted else "[green]buying[/green]"),
+    ]
+    out: list[RenderableType] = [
+        dashboard(
+            top,
+            ("💰 Sleeve", money, "cyan"),
+            ("💵 Cash", cash_rows, "green"),
+            ("🛑 Guard", guard_rows, "yellow"),
+        )
+    ]
+    if view.positions:
+        table = Table(title="Human positions — the engine runs the exits", title_justify="left")
+        for col, just in (
+            ("Symbol", "left"),
+            ("Opened", "left"),
+            ("Qty", "right"),
+            ("Entry", "right"),
+            ("Now", "right"),
+            ("Stop", "right"),
+            ("Target", "right"),
+            ("P&L", "right"),
+            ("R", "right"),
+            ("Let run", "center"),
+        ):
+            table.add_column(col, justify=just)  # type: ignore[arg-type]
+        for row in view.positions:
+            p = row.position
+            pnl = p.pnl_at(row.price)
+            r = p.r_multiple_at(row.price)
+            running = row.instrument.symbol in view.let_run
+            table.add_row(
+                row.instrument.symbol,
+                f"{p.opened_at:%m-%d %H:%M}",
+                fmt_qty(p.remaining_quantity),
+                fmt_money(p.entry_price),
+                fmt_money(row.price),
+                fmt_money(p.stop_price),
+                "[dim]off[/dim]" if running else fmt_money(p.target_price),
+                fmt_signed(pnl),
+                f"{r:+.2f}R" if r is not None else "—",
+                "🏃 yes" if running else "—",
+            )
+        out.append(table)
+    return out
+
+
+def human_buy_lines(result: HumanBuy) -> list[str]:
+    intent = result.intent.intent
+    lines = [
+        f"Queued [bold]BUY {result.symbol} {intent.quantity.normalize():f}[/bold] sh "
+        f"(~{fmt_money(intent.notional)} @ {fmt_money(intent.ref_price)}, a reference — the "
+        f"order is market) as intent #{intent.id}, human slot.",
+        f"Plan: stop {fmt_money(intent.stop_price)} · target {fmt_money(intent.target_price)} — "
+        "the engine manages the exit from the fill on.",
+        "Nothing is bought yet. The live runner places it on its next pass; then "
+        "[bold]approve it in your broker app[/bold]. Unplaced after 30 minutes it goes "
+        "stale and is withheld.",
+    ]
+    if result.backfilled:
+        lines.append(f"[dim]Pulled {result.backfilled} bars of history for {result.symbol}.[/dim]")
+    return lines

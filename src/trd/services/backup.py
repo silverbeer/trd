@@ -28,7 +28,7 @@ from trd.errors import TrdError
 from trd.models import EngineMode, SizingMode
 from trd.repos.engine import DEFAULT_EARNINGS_BLACKOUT_DAYS
 
-BACKUP_VERSION = 12
+BACKUP_VERSION = 13
 # v1 predates exit triggers and the engine; v2 keyed engine signals by bar date and
 # dropped the engine config fields added after it; v3 predates the point-in-time
 # earnings archive; v4 predates recorded income; v5 predates live-engine order
@@ -52,8 +52,10 @@ BACKUP_VERSION = 12
 # import ledger (SB-1418) — a restore that dropped it would let the next import of
 # the same export write every row a second time. v12: the engine's settlement
 # bridge (SB-1445) — old code would restore a live engine that waits out T+1 on
-# every refill its owner set spare cash aside to cover.
-SUPPORTED_VERSIONS = (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12)
+# every refill its owner set spare cash aside to cover. v13: human slots (SB-1742)
+# — old code would restore human positions as engine trades with no sleeve, their
+# cash spent from the engine's ledger and their let-run flags gone.
+SUPPORTED_VERSIONS = (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13)
 
 
 class BackupStats(BaseModel):
@@ -311,17 +313,19 @@ def export_data(conn: duckdb.DuckDBPyConnection) -> dict:
             "exit_reason": r[15],
             "exit_rule": r[16],
             "signal_bar_ts": _iso(r[17]),
+            "let_run": r[18] is not None,
         }
         for r in rows(
             """
             SELECT a.name, i.symbol, p.strategy, p.opened_at, p.entry_price, p.quantity,
                    p.stop_price, p.target_price, p.atr_at_entry, p.trail_high, p.bars_held,
                    p.last_bar_date, p.status, p.closed_at, p.exit_price, p.exit_reason,
-                   p.exit_rule, s.bar_ts
+                   p.exit_rule, s.bar_ts, lr.set_at
             FROM engine_position p
             JOIN account_named a ON a.id=p.account_id
             JOIN instrument i ON i.id=p.instrument_id
             LEFT JOIN engine_signal s ON s.id=p.signal_id
+            LEFT JOIN engine_position_let_run lr ON lr.position_id=p.id
             ORDER BY p.opened_at, p.id
             """
         )
@@ -401,6 +405,28 @@ def export_data(conn: duckdb.DuckDBPyConnection) -> dict:
             SELECT a.name, g.halted, g.halt_reason, g.halted_at, g.halted_by, g.max_order,
                    g.max_daily, g.max_positions, g.max_loss
             FROM engine_guard g JOIN account_named a ON a.id = g.account_id
+            ORDER BY a.name
+            """
+        )
+    ]
+
+    # Human slots (migration 037), per account.
+    engine_humans = [
+        {
+            "account": r[0],
+            "slots": r[1],
+            "capital": str(r[2]),
+            "bridge": str(r[3]) if r[3] is not None else None,
+            "max_loss": str(r[4]) if r[4] is not None else None,
+            "halted": bool(r[5]),
+            "halt_reason": r[6],
+            "halted_at": _iso(r[7]),
+        }
+        for r in rows(
+            """
+            SELECT a.name, h.slots, h.capital, h.bridge, h.max_loss, h.halted,
+                   h.halt_reason, h.halted_at
+            FROM engine_human h JOIN account_named a ON a.id = h.account_id
             ORDER BY a.name
             """
         )
@@ -565,6 +591,7 @@ def export_data(conn: duckdb.DuckDBPyConnection) -> dict:
             "positions": engine_positions,
             "intents": order_intents,
             "guards": engine_guards,
+            "humans": engine_humans,
         },
     }
 
@@ -959,6 +986,11 @@ def restore_data(conn: duckdb.DuckDBPyConnection, data: dict) -> BackupStats:
         ).fetchone()
         assert row is not None
         position_id[(position["account"], position["symbol"], position["opened_at"])] = row[0]
+        if position.get("let_run"):
+            conn.execute(
+                "INSERT INTO engine_position_let_run (position_id, set_at) VALUES (?, ?)",
+                [row[0], datetime.now()],
+            )
 
     # v5 and older carry no intents: restored as none, which is what they had.
     intents = engine.get("intents", [])
@@ -1023,6 +1055,26 @@ def restore_data(conn: duckdb.DuckDBPyConnection, data: dict) -> BackupStats:
                 _dec(guard.get("max_daily")),
                 guard.get("max_positions"),
                 _dec(guard.get("max_loss")),
+                datetime.now(),
+            ],
+        )
+
+    # v12 and older carry no human sleeve: restored as none, which is what they had.
+    for human in engine.get("humans", []):
+        conn.execute(
+            """INSERT INTO engine_human
+                 (account_id, slots, capital, bridge, max_loss, halted, halt_reason,
+                  halted_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            [
+                account_id[human["account"]],
+                human["slots"],
+                Decimal(human["capital"]),
+                _dec(human.get("bridge")),
+                _dec(human.get("max_loss")),
+                bool(human.get("halted")),
+                human.get("halt_reason"),
+                _stamp_or_none(human.get("halted_at")),
                 datetime.now(),
             ],
         )

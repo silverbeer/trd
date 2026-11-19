@@ -168,9 +168,11 @@ OUTBOX=$(trd_retry engine outbox --json) || fail error "outbox: ${OUTBOX:0:200}"
 printf '%s' "$OUTBOX" > "$WORK/outbox.json"
 HALTED=$(py 'import json,sys; print(int(bool(json.load(open(sys.argv[1])).get("halted"))))' "$WORK/outbox.json")
 # Halted, trd's outbox lists only manual closes (`trd engine close`, SB-1741) —
-# the owner's own exit, which a halt must not block. Filtered here as well, so a
-# halted outbox can never hand this runner anything the engine decided.
-py 'import json,sys; d=json.load(open(sys.argv[1])); o=d.get("orders") or []; json.dump([s for s in o if s.get("side")=="sell" and s.get("rule")=="manual"] if d.get("halted") else o, open(sys.argv[2],"w"))' \
+# the owner's own exit, which a halt must not block — and human-slot orders
+# (SB-1742): the owner's own picks and the exits on them, which the ENGINE's halt
+# does not govern. Filtered here as well, so a halted outbox can never hand this
+# runner anything the engine decided.
+py 'import json,sys; d=json.load(open(sys.argv[1])); o=d.get("orders") or []; json.dump([s for s in o if (s.get("side")=="sell" and s.get("rule")=="manual") or s.get("strategy")=="human"] if d.get("halted") else o, open(sys.argv[2],"w"))' \
     "$WORK/outbox.json" "$WORK/specs.json"
 N_SPECS=$(py 'import json,sys; print(len(json.load(open(sys.argv[1]))))' "$WORK/specs.json")
 

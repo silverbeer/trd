@@ -66,6 +66,8 @@ from trd.cli.render import (
     fmt_signed_pct,
     forecast_table,
     history_table,
+    human_buy_lines,
+    human_renderables,
     income_table,
     indicator_panel,
     live_report_renderables,
@@ -199,6 +201,7 @@ from trd.services.exit_nudge import load_state as load_nudge_state
 from trd.services.exit_nudge import minutes_waiting as nudge_minutes
 from trd.services.exit_nudge import save_state as save_nudge_state
 from trd.services.exit_whatif import ExitWhatIfService, parse_variants
+from trd.services.human import HumanService
 from trd.services.indicators import seed_defaults
 from trd.services.ira_compare import IraCompareService
 from trd.services.live_report import live_report
@@ -464,6 +467,10 @@ def _fail(exc: TrdError) -> None:
         raise typer.Exit(code=1)
     err_console.print(f"[red]error:[/red] {exc}")
     raise typer.Exit(code=1)
+
+
+def _decimal_opt(value: str | None, label: str) -> Decimal | None:
+    return None if value is None else _parse_decimal(value, label)
 
 
 def _parse_decimal(value: str, label: str) -> Decimal:
@@ -3941,7 +3948,8 @@ def engine_reconcile(
         name = account or engine.account().name
         ledger = None
         if compare_cash:
-            ledger = engine.cash()
+            # The whole account — both sleeves (SB-1742): that is what the broker holds.
+            ledger = engine.account_cash()
             if ledger is None:
                 raise TrdError(
                     "--compare-cash needs the engine's settled-cash ledger, and this engine "
@@ -4056,7 +4064,7 @@ def engine_outbox(
     what came back with 'trd engine outbox ack'.
 
     The guardrails apply here too: halted, nothing is emitted except manual
-    closes ('trd engine close') (`halted: true`);
+    closes ('trd engine close') and human-slot orders (`halted: true`);
     a buy that breaks a hard cap, or one sized off a quote more than 30 minutes
     old, is listed under `withheld` with the reason and is never in `orders`.
     """
@@ -4694,6 +4702,184 @@ def engine_trim(
     )
 
 
+human_app = typer.Typer(
+    help="Human slots on the live engine: you pick the entry, the engine runs the exit.",
+)
+engine_app.add_typer(human_app, name="human")
+
+
+def _human_service() -> HumanService:
+    settings = get_settings()
+    return HumanService(connect(settings.db_path), YFinanceProvider())
+
+
+@human_app.callback(invoke_without_command=True)
+def engine_human(ctx: typer.Context, as_json: JsonOpt = False) -> None:
+    """The human sleeve: slots, its own cash and loss stop, and its positions.
+
+    A human slot is an engine position whose ENTRY you chose ('trd engine human
+    buy SYM'). The engine manages the exit with its own rules — stop, trail,
+    target, indicator, time — unless you 'let it run' ('trd engine human run'),
+    which skips the target and the time exit. Live engine only. 'trd learn
+    human-slot'.
+    """
+    if ctx.invoked_subcommand is not None:
+        return
+    _use_json(as_json)
+    service = _human_service()
+    try:
+        view = service.view()
+    except TrdError as exc:
+        _fail(exc)
+        return
+    finally:
+        service.conn.close()
+    if as_json:
+        _emit_json(view)
+        return
+    for renderable in human_renderables(view):
+        console.print(renderable)
+
+
+@human_app.command("set")
+def engine_human_set(
+    slots: Annotated[int | None, typer.Option("--slots", help="Number of human slots.")] = None,
+    capital: Annotated[
+        str | None,
+        typer.Option(
+            "--capital",
+            help="Dollars for the human sleeve. ADDED to the total capital: the engine "
+            "sleeve keeps what it had. You deposit it at the broker.",
+        ),
+    ] = None,
+    bridge: Annotated[
+        str | None,
+        typer.Option("--bridge", help="The human sleeve's own settlement bridge (dollars)."),
+    ] = None,
+    no_bridge: Annotated[
+        bool, typer.Option("--no-bridge", help="Switch the human bridge off.")
+    ] = False,
+    max_loss: Annotated[
+        str | None,
+        typer.Option(
+            "--max-loss",
+            help="Human loss stop in dollars (default 20%% of the human capital). Halts "
+            "human BUYS only; exits keep running.",
+        ),
+    ] = None,
+    as_json: JsonOpt = False,
+) -> None:
+    """Create or change the human sleeve. Only what you pass changes."""
+    _use_json(as_json)
+    service = _human_service()
+    try:
+        view = service.set(
+            datetime.now(),
+            slots=slots,
+            capital=_decimal_opt(capital, "--capital"),
+            bridge=_decimal_opt(bridge, "--bridge"),
+            no_bridge=no_bridge,
+            max_loss=_decimal_opt(max_loss, "--max-loss"),
+        )
+    except TrdError as exc:
+        _fail(exc)
+        return
+    finally:
+        service.conn.close()
+    if as_json:
+        _emit_json(view)
+        return
+    for renderable in human_renderables(view):
+        console.print(renderable)
+
+
+@human_app.command("buy")
+def engine_human_buy(
+    symbol: Annotated[str, typer.Argument(help="The name you want in a human slot.")],
+    note: Annotated[
+        str | None, typer.Option("--note", help="Why, in your words. Recorded on the order.")
+    ] = None,
+    notify: Annotated[
+        bool, typer.Option("--notify", help="The order to the private alert chat.")
+    ] = False,
+    as_json: JsonOpt = False,
+) -> None:
+    """Buy SYMBOL into a human slot: a buy order sized to one slot, with the
+    engine's own stop and target. The live runner places it and you approve it in
+    your broker app; from the fill on the engine manages the exit. Session hours
+    only. Refused when the slots are full, human cash is short, the sleeve is
+    halted, or the name is already held or in flight."""
+    _use_json(as_json)
+    service = _human_service()
+    try:
+        result = service.buy(symbol, datetime.now(), note=note)
+    except TrdError as exc:
+        _fail(exc)
+        return
+    finally:
+        service.conn.close()
+    if notify:
+        _send([intent_message(result.intent, label_from_env(live=True))], alert=True)
+    if as_json:
+        _emit_json(result)
+        return
+    for line in human_buy_lines(result):
+        console.print(line)
+
+
+@human_app.command("run")
+def engine_human_run(
+    symbol: Annotated[str, typer.Argument(help="An open human position.")],
+    off: Annotated[bool, typer.Option("--off", help="Clear the flag: take profit again.")] = False,
+    as_json: JsonOpt = False,
+) -> None:
+    """Let a human winner run: skip its profit target and time exit. The stop,
+    the trailing stop and the indicator exit still apply — a winner leaves on the
+    trail, a loser still stops out. --off puts the target back."""
+    _use_json(as_json)
+    service = _human_service()
+    try:
+        changed = service.let_run(symbol, datetime.now(), on=not off)
+    except TrdError as exc:
+        _fail(exc)
+        return
+    finally:
+        service.conn.close()
+    state = "off" if off else "on"
+    if as_json:
+        _emit_json({"symbol": symbol.upper(), "let_run": not off, "changed": changed})
+        return
+    if not changed:
+        console.print(f"{symbol.upper()}: let-run was already {state}.")
+    elif off:
+        console.print(
+            f"{symbol.upper()}: let-run off — the profit target and time exit apply again."
+        )
+    else:
+        console.print(
+            f"{symbol.upper()}: let-run ON — no profit target, no time exit. The stop and the "
+            "trailing stop still protect it."
+        )
+
+
+@human_app.command("resume")
+def engine_human_resume(as_json: JsonOpt = False) -> None:
+    """Lift the human sleeve's loss-stop halt. The next human buy re-checks it."""
+    _use_json(as_json)
+    service = _human_service()
+    try:
+        sleeve = service.resume(datetime.now())
+    except TrdError as exc:
+        _fail(exc)
+        return
+    finally:
+        service.conn.close()
+    if as_json:
+        _emit_json(sleeve)
+        return
+    console.print("Human sleeve resumed: human buys are allowed again.")
+
+
 @engine_app.command("close")
 def engine_close(
     symbol: Annotated[str, typer.Argument(help="Symbol the engine is holding.")],
@@ -4790,7 +4976,7 @@ def _print_manual_close(result: ManualClose) -> None:
         if result.halted:
             console.print(
                 "[yellow]The engine is HALTED.[/yellow] The outbox still hands over manual "
-                "closes — nothing else."
+                "closes and human-slot orders — nothing else."
             )
     if result.expired:
         console.print(f"[dim]Swept {len(result.expired)} lapsed intent(s) first.[/dim]")

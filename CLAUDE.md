@@ -302,7 +302,9 @@ trd engine outbox [--include-stale] [--json]
                                       # GUARDRAILS (SB-1377), applied again here against the caps
                                       # as they stand NOW: halted = "halted": true, halt_reason,
                                       # orders EMPTY (sells too) EXCEPT manual closes (rule
-                                      # 'manual', 'trd engine close'). A buy that breaks a hard cap, or
+                                      # 'manual', 'trd engine close') and HUMAN-slot orders
+                                      # (SB-1742; a human buy is withheld only by the human
+                                      # loss stop or as stale, never by an engine cap). A buy that breaks a hard cap, or
                                       # one older than STALE_INTENT_MINUTES (30) — "stale — sized
                                       # off a quote from HH:MM" — goes to "withheld" with its
                                       # reason, never "orders". --include-stale lists stale buys
@@ -416,6 +418,23 @@ trd engine close SYM [--reason TEXT] [--rm] [--notify] [--json]
                                       # best/worst), the nightly review's window/findings,
                                       # replay-match (with its replay twin) and what-if's actual arm
                                       # and replay error; money totals keep it
+trd engine human [--json]             # HUMAN SLOTS on the live engine (SB-1742, migration 037):
+trd engine human set --slots N --capital C [--bridge N | --no-bridge] [--max-loss D]
+trd engine human buy SYM [--note T] [--notify]   # you pick the ENTRY, the engine runs the EXIT
+trd engine human run SYM [--off]      # let it run: skip target + time exit (stop/trail/indicator stay)
+trd engine human resume               # lift the human loss-stop halt
+                                      # A human slot is an engine_position with strategy 'human',
+                                      # from a buy intent sized human capital / slots with
+                                      # plan_entry's stop/target; runner + phone approval as usual.
+                                      # Session hours only. ONE capital, two sleeves: --capital is
+                                      # ADDED to the total; each sleeve its own T+1 ledger + bridge
+                                      # (human flows = filled human intents, subtracted from the
+                                      # account's — live only, every live txn is an intent fill).
+                                      # engine cash = engine sleeve; account_cash = both (reconcile).
+                                      # Engine slots/caps/budget/halt/loss stop EXCLUDE human; the
+                                      # engine halt never withholds a human order; the human loss
+                                      # stop (default 20%) halts human BUYS only. One owner per
+                                      # name. Left out of strategy_stats. Backup v13
 trd engine signals [-n 25] [-s KEY]   # every signal fired, taken or passed over, with its reason
 trd engine report                     # per-strategy scorecard: win%, avg win/loss, expectancy in R
                                       # (manual closes excluded — the owner's call, not the rule's)

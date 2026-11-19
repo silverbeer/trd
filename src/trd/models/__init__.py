@@ -26,11 +26,15 @@ from trd.models.core import (
 )
 from trd.models.engine import (
     EXPIRABLE_INTENT_STATUSES,
+    HUMAN_MAX_LOSS_FRACTION,
+    HUMAN_STRATEGY,
+    LET_RUN_SKIPS,
     OPEN_INTENT_STATUSES,
     CashBlock,
     CashRefusal,
     EngineConfig,
     EngineGuard,
+    EngineHuman,
     EngineMode,
     EnginePosition,
     EngineRun,
@@ -55,6 +59,7 @@ from trd.models.engine import (
     intent_expires_at,
     intent_expiry_cutoff,
     intent_is_late,
+    is_human,
 )
 from trd.models.fills import (
     AppliedIntent,
@@ -82,6 +87,9 @@ from trd.models.reconcile import (
 
 __all__ = [
     "EXPIRABLE_INTENT_STATUSES",
+    "HUMAN_MAX_LOSS_FRACTION",
+    "HUMAN_STRATEGY",
+    "LET_RUN_SKIPS",
     "OPEN_INTENT_STATUSES",
     "QUANTITY_TOLERANCE",
     "Account",
@@ -106,6 +114,7 @@ __all__ = [
     "EarningsResult",
     "EngineConfig",
     "EngineGuard",
+    "EngineHuman",
     "EngineMode",
     "EnginePosition",
     "EngineRun",
@@ -157,4 +166,5 @@ __all__ = [
     "intent_expires_at",
     "intent_expiry_cutoff",
     "intent_is_late",
+    "is_human",
 ]
