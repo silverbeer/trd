@@ -371,8 +371,11 @@ def test_cli_refuses_a_paper_engine(cli_env):
         ("-0.1", False, "⚪ <b>FLAT DAY"),
         ("-0.8", False, "🔴 <b>DOWN DAY"),
         ("-3", False, "🩸 <b>BAD DAY"),
-        # A stop taken is a bad day whatever the total says.
-        ("0.8", True, "🩸 <b>BAD DAY"),
+        # A stop is named under the headline, never instead of it (SB-1738).
+        ("0.8", True, "🟢 <b>GOOD DAY"),
+        ("15.9", True, "🚀 <b>GREAT DAY"),
+        ("-0.8", True, "🔴 <b>DOWN DAY"),
+        ("-3", True, "🩸 <b>BAD DAY"),
     ],
 )
 def test_the_day_is_called_plainly(monkeypatch, pct: str, stop_hit: bool, verdict: str) -> None:
@@ -381,14 +384,20 @@ def test_the_day_is_called_plainly(monkeypatch, pct: str, stop_hit: bool, verdic
     monkeypatch.setattr(Model, "today_change_pct", property(lambda self: D(pct)))
 
     trade = ExitEvent(
-        symbol="AAA", strategy="pullback", rule="stop" if stop_hit else "target", pnl=D(pct)
+        symbol="AAA",
+        strategy="pullback",
+        rule="stop" if stop_hit else "target",
+        pnl=D(pct),
+        r_multiple=D("-1.7") if stop_hit else D("2"),
     )
     day = EngineDay(engine="live", last_session=SESSION, capital=D("100"), mode=EngineMode.LIVE)
     report = Model(on=SESSION, day=day, closed_today=[ClosedToday(trade=trade)])
     lines = live_report_message(report).splitlines()
     assert lines[2].startswith(verdict)
     if stop_hit:
-        assert "Stopped out of <b>AAA</b>" in lines[3]
+        assert "Stopped out of <b>AAA</b> (-1.70R)." in lines[3]
+    else:
+        assert "Stopped out" not in lines[3]
 
 
 def test_data_is_html_escaped() -> None:

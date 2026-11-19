@@ -890,9 +890,10 @@ def _trades_section(live: list[EngineDay], budget: int) -> list[str]:
 # every other message is plain text.
 
 # How the day is called, as a percentage of what the account was worth at the
-# previous close. Below FLAT either way is noise on a $100 book; a stop taken
-# today makes the day BAD whatever the total says, because a stop is the one
-# outcome the plan exists to keep rare.
+# previous close. Below FLAT either way is noise on a $100 book. The headline
+# is the money and nothing else: a stop taken today is named on the line under
+# it, whatever the headline, but it never overrides the total — a stop on a
+# +15% day once headlined BAD DAY, which nobody can read as true (SB-1738).
 LIVE_FLAT_PCT = Decimal("0.25")
 LIVE_BIG_PCT = Decimal("1.5")
 
@@ -939,25 +940,26 @@ def _verdict(report: LiveReport) -> list[str]:
         if movers
         else "No open positions — today was the trades that closed."
     )
-    if stopped or pct <= -LIVE_BIG_PCT:
-        head = f"🩸 <b>BAD DAY  {money}</b>"
-        why = (
-            "Stopped out of " + ", ".join(f"<b>{_h(c.trade.symbol)}</b>" for c in stopped) + "."
-            if stopped
-            else breadth
-        )
+    if pct <= -LIVE_BIG_PCT:
+        head, why = f"🩸 <b>BAD DAY  {money}</b>", breadth
     elif pct <= -LIVE_FLAT_PCT:
-        head = f"🔴 <b>DOWN DAY  {money}</b>"
-        why = breadth
+        head, why = f"🔴 <b>DOWN DAY  {money}</b>", breadth
     elif pct < LIVE_FLAT_PCT:
         head = f"⚪ <b>FLAT DAY  {money}</b>"
         why = "Basically unchanged — nothing to see, which is fine."
     elif pct < LIVE_BIG_PCT:
-        head = f"🟢 <b>GOOD DAY  {money}</b>"
-        why = f"{breadth} Nice. 💪"
+        head, why = f"🟢 <b>GOOD DAY  {money}</b>", f"{breadth} Nice. 💪"
     else:
         head = f"🚀 <b>GREAT DAY  {money}</b> 🚀"
         why = f"{breadth} The book is working. 🔥"
+    if stopped:
+        # Said whatever the headline: a stop is the outcome the plan exists to
+        # keep rare, so it is never left for the Today section to mention.
+        why = (
+            "Stopped out of "
+            + ", ".join(f"<b>{_h(c.trade.symbol)}</b> ({_r(c.trade.r_multiple)})" for c in stopped)
+            + "."
+        )
     return [head, why]
 
 
