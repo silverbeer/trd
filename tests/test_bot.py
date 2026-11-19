@@ -417,6 +417,25 @@ def test_report_with_no_closed_trades_says_so(bot, homes):
     assert "no closed trades" in bot.transport.replies[0]
 
 
+def test_report_counts_trades_closed_by_hand(bot, homes):
+    """status.json counts every closed trade; report.json only the strategies'
+    own. The difference is manual closes (SB-1741) — not 'no closed trades'."""
+    swing, day = homes
+    (swing.home / "report.json").write_text("[]")
+    (swing.home / "status.json").write_text('{"closed_trades": 2}')
+    (day.home / "report.json").write_text(
+        '[{"strategy": "pullback", "trades": 3, "win_rate": 66.7, "expectancy_r": 0.2}]'
+    )
+    (day.home / "status.json").write_text('{"closed_trades": 4}')
+
+    bot.handle(message("/report"))
+
+    reply = bot.transport.replies[0]
+    assert "[swing] 2 trade(s) closed by hand — excluded from the scorecard" in reply
+    assert "no closed trades" not in reply
+    assert "  1 trade(s) closed by hand" in reply  # day: 4 closed, 3 scored
+
+
 def test_book_sends_the_published_text(bot, homes):
     (homes[0].home / "status.txt").write_text("trd engine — last scan ...\nAAA 10 @ 100")
     bot.handle(message("/book swing"))

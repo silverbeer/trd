@@ -215,13 +215,47 @@ TRD_HOME=~/.trd-live trd engine halt --reason "pausing"
 TRD_HOME=~/.trd-live trd engine resume          # to undo
 ```
 
-Halted: the scan writes no buys and the outbox hands the runner **nothing —
-sells included**. Exits are still decided and recorded, so the book shows what
-it wants, but nothing is placed.
+Halted: the scan writes no buys and the outbox hands the runner **nothing the
+engine decided — sells included**. Exits are still decided and recorded, so the
+book shows what it wants, but nothing is placed. The one exception is a manual
+close (*Close one position*, below): the outbox still hands those over.
 
 > ⚠ **With open positions, halting means you manage the exits.** A stop the
 > engine would have sold at becomes a recorded intent nobody places. Watch the
-> positions (`trd engine positions`) or use *Wind down* instead.
+> positions (`trd engine positions`) and close by hand with `trd engine close`,
+> or use *Wind down* instead.
+
+### Close one position
+
+```bash
+TRD_HOME=~/.trd-live trd engine close NVDA --reason "taking it off" [--rm] [--notify]
+```
+
+Writes a SELL for everything still held (rule `manual`) exactly as an exit rule
+would: nothing is sold here, the position stays open until the broker fills it.
+The runner places it on its next pass (pre-market: at the open), you **approve
+it in the broker app**, and the fill ingest closes the position. It expires at
+16:00 ET like any order; unapproved, run the command again the next day.
+
+- Works while **halted** — the outbox hands over manual closes and nothing else.
+  The runner must be on a build that knows this: after deploying it, re-pin
+  with `deploy/live-runner.sh install`, or a halted outbox places nothing.
+- An exit the engine already queued for the whole position is **adopted**: the
+  same intent, relabelled manual, never a second order — the runner may already
+  have placed it. One already at the broker (submitted, or waiting on your
+  approval), or one selling only part of the position, refuses the close —
+  approve or decline that one, or let it fill and close the rest.
+- If the broker rejects the sell, the alert chat says so: run the command again.
+  An unapproved close that lapses at 16:00 is alerted the same way. No scan
+  re-issues a manual close.
+- Refused after 16:00 ET and at weekends: the order would lapse before it could
+  be placed. Pre-market is fine.
+- `--rm` also drops the name from the universe, so the engine does not buy it
+  back. `--notify` sends the order to the private alert chat.
+- Manual closes are left out of `trd engine report`'s per-strategy scorecard —
+  the exit was your call, not the strategy's. Their money still counts.
+
+A paper engine sells at the quote immediately.
 
 ### Wind down — no new buys, exits keep working
 
@@ -242,8 +276,8 @@ launchctl unload ~/Library/LaunchAgents/io.silverbeer.trd.live-runner.plist
 # again:  launchctl load ~/Library/LaunchAgents/io.silverbeer.trd.live-runner.plist
 ```
 
-Intents pile up in the outbox and expire at 16:00. Same caveat as halting:
-exits are not placed. The watchdog will alarm that the runner stopped — expected.
+Intents pile up in the outbox and expire at 16:00. Unlike halting, nothing is
+placed — not even a manual close. The watchdog will alarm that the runner stopped — expected.
 
 ### Stop the engine scanning
 
@@ -267,6 +301,10 @@ With approvals on, step 1 alone guarantees nothing executes: no order runs
 without your tap. Steps 2–3 stop new requests arriving. Open positions are then
 yours to manage in the app — and any sale you make there is unknown to trd until
 you bring the books back in line (see *Selling in the app* below).
+
+`trd engine close` is for **before** you sell, never after: it queues a sell of
+its own. If you have already sold in the app, do not run it — that position's
+books need fixing instead (*Selling in the app*).
 
 ### Decommission — turn it off for good
 
@@ -316,10 +354,18 @@ trd engine report` still works on it.
 
 ### Selling in the app
 
-trd only knows about orders it asked for. If you sell an engine position by hand,
-the fill shows up as *unmatched* and trd still thinks the position is open. `trd
-sell` refuses engine-held symbols on purpose. Prefer letting the engine exit
-(*Wind down*), or halt first and ask for help reconciling.
+trd only knows about orders it asked for. To sell one position yourself, use
+`trd engine close SYMBOL` (*Close one position*) **instead of** the app: trd asks
+for the sale, so the fill is matched and the books stay right.
+
+If you have **already** sold an engine position in the broker app, do **not** run
+`trd engine close` — it would queue a second sell of shares you no longer hold.
+The app sale shows up in `trd engine fills` as *unmatched* (reported, never
+booked), trd still thinks the position is open, and its stop and the exit rules
+keep running on it. `trd sell` refuses engine-held symbols on purpose. Halt the
+engine (`trd engine halt`) so nothing more is asked for, confirm the gap with
+`trd engine reconcile` (the name reads `MISSING AT BROKER`), and ask for help
+fixing the books: trd has no command that books a sale it did not ask for.
 
 ### Where things are
 
@@ -344,6 +390,7 @@ trd engine intents         # every order request and what became of it
 trd engine positions       # open trades: entry, stop, target, R
 trd engine live-report     # the 16:20 message, printed here (no --notify)
 trd engine outbox          # what the runner would place right now
+trd engine close SYM       # sell one position by hand (you approve in the app)
 trd engine cash            # settled vs unsettled, bridge, buying power
 trd engine report          # per-strategy scorecard
 RH_DRY_RUN=1 ~/.trd-runner/bin/live-runner.sh   # a review-only pass

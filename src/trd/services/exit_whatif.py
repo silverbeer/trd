@@ -42,7 +42,7 @@ import duckdb
 from pydantic import BaseModel, computed_field
 
 from trd.engine.bars import BarSource, bucket_start
-from trd.engine.exits import DEFAULT_EXIT_PARAMS
+from trd.engine.exits import DEFAULT_EXIT_PARAMS, is_manual_exit
 from trd.errors import TrdError
 from trd.models import Bar, EngineConfig, EnginePosition, PositionStatus
 from trd.repos import InstrumentRepo, PriceRepo
@@ -282,14 +282,23 @@ def compare(
             continue
         kept.append((position, base, [r for r in runs if r is not None]))
 
-    actual_r = [p.realized_r or Decimal(0) for p, _, _ in kept]
+    # A manual close (`trd engine close`) keeps its ENTRY in the paired
+    # comparison — the baseline and every variant replay it — but its live exit
+    # was a person's, so it stays out of everything scored against what the live
+    # trade booked: the actual arm, the replay gap and the same-rule share.
+    booked = [(p, b) for p, b, _ in kept if not is_manual_exit(p.exit_rule)]
+    if len(booked) < len(kept):
+        excluded["closed by hand (manual): out of 'actual' and the replay error"] += len(
+            kept
+        ) - len(booked)
+    actual_r = [p.realized_r or Decimal(0) for p, _ in booked]
     actual = _arm(
         "actual",
         actual_r,
-        [_live_mfe(p, bars_of[p.id], source) for p, _, _ in kept],
+        [_live_mfe(p, bars_of[p.id], source) for p, _ in booked],
         # Trades closed before exit_rule was stored carry only prose; counted as
         # unrecorded rather than guessed at from the reason text.
-        [p.exit_rule or "unrecorded" for p, _, _ in kept],
+        [p.exit_rule or "unrecorded" for p, _ in booked],
     )
     baseline = _arm(
         "baseline",
@@ -313,9 +322,9 @@ def compare(
         arm.changed = sum(1 for d in diffs if d != 0)
         arms.append(arm)
 
-    gaps = [float(b.r - a) for (_, b, _), a in zip(kept, actual_r, strict=True)]
+    gaps = [float(b.r - a) for (_, b), a in zip(booked, actual_r, strict=True)]
     gap, _ = _stats(gaps)
-    recorded = [(p, b) for p, b, _ in kept if p.exit_rule]
+    recorded = [(p, b) for p, b in booked if p.exit_rule]
     same = (
         sum(1 for p, b in recorded if p.exit_rule == b.rule) / len(recorded) * 100
         if recorded

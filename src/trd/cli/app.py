@@ -114,14 +114,17 @@ from trd.notify.messages import (
     alloc_report_message,
     approval_message,
     cash_alert_message,
+    close_message,
     daily_report_message,
     exit_waiting_message,
     expired_exit_messages,
     fill_alert_message,
     fill_messages,
     halt_message,
+    intent_message,
     ira_compare_message,
     live_report_message,
+    rejected_exit_message,
     review_message,
     sunday_prep_message,
 )
@@ -178,6 +181,7 @@ from trd.services.edge import EdgeService
 from trd.services.engine import (
     DEFAULT_EARNINGS_BLACKOUT_DAYS,
     DEFAULT_ENGINE_ACCOUNT,
+    ManualClose,
     ScanResult,
     scan_events,
 )
@@ -2828,16 +2832,27 @@ def engine_report(as_json: JsonOpt = False) -> None:
     service = _engine_service()
     try:
         stats = service.report()
+        by_hand = service.manual_close_count()
     except TrdError as exc:
         _fail(exc)
         return
     if as_json:
         _emit_json(stats)
         return
+    left_out = (
+        f"{by_hand} trade(s) closed by hand ('trd engine close') — excluded from the "
+        "scorecard: the exit was your decision, not the strategy's. Their P&L still "
+        "counts in the money totals."
+    )
     if not stats:
-        console.print("No trades yet. Run [bold]trd engine scan[/bold] for a while first.")
+        if by_hand:
+            console.print(left_out)
+        else:
+            console.print("No trades yet. Run [bold]trd engine scan[/bold] for a while first.")
         return
     console.print(engine_report_summary(stats))
+    if by_hand:
+        console.print(f"[dim]{left_out}[/dim]")
 
 
 @engine_app.command("edge")
@@ -3783,7 +3798,8 @@ def engine_halt(
 
     While halted the scan writes no buy intents (exits are still decided and
     recorded, so the book shows what the engine wants) and 'trd engine outbox'
-    emits nothing at all. Survives restarts, reconfiguring and 'trd backup'.
+    emits nothing except manual closes ('trd engine close'). Survives restarts,
+    reconfiguring and 'trd backup'.
     'trd engine resume' releases it. Paper engines are refused.
     """
     _use_json(as_json)
@@ -3796,7 +3812,9 @@ def engine_halt(
     if as_json:
         _emit_json(guard)
         return
-    console.print(f"[bold red]HALTED[/bold red] — {guard.halt_reason}", highlight=False)
+    console.print(
+        f"[bold red]HALTED[/bold red] — {rich_escape(guard.halt_reason or '')}", highlight=False
+    )
 
 
 @engine_app.command("resume")
@@ -4037,7 +4055,8 @@ def engine_outbox(
     given. Read-only. Placing is the agent's job (docs/broker-mcp.md); record
     what came back with 'trd engine outbox ack'.
 
-    The guardrails apply here too: halted, nothing is emitted (`halted: true`);
+    The guardrails apply here too: halted, nothing is emitted except manual
+    closes ('trd engine close') (`halted: true`);
     a buy that breaks a hard cap, or one sized off a quote more than 30 minutes
     old, is listed under `withheld` with the reason and is never in `orders`.
     """
@@ -4082,7 +4101,10 @@ def engine_outbox_ack(
         bool,
         typer.Option(
             "--notify",
-            help="With --approval-id, ask for the approval in the live alert chat (Telegram).",
+            help=(
+                "With --approval-id, ask for the approval in the live alert chat "
+                "(Telegram); with --error on a sell, say it was rejected there."
+            ),
         ),
     ] = False,
     as_json: JsonOpt = False,
@@ -4117,6 +4139,11 @@ def engine_outbox_ack(
     # was actually told — the runner logs it (SB-1735).
     if notify and approval_id and ack.changed:
         ack.notified = _send([approval_message(ack, label_from_env(live=True))], alert=True)
+    # A rejected SELL leaves the position held. A manual close is never re-issued
+    # by a scan, so without this nobody would learn it failed (SB-1741). The alert
+    # chat only — a refused order is a call to act, never for the channel.
+    if notify and error and ack.changed and ack.intent.side == Side.SELL:
+        ack.notified = _send([rejected_exit_message(ack, label_from_env(live=True))], alert=True)
     if as_json:
         _emit_json(ack)
     else:
@@ -4642,8 +4669,9 @@ def engine_trim(
     """Sell part of an open engine position and leave the rest running.
 
     For taking cash out of a live trade without abandoning it. The stop, target
-    and trail are untouched — trimming changes the size, not the plan. Use an
-    exit rule to close a position outright, so the trade records why it ended.
+    and trail are untouched — trimming changes the size, not the plan. To close a
+    position outright by hand, use 'trd engine close SYMBOL', so the trade records
+    why it ended.
     """
     _use_json(as_json)
     service = _engine_service()
@@ -4664,6 +4692,112 @@ def engine_trim(
         f"Trimmed [bold]{fill.quantity.normalize():f}[/bold] {fill.symbol} @ "
         f"{fmt_money(fill.price)} ({fmt_signed(fill.pnl)} booked).\n{fill.reason}"
     )
+
+
+@engine_app.command("close")
+def engine_close(
+    symbol: Annotated[str, typer.Argument(help="Symbol the engine is holding.")],
+    reason: Annotated[
+        str | None, typer.Option("--reason", help="Why, in your words. Recorded on the exit.")
+    ] = None,
+    rm: Annotated[
+        bool, typer.Option("--rm", help="Also drop the name from the universe (as 'engine rm').")
+    ] = False,
+    notify: Annotated[
+        bool,
+        typer.Option(
+            "--notify",
+            help="Paper: the close to the channel. Live: the sell to the private alert chat.",
+        ),
+    ] = False,
+    as_json: JsonOpt = False,
+) -> None:
+    """Exit ONE engine position by hand — all of what is left.
+
+    Paper sells at the live quote now. Live writes a SELL order intent (rule
+    'manual') for the outbox, exactly as an exit rule would: nothing is sold until
+    the broker fills it, and you approve it in your broker app. Handed over even
+    while the engine is halted. A pending exit the engine already decided for the
+    whole position is adopted — relabelled manual, same order — never doubled; one
+    already at the broker refuses the close. Run it INSTEAD of selling in the
+    broker app, never after. Manual closes are left out of the per-strategy
+    scorecards. 'trd learn manual-close'.
+    """
+    _use_json(as_json)
+    service = _engine_service()
+    try:
+        try:
+            config = service.config()
+            result = service.close(symbol, reason=reason)
+        except TrdError as exc:
+            _fail(exc)
+            return
+        if rm:
+            # After the close has happened: a removal that fails must not read as a
+            # close that failed.
+            try:
+                result.removed = CommandQueueService(service.conn, service.provider).remove(
+                    result.symbol, closing=config.is_live
+                )
+            except TrdError as exc:
+                result.removed = f"not removed from the universe: {exc}"
+    finally:
+        # Released before Telegram: a slow send must not hold the writer lock a
+        # scan is waiting on.
+        service.conn.close()
+    if notify:
+        if result.fill is not None:
+            _send([close_message(result.fill, label_from_env(config.exit_params))])
+        if result.intent is not None:
+            _send([intent_message(result.intent, label_from_env(live=True))], alert=True)
+    if as_json:
+        _emit_json(result)
+        return
+    _print_manual_close(result)
+
+
+def _print_manual_close(result: ManualClose) -> None:
+    # The reason is the owner's free text: escaped, so "[earnings]" prints as
+    # typed and "[/]" cannot crash the print after the close is already booked.
+    if result.fill is not None:
+        fill = result.fill
+        r = f", {fill.r_multiple:+.2f}R" if fill.r_multiple is not None else ""
+        console.print(
+            f"Closed [bold]{fill.symbol}[/bold]: sold {fill.quantity.normalize():f} @ "
+            f"{fmt_money(fill.price)} ({fmt_signed(fill.pnl)}{r}). {rich_escape(fill.reason)}"
+        )
+    if result.intent is not None:
+        intent = result.intent.intent
+        verb = "Adopted" if result.adopted is not None else "Queued"
+        console.print(
+            f"{verb} [bold]SELL {result.symbol} {intent.quantity.normalize():f}[/bold] sh "
+            f"(~{fmt_money(intent.notional)} @ {fmt_money(intent.ref_price)}, a reference — "
+            f"the order is market) as intent #{intent.id}, rule manual."
+        )
+        if result.adopted is not None:
+            rule = rich_escape(result.adopted_rule or "exit")
+            console.print(
+                f"The engine had already queued this exit ({rule}); it is now your close — "
+                "same intent, same order, so nothing is doubled if the runner already "
+                "placed it."
+            )
+        console.print(
+            "Nothing is sold yet. The live runner places it (pre-market: at the open); "
+            "then [bold]approve it in your broker app[/bold]. It expires at 16:00 ET today — "
+            f"if it is not approved by then, run 'trd engine close {result.symbol}' again "
+            "in the next session."
+        )
+        if result.halted:
+            console.print(
+                "[yellow]The engine is HALTED.[/yellow] The outbox still hands over manual "
+                "closes — nothing else."
+            )
+    if result.expired:
+        console.print(f"[dim]Swept {len(result.expired)} lapsed intent(s) first.[/dim]")
+    if result.warning:
+        console.print(f"[yellow]warning:[/yellow] {rich_escape(result.warning)}")
+    if result.removed:
+        console.print(rich_escape(result.removed))
 
 
 @engine_app.command("rules")

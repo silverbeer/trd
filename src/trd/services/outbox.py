@@ -18,6 +18,7 @@ from decimal import ROUND_DOWN, Decimal
 
 import duckdb
 
+from trd.engine.exits import is_manual_exit
 from trd.errors import IntentAckError, TrdError
 from trd.models import (
     EXPIRABLE_INTENT_STATUSES,
@@ -71,8 +72,10 @@ class OutboxService:
         The guardrails are applied here a second time, against the caps as they
         stand NOW (a cap lowered after an intent was written still binds it):
 
-        - halted: nothing at all, sells included. `orders` is empty and `halted`
-          says why — an agent that reads only `orders` places nothing.
+        - halted: nothing the engine decided, sells included. `halted` says why
+          and `orders` holds only manual closes (`trd engine close`, SB-1741) —
+          a person's own exit, which the kill switch exists to allow, not to
+          block. An agent that reads only `orders` places nothing else.
         - a buy that breaks a hard cap is `withheld`, with the cap it breaks.
         - a buy older than STALE_INTENT_MINUTES is `withheld` as stale, unless
           `include_stale` — then it is listed, flagged in its note, and still
@@ -80,8 +83,6 @@ class OutboxService:
         """
         config, account = self._live()
         guard = self.guards.live_guard(config)
-        if guard.halted:
-            return Outbox(account=account.name, at=now, halted=True, halt_reason=guard.halt_reason)
         cutoff = intent_expiry_cutoff(now)
         actionable = [
             (intent, instrument)
@@ -93,6 +94,18 @@ class OutboxService:
             for intent, instrument in actionable
             if intent.status == IntentStatus.PENDING and intent.created_at >= cutoff
         ]
+        if guard.halted:
+            return Outbox(
+                account=account.name,
+                at=now,
+                halted=True,
+                halt_reason=guard.halt_reason,
+                orders=[
+                    _spec(intent, instrument, now)
+                    for intent, instrument in pending
+                    if intent.side == Side.SELL and is_manual_exit(intent.rule)
+                ],
+            )
         # What is already committed without this outbox: today's buying minus the
         # pending buys about to be counted one by one, and the slots held by
         # positions and by buys the broker already has.

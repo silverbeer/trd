@@ -35,6 +35,7 @@ import duckdb
 from pydantic import BaseModel
 
 from trd.engine.bars import BarSource
+from trd.engine.exits import is_manual_exit
 from trd.errors import TrdError
 from trd.models import Bar, EnginePosition
 from trd.repos import InstrumentRepo, PriceRepo
@@ -224,12 +225,20 @@ class ReplayMatchService:
 
         excluded: Counter[str] = Counter()
         live: list[tuple[EnginePosition, str]] = []
+        manual: list[tuple[EnginePosition, str]] = []
         for position, instrument in self.positions.list_closed(config.account_id):
             opened = position.opened_at.date()
             if opened < start or (end is not None and opened > end):
                 continue
             if position.realized_r is None:
                 excluded["no booked result"] += 1
+                continue
+            # Closed by hand (`trd engine close`): no replay can reproduce a
+            # person's decision, so it would read as an exit gap the rules caused.
+            # Kept aside for pairing below, so its replay twin goes too.
+            if is_manual_exit(position.exit_rule):
+                excluded["closed by hand (manual)"] += 1
+                manual.append((position, instrument.symbol))
                 continue
             # Same rule as the exit what-if: a day trade closed on a later session
             # was carried by an outage (SB-1054), which no replay reproduces.
@@ -248,6 +257,17 @@ class ReplayMatchService:
             for t in result.trades
             if t.entry_at.date() >= start and (end is None or t.entry_at.date() <= end)
         ]
+        if manual:
+            # Pair first, with the manual closes in, then drop each matched pair
+            # whose live side was closed by hand — both sides. Dropping only the
+            # live trade would leave its replay twin as a "replay-only" trade, a
+            # selection gap that does not exist. Greedy pairing is unchanged for
+            # everything else when a matched pair is removed from both sides.
+            matched, _, _ = pair(live + manual, replay)
+            twins = {id(t) for p, t in matched if is_manual_exit(p.exit_rule)}
+            if twins:
+                excluded["replay twin of a manual close"] += len(twins)
+                replay = [t for t in replay if id(t) not in twins]
 
         series: dict[int, list[Bar]] = {}
 

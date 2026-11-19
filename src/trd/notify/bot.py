@@ -374,6 +374,23 @@ def read_snapshot(home: Path, name: str) -> str | None:
         return None
 
 
+def _closed_by_hand(home: Path, rows: list[dict[str, Any]]) -> int:
+    """Closed trades the published scorecard leaves out: manual closes (`trd
+    engine close`). status.json counts every closed trade and report.json only
+    the strategies' own, so the difference is the ones closed by hand."""
+    raw = read_snapshot(home, "status.json")
+    try:
+        closed = int(json.loads(raw).get("closed_trades") or 0) if raw else 0
+    except (ValueError, AttributeError, TypeError):
+        return 0
+    scored = sum(int(row.get("trades") or 0) for row in rows)
+    return max(closed - scored, 0)
+
+
+def _by_hand_line(count: int) -> str:
+    return f"{count} trade(s) closed by hand — excluded from the scorecard"
+
+
 def _when_applied(now: datetime | None = None) -> str:
     """When the queue will actually be drained, in words that are true.
 
@@ -593,8 +610,13 @@ class CommandBot:
         for engine in engines:
             raw = read_snapshot(engine.home, "report.json")
             rows = json.loads(raw) if raw else []
+            by_hand = _closed_by_hand(engine.home, rows)
             if not rows:
-                blocks.append(f"[{engine.name}] no closed trades yet")
+                blocks.append(
+                    f"[{engine.name}] {_by_hand_line(by_hand)}"
+                    if by_hand
+                    else f"[{engine.name}] no closed trades yet"
+                )
                 continue
             lines = [f"[{engine.name}]"]
             for row in rows:
@@ -611,6 +633,8 @@ class CommandBot:
                 if win is not None:
                     parts.append(f"{float(win):.0f}% win")
                 lines.append(f"  {row.get('strategy', '?')}: {', '.join(parts)}")
+            if by_hand:
+                lines.append(f"  {_by_hand_line(by_hand)}")
             blocks.append("\n".join(lines))
         return "\n\n".join(blocks)
 

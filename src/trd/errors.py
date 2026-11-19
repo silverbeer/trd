@@ -45,8 +45,9 @@ class EnginePositionConflictError(TrdError):
             f"{symbol} is held by the trading engine on '{account}'. A manual trade here "
             f"would leave engine_position and the account disagreeing: the engine would "
             f"still believe it holds the original quantity and would later sell all of it, "
-            f"taking the account short. Let an exit rule close it, or use "
-            f"'trd engine positions' to see what the engine is holding."
+            f"taking the account short. Let an exit rule close it, or close it by hand "
+            f"with 'trd engine close {symbol}'; 'trd engine positions' shows what the "
+            f"engine is holding."
         )
         self.symbol = symbol
         self.account = account

@@ -13,8 +13,10 @@ checks cannot disagree about what "today's buying" is.
 
 Every cap is on BUYS. A sell is never withheld by a cap: an exit that cannot be
 placed leaves a position unmanaged, which is the very risk the caps bound. The
-kill switch is the exception, and it is total — halted, the outbox emits nothing
-at all, because "stop" has to mean stop.
+kill switch is the exception, and it is total for the engine — halted, the
+outbox emits nothing the engine decided, because "stop" has to mean stop. The one
+thing it still hands over is a manual close (`trd engine close`, SB-1741): the
+owner's own exit is what a halt is usually for.
 
 Pure bookkeeping over the database: no provider, no network. The loss stop is
 marked with the quotes a scan already holds, or the last stored close when it
@@ -205,6 +207,15 @@ class GuardService:
     ) -> EngineGuard:
         guard = self.live_guard(config)
         text = (reason or "").strip() or "halted by hand"
+        if guard.halted:
+            # Already halted: the first halt's cause and time stand. A loss-stop
+            # halt (halted_by max_loss) is what the watchdog alarms on, and a later
+            # halt — the runner's on an unexpected order call — must not quietly
+            # turn it into a hand halt. The new reason is added, not substituted.
+            if text in (guard.halt_reason or ""):
+                return guard
+            joined = f"{guard.halt_reason}; {text}" if guard.halt_reason else text
+            return self.guards.save(guard.model_copy(update={"halt_reason": joined}), at)
         return self.guards.save(
             guard.model_copy(
                 update={"halted": True, "halt_reason": text, "halted_at": at, "halted_by": cause}

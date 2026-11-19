@@ -29,7 +29,7 @@ from decimal import ROUND_DOWN, Decimal
 from html import escape, unescape
 from typing import Any
 
-from trd.engine import EXIT_REGISTRY
+from trd.engine import EXIT_REGISTRY, is_manual_exit
 from trd.engine import REGISTRY as STRATEGIES
 from trd.engine.bars import DAILY
 from trd.models import (
@@ -167,6 +167,7 @@ def _headline(fill: ScanFill, label: str | None) -> str:
         "time": "TIME EXIT",
         "indicator": "THESIS BROKEN",
         "session_close": "FLAT AT THE BELL",
+        "manual": "CLOSED BY HAND",
     }.get(fill.rule or "", "CLOSED")
     return f"{_tag(label)}{verdict} {fill.symbol} — {outcome}"
 
@@ -316,20 +317,57 @@ def approval_message(ack: OutboxAck, label: str | None = None) -> str:
 def expired_exit_messages(result: ScanResult, label: str | None = None) -> list[str]:
     """An exit lapsed with nothing placed or approved (SB-1735). The position is
     still open past the rule that said to close it — loud, one per exit."""
-    return [
-        "\n".join(
+    return [_expired_exit(row, label) for row in result.expired_exits]
+
+
+def _expired_exit(row: OrderIntentRow, label: str | None) -> str:
+    symbol = _h(row.instrument.symbol)
+    if is_manual_exit(row.intent.rule):
+        # No scan re-issues a person's close, and a sale in the app is a fill no
+        # intent asked for, which the ingest does not book (SB-1741).
+        return "\n".join(
             [
-                f"🚨 {_live_head(label)} {_why(row.intent).upper()} EXPIRED unfilled — "
-                f"{_h(row.instrument.symbol)} is still held",
-                f"{_order_terms(row.intent, _h(row.instrument.symbol))} was never filled: "
-                f"{_lapse_cause(row.intent)}.",
-                f"Why it wanted out: {_h(row.intent.reason)}",
-                "The next scan in session re-issues it. To get out now, sell in your broker "
-                "app, then ingest the fill ('trd engine fills').",
+                f"🚨 {_live_head(label)} manual close of {symbol} expired unapproved — "
+                f"{symbol} is still held",
+                f"{_order_terms(row.intent, symbol)} was never filled: {_lapse_cause(row.intent)}.",
+                f"Run 'trd engine close {symbol}' again in session.",
             ]
         )
-        for row in result.expired_exits
-    ]
+    return "\n".join(
+        [
+            f"🚨 {_live_head(label)} {_why(row.intent).upper()} EXPIRED unfilled — "
+            f"{symbol} is still held",
+            f"{_order_terms(row.intent, symbol)} was never filled: {_lapse_cause(row.intent)}.",
+            f"Why it wanted out: {_h(row.intent.reason)}",
+            "The next scan in session re-issues it. To get out now, sell in your broker "
+            "app, then ingest the fill ('trd engine fills').",
+        ]
+    )
+
+
+def rejected_exit_message(ack: OutboxAck, label: str | None = None) -> str:
+    """The broker refused to place a SELL (`outbox ack --error`). The position is
+    still held. A rule's exit is decided again by the next scan; a manual close
+    is never re-issued, so the person has to ask again (SB-1741)."""
+    intent = ack.intent
+    symbol = _h(ack.symbol)
+    error = _h(intent.error or "no reason given")
+    if is_manual_exit(intent.rule):
+        return "\n".join(
+            [
+                f"🚨 {_live_head(label)} manual close of {symbol} was REJECTED by the broker: "
+                f"{error} — run 'trd engine close {symbol}' again",
+                f"{_order_terms(intent, symbol)} never reached the market; {symbol} is still held.",
+            ]
+        )
+    return "\n".join(
+        [
+            f"🚨 {_live_head(label)} {_why(intent).upper()} of {symbol} was REJECTED by the "
+            f"broker: {error}",
+            f"{_order_terms(intent, symbol)} never reached the market; {symbol} is still "
+            "held. The next scan in session decides the exit again.",
+        ]
+    )
 
 
 def exit_waiting_message(waiting: WaitingExit, minutes: int, label: str | None = None) -> str:
@@ -418,8 +456,9 @@ def halt_message(reason: str, label: str | None = None) -> str:
         [
             f"{_live_head(label)} HALTED — the loss stop tripped",
             reason,
-            "No buy intents and an empty outbox until 'trd engine resume'. Exits are "
-            "still decided and recorded, but nothing is placed while halted.",
+            "No buy intents until 'trd engine resume'. Exits are still decided and "
+            "recorded, but nothing is placed while halted except manual closes "
+            "('trd engine close').",
         ]
     )
 

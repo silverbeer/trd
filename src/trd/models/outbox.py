@@ -60,8 +60,9 @@ class Outbox(BaseModel):
     account: str
     at: datetime
     orders: list[OutboxOrder] = []
-    # The kill switch. While it is on, `orders` is empty whatever is pending —
-    # an agent that reads only `orders` places nothing, which is the point.
+    # The kill switch. While it is on, `orders` holds only manual closes (`trd
+    # engine close`, SB-1741) — never anything the engine decided — so an agent
+    # that reads only `orders` places nothing else, which is the point.
     halted: bool = False
     halt_reason: str | None = None
     withheld: list[WithheldOrder] = []

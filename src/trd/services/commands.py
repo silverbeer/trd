@@ -278,7 +278,10 @@ class CommandQueueService:
         except ProviderError:
             return instrument
 
-    def remove(self, symbol: str) -> str:
+    def remove(self, symbol: str, closing: bool = False) -> str:
+        """`closing`: the caller has just queued a live manual close of this name
+        (`trd engine close --rm`), so the position ends with that sell, not with
+        the rules."""
         config = self.engine.config()
         # Deliberately does not touch an open position. Dropping a name from the
         # universe stops new entries; the trade already on keeps its stop, its
@@ -290,6 +293,8 @@ class CommandQueueService:
         self.watchlists.remove(symbol, config.watchlist)
         note = f"removed {symbol} from {config.watchlist}"
         if symbol in held:
+            if closing:
+                return f"{note} — the open position closes when the manual sell fills."
             return f"{note} — the open position stays and will close on its own exit rules."
         return note
 
