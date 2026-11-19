@@ -19,6 +19,7 @@ forming bar, so the math is the same daily math the indicator panel shows, but
 the engine can react intraday.
 """
 
+from collections import Counter
 from collections.abc import Sequence
 from datetime import date, datetime, timedelta
 from decimal import ROUND_DOWN, Decimal
@@ -40,12 +41,13 @@ from trd.engine.bars import (
 from trd.engine.base import StrategyContext, indicator, last
 from trd.engine.exits import MANUAL_EXIT_RULE, exit_quantity, is_manual_exit
 from trd.engine.regime import REGIME_SYMBOLS
-from trd.engine.settlement import CashLedger, ledger, unsettled_funding
+from trd.engine.settlement import CashLedger, Flow, ledger, unsettled_funding
 from trd.engine.temperature import market_temperature
 from trd.errors import ProviderError, TrdError
 from trd.learn import GLOSSARY
 from trd.models import (
     EXPIRABLE_INTENT_STATUSES,
+    LET_RUN_SKIPS,
     Account,
     AccountType,
     Bar,
@@ -54,6 +56,7 @@ from trd.models import (
     DailyBar,
     EngineConfig,
     EngineGuard,
+    EngineHuman,
     EngineMode,
     EnginePosition,
     EngineRun,
@@ -72,6 +75,7 @@ from trd.models import (
     TradeExplanation,
     intent_expires_at,
     intent_expiry_cutoff,
+    is_human,
 )
 from trd.models.engine import STALE_INTENT_MINUTES, ShortName
 from trd.providers.base import MarketDataProvider
@@ -86,9 +90,11 @@ from trd.repos import (
 from trd.repos.engine import (
     CashRefusalRepo,
     EngineConfigRepo,
+    EngineHumanRepo,
     EnginePositionRepo,
     EngineRunRepo,
     EngineSignalRepo,
+    LetRunRepo,
     OrderIntentRepo,
 )
 from trd.services.guard import CapTally, GuardService, stuck_intents, waiting_exits
@@ -393,11 +399,12 @@ def strategy_stats(
 
     A manual close (`trd engine close`) is left out: its exit was the owner's
     decision, and scoring it would credit or blame the strategy for it. Its money
-    still counts everywhere dollars are summed — just not here."""
-    open_counts = open_counts or {}
+    still counts everywhere dollars are summed — just not here. A human slot
+    (SB-1742) is left out whole for the same reason: its entry was the owner's."""
+    open_counts = {k: v for k, v in (open_counts or {}).items() if not is_human(k)}
     grouped: dict[str, list[EnginePosition]] = {}
     for position in closed:
-        if is_manual_exit(position.exit_rule):
+        if is_manual_exit(position.exit_rule) or is_human(position.strategy):
             continue
         grouped.setdefault(position.strategy, []).append(position)
 
@@ -455,6 +462,8 @@ class EngineService:
         self.positions = EnginePositionRepo(conn)
         self.intents = OrderIntentRepo(conn)
         self.guards = GuardService(conn)
+        self.humans = EngineHumanRepo(conn)
+        self.let_run = LetRunRepo(conn)
 
     # ---------------------------------------------------------------- setup
 
@@ -624,17 +633,99 @@ class EngineService:
         return self._ledger(config, self.account(), today or date.today())
 
     def _ledger(self, config: EngineConfig, account: Account, today: date) -> CashLedger:
+        """The ENGINE sleeve's ledger: what scan entries may spend.
+
+        With no human sleeve it is the whole account, exactly as before SB-1742.
+        With one, it starts from capital minus the human capital and replays every
+        fill but the human ones — so a human buy never spends the engine's cash
+        and a cash-blocked entry is the engine's own shortfall.
+        """
         assert config.capital is not None
-        flows = [
+        human = self.human_sleeve(config, account)
+        flows = self._flows(account)
+        capital = config.capital
+        if human is not None:
+            flows = list((Counter(flows) - Counter(self._human_flows(account))).elements())
+            capital -= human.capital
+        return self._reserve(ledger(capital, flows, today, config.bridge), account, human=False)
+
+    def human_cash(self, today: date | None = None) -> CashLedger | None:
+        """The human sleeve's ledger, or None with no human sleeve (SB-1742).
+
+        Starts from the human capital, replays only the fills of human intents,
+        and fronts proceeds with the human bridge — the same arithmetic as the
+        engine's, over the other half of the account.
+        """
+        config = self.config()
+        account = self.account()
+        human = self.human_sleeve(config, account)
+        if human is None:
+            return None
+        cash = ledger(
+            human.capital, self._human_flows(account), today or date.today(), human.bridge
+        )
+        return self._reserve(cash, account, human=True)
+
+    def account_cash(self, today: date | None = None) -> CashLedger | None:
+        """The whole account's ledger — both sleeves, both bridges. What the
+        broker holds, so what `reconcile --compare-cash` checks against."""
+        config = self.config()
+        if config.capital is None:
+            return None
+        account = self.account()
+        human = self.human_sleeve(config, account)
+        bridge = (config.bridge or Decimal(0)) + (
+            human.bridge or Decimal(0) if human is not None else Decimal(0)
+        )
+        cash = ledger(config.capital, self._flows(account), today or date.today(), bridge)
+        for intent, _ in self.intents.list_open(account.id):
+            if intent.side == Side.BUY:
+                cash = cash.spend(intent.notional)
+        return cash
+
+    def human_sleeve(self, config: EngineConfig, account: Account) -> EngineHuman | None:
+        """The live engine's human sleeve, or None (paper engines have none)."""
+        if not config.is_live:
+            return None
+        return self.humans.get(account.id)
+
+    def _flows(self, account: Account) -> list[Flow]:
+        return [
             (t.executed_at.date(), t.side, t.quantity, t.price, t.fees)
             for t in self.txns.list_chronological(account.id)
         ]
-        cash = ledger(config.capital, flows, today, config.bridge)
+
+    def _human_flows(self, account: Account) -> list[Flow]:
+        """Every human fill, as the flow fill ingest wrote for it.
+
+        Human slots are live-only, and every live txn is the fill of an intent,
+        written from the same quantity, price, fees and time the intent records —
+        so these tuples are exactly the human txns' and subtract from the
+        account's flows exactly.
+        """
+        return [
+            (
+                intent.resolved_at.date(),
+                intent.side,
+                intent.filled_quantity,
+                intent.fill_price,
+                intent.fees or Decimal(0),
+            )
+            for intent, _ in self.intents.list_for(account.id)
+            if is_human(intent.strategy)
+            and intent.status == IntentStatus.FILLED
+            and intent.resolved_at is not None
+            and intent.filled_quantity is not None
+            and intent.fill_price is not None
+        ]
+
+    def _reserve(self, cash: CashLedger, account: Account, *, human: bool) -> CashLedger:
         # An open buy intent has no txn yet, but the broker will take its cash the
         # moment it fills. Reserved here, so the next scan cannot hand the same
         # settled dollars to a second order. A paper engine never writes one.
+        # Each sleeve reserves only its own buys.
         for intent, _ in self.intents.list_open(account.id):
-            if intent.side == Side.BUY:
+            if intent.side == Side.BUY and is_human(intent.strategy) == human:
                 cash = cash.spend(intent.notional)
         return cash
 
@@ -671,9 +762,9 @@ class EngineService:
             # already spent, it would open negative and refuse every entry for a
             # reason no one could read off the screen.
             # Replayed from zero, the cash left is minus what the history spent.
-            history = self._ledger(
-                config.model_copy(update={"capital": Decimal(0)}), self.account(), date.today()
-            )
+            # The whole account's history, human fills included (SB-1742): the
+            # capital is the total of both sleeves.
+            history = ledger(Decimal(0), self._flows(self.account()), date.today())
             spent = -(history.settled + history.unsettled)
             if capital < spent:
                 raise TrdError(
@@ -1019,6 +1110,10 @@ class EngineService:
                 tripped = self.guards.check_loss(config, account, now, quotes)
                 if tripped is not None:
                     result.auto_halt = tripped
+                # The human sleeve's own stop (SB-1742): halts human buys only.
+                human_tripped = self.guards.check_human_loss(account, now, quotes)
+                if human_tripped is not None:
+                    result.skipped.append(human_tripped)
         guard = self.guards.guard(config)
         if guard is not None and guard.halted:
             result.halted = True
@@ -1030,6 +1125,11 @@ class EngineService:
         in_flight = [intent for intent, _ in self.intents.list_open(account.id)]
         exiting = {i.position_id for i in in_flight if i.side == Side.SELL and i.position_id}
         buying = {i.instrument_id for i in in_flight if i.side == Side.BUY}
+        # Names in human slots (SB-1742): the scan never buys one — a name has one
+        # owner at a time — and never counts one against the engine's slots.
+        human_held = {
+            instrument.id for position, instrument in open_positions if is_human(position.strategy)
+        } | {i.instrument_id for i in in_flight if i.side == Side.BUY and is_human(i.strategy)}
 
         closed_ids = self._run_exits(
             config, account, open_positions, quotes, today, now, paper, result, exiting
@@ -1064,9 +1164,10 @@ class EngineService:
                 run.id,
                 result,
                 guard,
+                human_held,
             )
         else:
-            result.capacity = max(0, config.max_positions - len(held))
+            result.capacity = max(0, config.max_positions - len(held - human_held))
             result.skipped.append("exits only: no new entries this pass")
 
         result.open_positions = len(self.positions.list_open(account.id))
@@ -1101,6 +1202,7 @@ class EngineService:
         exiting = exiting or set()
         closed_ids: set[int] = set()
         source = self.bars(config)
+        let_run = self.let_run.ids()
         for position, instrument in open_positions:
             stored = source.stored(instrument.id)
             quote = quotes.get(instrument.symbol)
@@ -1125,6 +1227,7 @@ class EngineService:
                 config.exit_params,
                 now,
                 config.timeframe,
+                skip=LET_RUN_SKIPS if position.id in let_run else frozenset(),
             )
             if decision is None or position.id in exiting:
                 # Also the path for a live position whose sell is already in
@@ -1332,13 +1435,16 @@ class EngineService:
         run_id: int,
         result: ScanResult,
         guard: EngineGuard | None = None,
+        human_held: set[int] | None = None,
     ) -> None:
+        # Human slots hold names (held) but not engine slots (SB-1742).
+        engine_held = len(held - (human_held or set()))
         # Without this a day-mode engine can enter at 15:50 and be flattened at
         # 15:55 by session_close — the spread paid twice for five minutes of
         # exposure. Entries stop before the flat time, exits keep running.
         cutoff = self._entry_cutoff(config.exit_params)
         if cutoff is not None and (now.hour * 60 + now.minute) >= cutoff:
-            result.capacity = max(0, config.max_positions - len(held))
+            result.capacity = max(0, config.max_positions - engine_held)
             result.skipped.append(
                 f"no new entries within {ENTRY_CUTOFF_MINUTES}m of the session close — "
                 "a fill now would be flattened before it could work"
@@ -1347,7 +1453,7 @@ class EngineService:
 
         opens = entry_opens_at(config.exit_params)
         if opens is not None and (now.hour * 60 + now.minute) < opens:
-            result.capacity = max(0, config.max_positions - len(held))
+            result.capacity = max(0, config.max_positions - engine_held)
             result.skipped.append(
                 f"no new entries in the first {opens - SESSION_OPEN_MINUTE}m of the session — "
                 "the stop is sized from yesterday's bars and is narrowest at the open"
@@ -1359,7 +1465,7 @@ class EngineService:
         # regime that stops you buying is not a reason to abandon a working stop.
         blocked = self.regime_block(config.exit_params)
         if blocked is not None:
-            result.capacity = max(0, config.max_positions - len(held))
+            result.capacity = max(0, config.max_positions - engine_held)
             result.skipped.append(blocked)
             return
         candidates: list[tuple[float, Instrument, list[Bar], int | None, ScanSignal]] = []
@@ -1482,7 +1588,7 @@ class EngineService:
                     f"filter — {', '.join(thin_trend)} (run 'trd sync --full')"
                 )
 
-        capacity = config.max_positions - len(held)
+        capacity = config.max_positions - engine_held
 
         # The per-session entry budget. Applied *after* the strategies have run and
         # their signals been stored, deliberately: a signal blocked by the budget
@@ -1527,7 +1633,7 @@ class EngineService:
         # book already holds. Live only — paper has nothing at a broker to cap.
         tally = None
         if guard is not None:
-            tally = CapTally(guard, self.intents.buy_notional_on(account.id, today), len(held))
+            tally = CapTally(guard, self.intents.buy_notional_on(account.id, today), engine_held)
 
         # Settled cash, when the engine trades a cash account. Built here, after
         # the exits have written their sells, so this pass's proceeds land in the
@@ -2136,11 +2242,12 @@ class EngineService:
         in_flight_rows = self.intents.list_open(account.id)
         in_flight = [intent for intent, _ in in_flight_rows]
         guard = self.guards.guard(config)
+        # Engine slots only: a human slot (SB-1742) is never the engine's.
         free_slots = max(
             0,
             config.max_positions
-            - len(open_pairs)
-            - sum(1 for i in in_flight if i.side == Side.BUY),
+            - sum(1 for p, _ in open_pairs if not is_human(p.strategy))
+            - sum(1 for i in in_flight if i.side == Side.BUY and not is_human(i.strategy)),
         )
         return EngineStatus(
             build=build_version(),
@@ -2170,7 +2277,9 @@ class EngineService:
             cash_refused_today=self.cash_refusals.list_on(account.id, date.today()),
             mode=config.mode,
             open_intents=len(in_flight),
-            open_buy_intents=sum(1 for i in in_flight if i.side == Side.BUY),
+            open_buy_intents=sum(
+                1 for i in in_flight if i.side == Side.BUY and not is_human(i.strategy)
+            ),
             awaiting_approval=sum(
                 1 for i in in_flight if i.status == IntentStatus.AWAITING_APPROVAL
             ),
@@ -2181,7 +2290,8 @@ class EngineService:
             halted_at=guard.halted_at if guard is not None else None,
             halted_by=guard.halted_by if guard is not None else None,
             guard=guard,
-            open_positions=len(open_pairs),
+            open_positions=sum(1 for p, _ in open_pairs if not is_human(p.strategy)),
+            human_positions=sum(1 for p, _ in open_pairs if is_human(p.strategy)),
             closed_trades=len(closed_pairs),
             committed=committed,
             unrealized=unrealized,

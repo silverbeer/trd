@@ -41,9 +41,10 @@ from trd.models import (
     Side,
     WaitingExit,
     intent_expiry_cutoff,
+    is_human,
 )
 from trd.repos import PriceRepo
-from trd.repos.engine import EngineGuardRepo, EnginePositionRepo
+from trd.repos.engine import EngineGuardRepo, EngineHumanRepo, EnginePositionRepo
 
 # Defaults `init --live` writes, as multiples of the config they guard.
 # The most one buy may cost: a quarter above the position size. Exposure sizing
@@ -176,6 +177,7 @@ class GuardService:
         self.guards = EngineGuardRepo(conn)
         self.positions = EnginePositionRepo(conn)
         self.prices = PriceRepo(conn)
+        self.humans = EngineHumanRepo(conn)
 
     def guard(self, config: EngineConfig) -> EngineGuard | None:
         """The guard in force: the stored row, else the defaults. None on paper,
@@ -266,22 +268,57 @@ class GuardService:
     # ----------------------------------------------------------- the loss stop
 
     def book_pnl(
-        self, account: Account, quotes: dict[str, Quote] | None = None
+        self, account: Account, quotes: dict[str, Quote] | None = None, *, human: bool = False
     ) -> tuple[Decimal, Decimal]:
-        """(realized, unrealized) for the engine account — the same two halves
-        `engine status` reports. Open positions are marked at the quote when the
-        caller has one, else at the last stored close."""
+        """(realized, unrealized) for one sleeve of the engine account. Open
+        positions are marked at the quote when the caller has one, else at the
+        last stored close.
+
+        `human=False` (the loss stop's view) is the engine's own positions only:
+        a human pick's loss never halts the engine (SB-1742). `human=True` is the
+        human sleeve, for its own loss stop."""
         quotes = quotes or {}
         realized = Decimal(0)
         unrealized = Decimal(0)
         for position, _ in self.positions.list_closed(account.id):
+            if is_human(position.strategy) != human:
+                continue
             realized += position.booked_pnl
         for position, instrument in self.positions.list_open(account.id):
+            if is_human(position.strategy) != human:
+                continue
             realized += position.booked_pnl
             quote = quotes.get(instrument.symbol)
             mark = quote.price if quote is not None else self.prices.latest_close(instrument.id)
             unrealized += position.pnl_at(mark) or Decimal(0)
         return realized, unrealized
+
+    def check_human_loss(
+        self,
+        account: Account,
+        at: datetime,
+        quotes: dict[str, Quote] | None = None,
+    ) -> str | None:
+        """Halt the HUMAN sleeve (SB-1742) when its realized + unrealized has
+        reached -max_loss. Halts human buys only; exits keep running. Returns the
+        reason when THIS call tripped it; None otherwise."""
+        sleeve = self.humans.get(account.id)
+        if sleeve is None or sleeve.halted or sleeve.max_loss is None:
+            return None
+        realized, unrealized = self.book_pnl(account, quotes, human=True)
+        net = realized + unrealized
+        if net > -sleeve.max_loss:
+            return None
+        reason = (
+            f"human loss stop: realized {realized:+,.2f} + unrealized {unrealized:+,.2f} = "
+            f"{net:+,.2f}, at or past max-loss -${sleeve.max_loss:,.2f}. Human buys are "
+            "halted; exits keep running."
+        )
+        self.humans.save(
+            sleeve.model_copy(update={"halted": True, "halt_reason": reason, "halted_at": at}),
+            at,
+        )
+        return reason
 
     def check_loss(
         self,

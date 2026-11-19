@@ -7,10 +7,12 @@ import duckdb
 
 from trd.models import (
     EXPIRABLE_INTENT_STATUSES,
+    HUMAN_STRATEGY,
     OPEN_INTENT_STATUSES,
     CashRefusal,
     EngineConfig,
     EngineGuard,
+    EngineHuman,
     EngineMode,
     EnginePosition,
     EngineRun,
@@ -792,26 +794,28 @@ class OrderIntentRepo:
         return stale
 
     def count_buys_on(self, account_id: int, session: date) -> int:
-        """Buy intents written during one session that did, or still may, become a
-        position. Rejected, cancelled and expired ones bought nothing and do not
-        spend the entry budget."""
+        """ENGINE buy intents written during one session that did, or still may,
+        become a position. Rejected, cancelled and expired ones bought nothing and
+        do not spend the entry budget. A human buy (SB-1742) is the owner's, never
+        the engine's budget."""
         live = (*OPEN_INTENT_STATUSES, IntentStatus.FILLED)
         marks = ", ".join("?" for _ in live)
         row = self.conn.execute(
             f"""
             SELECT count(*) FROM order_intent
             WHERE account_id = ? AND side = ? AND CAST(created_at AS DATE) = ?
-              AND status IN ({marks})
+              AND status IN ({marks}) AND strategy <> ?
             """,
-            [account_id, Side.BUY.value, session, *(s.value for s in live)],
+            [account_id, Side.BUY.value, session, *(s.value for s in live), HUMAN_STRATEGY],
         ).fetchone()
         return int(row[0]) if row else 0
 
     def buy_notional_on(self, account_id: int, session: date) -> Decimal:
-        """Dollars of buying written during one session that did, or still may,
-        become a position — the hard cap's daily total. A filled buy counts what
-        the broker actually charged; an open one what it was sized at. Rejected,
-        cancelled and expired ones bought nothing."""
+        """Dollars of ENGINE buying written during one session that did, or still
+        may, become a position — the hard cap's daily total. A filled buy counts
+        what the broker actually charged; an open one what it was sized at.
+        Rejected, cancelled and expired ones bought nothing. Human buys (SB-1742)
+        are left out: the engine's caps are on the engine."""
         live = (*OPEN_INTENT_STATUSES, IntentStatus.FILLED)
         marks = ", ".join("?" for _ in live)
         row = self.conn.execute(
@@ -823,7 +827,7 @@ class OrderIntentRepo:
             END), 0)
             FROM order_intent
             WHERE account_id = ? AND side = ? AND CAST(created_at AS DATE) = ?
-              AND status IN ({marks})
+              AND status IN ({marks}) AND strategy <> ?
             """,
             [
                 IntentStatus.FILLED.value,
@@ -831,6 +835,7 @@ class OrderIntentRepo:
                 Side.BUY.value,
                 session,
                 *(s.value for s in live),
+                HUMAN_STRATEGY,
             ],
         ).fetchone()
         return Decimal(row[0]) if row and row[0] is not None else Decimal(0)
@@ -897,3 +902,91 @@ class EngineGuardRepo:
         found = self.get(guard.account_id)
         assert found is not None
         return found
+
+
+_HUMAN_COLS = "account_id, slots, capital, bridge, max_loss, halted, halt_reason, halted_at"
+
+
+class EngineHumanRepo:
+    """A live engine's human sleeve, one row per account (migration 037)."""
+
+    def __init__(self, conn: duckdb.DuckDBPyConnection) -> None:
+        self.conn = conn
+
+    def get(self, account_id: int) -> EngineHuman | None:
+        row = self.conn.execute(
+            f"SELECT {_HUMAN_COLS} FROM engine_human WHERE account_id = ?", [account_id]
+        ).fetchone()
+        if row is None:
+            return None
+        names = _HUMAN_COLS.split(", ")
+        return EngineHuman.model_validate(dict(zip(names, row, strict=True)))
+
+    def save(self, human: EngineHuman, at: datetime) -> EngineHuman:
+        """Write the whole row — one path for set, halt and resume."""
+        values = [
+            human.slots,
+            human.capital,
+            human.bridge,
+            human.max_loss,
+            human.halted,
+            human.halt_reason,
+            human.halted_at,
+            at,
+        ]
+        if self.get(human.account_id) is None:
+            self.conn.execute(
+                """
+                INSERT INTO engine_human
+                    (slots, capital, bridge, max_loss, halted, halt_reason, halted_at,
+                     updated_at, account_id)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                [*values, human.account_id],
+            )
+        else:
+            self.conn.execute(
+                """
+                UPDATE engine_human
+                SET slots = ?, capital = ?, bridge = ?, max_loss = ?, halted = ?,
+                    halt_reason = ?, halted_at = ?, updated_at = ?
+                WHERE account_id = ?
+                """,
+                [*values, human.account_id],
+            )
+        found = self.get(human.account_id)
+        assert found is not None
+        return found
+
+
+class LetRunRepo:
+    """Human positions flagged "let it run" (migration 037)."""
+
+    def __init__(self, conn: duckdb.DuckDBPyConnection) -> None:
+        self.conn = conn
+
+    def ids(self) -> set[int]:
+        rows = self.conn.execute("SELECT position_id FROM engine_position_let_run").fetchall()
+        return {int(r[0]) for r in rows}
+
+    def is_set(self, position_id: int) -> bool:
+        return position_id in self.ids()
+
+    def set(self, position_id: int, at: datetime) -> bool:
+        """Flag a position. False when it already was."""
+        if self.is_set(position_id):
+            return False
+        self.conn.execute(
+            "INSERT INTO engine_position_let_run (position_id, set_at) VALUES (?, ?)",
+            [position_id, at],
+        )
+        return True
+
+    def clear(self, position_id: int) -> bool:
+        """Unflag a position. False when it was not flagged."""
+        if not self.is_set(position_id):
+            return False
+        self.conn.execute(
+            "DELETE FROM engine_position_let_run WHERE position_id = ?", [position_id]
+        )
+        return True

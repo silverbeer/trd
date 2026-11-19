@@ -217,8 +217,9 @@ TRD_HOME=~/.trd-live trd engine resume          # to undo
 
 Halted: the scan writes no buys and the outbox hands the runner **nothing the
 engine decided — sells included**. Exits are still decided and recorded, so the
-book shows what it wants, but nothing is placed. The one exception is a manual
-close (*Close one position*, below): the outbox still hands those over.
+book shows what it wants, but nothing is placed. The exceptions are a manual
+close (*Close one position*, below) and anything in a **human slot** (its buys and
+its exits — *Human slots*, below): the outbox still hands those over.
 
 > ⚠ **With open positions, halting means you manage the exits.** A stop the
 > engine would have sold at becomes a recorded intent nobody places. Watch the
@@ -237,7 +238,8 @@ The runner places it on its next pass (pre-market: at the open), you **approve
 it in the broker app**, and the fill ingest closes the position. It expires at
 16:00 ET like any order; unapproved, run the command again the next day.
 
-- Works while **halted** — the outbox hands over manual closes and nothing else.
+- Works while **halted** — the outbox hands over manual closes and human-slot
+  orders, nothing else the engine decided.
   The runner must be on a build that knows this: after deploying it, re-pin
   with `deploy/live-runner.sh install`, or a halted outbox places nothing.
 - An exit the engine already queued for the whole position is **adopted**: the
@@ -256,6 +258,38 @@ it in the broker app**, and the fill ingest closes the position. It expires at
   the exit was your call, not the strategy's. Their money still counts.
 
 A paper engine sells at the quote immediately.
+
+### Human slots — you pick the entry, the engine runs the exit
+
+```bash
+TRD_HOME=~/.trd-live trd engine human set --slots 2 --capital 1000   # once; deposit it at the broker
+TRD_HOME=~/.trd-live trd engine human buy NVDA --note "why"         # in session only
+TRD_HOME=~/.trd-live trd engine human run NVDA [--off]              # let a winner run
+TRD_HOME=~/.trd-live trd engine human                               # the sleeve at a glance
+```
+
+- **The buy** is sized to one human slot (human capital / slots), with the stop
+  and target the engine would set. The runner places it; you approve it in the
+  app. Session hours only (09:30-16:00 ET): pre-market it would be stale by the
+  open. Unplaced after 30 minutes it is withheld as stale, like any buy.
+- **The exit** is the engine's: stop, trailing stop, 2R target, indicator and
+  10-session time exit. `human run SYM` skips the target and the time exit; the
+  stop and trail stay. `trd engine close SYM` closes it by hand.
+- **Cash.** `--capital` is ADDED to the total; the engine sleeve keeps what it
+  had. Each sleeve has its own T+1 ledger and its own bridge (`--bridge N`), so a
+  human buy never spends the engine's cash. `trd engine cash` shows the engine
+  sleeve; `trd engine human` shows the human one; `reconcile --compare-cash`
+  checks the two together against the broker.
+- **Guard.** The engine's caps, kill switch and loss stop ignore the human
+  sleeve. The human sleeve has its own loss stop (`--max-loss`, default 20% of
+  its capital): tripped, it halts human BUYS only — exits keep running —
+  until `trd engine human resume`.
+- **One owner per name.** The scan never buys a name in a human slot; a human
+  buy of a name the engine holds is refused. Human slots never count against the
+  engine's slots.
+- Human trades are left out of the per-strategy scorecard. Reports do not yet
+  show a separate HUMAN block — the positions appear in `trd engine positions`
+  with strategy `human` (follow-up ticket).
 
 ### Wind down — no new buys, exits keep working
 

@@ -35,10 +35,16 @@ from trd.models import (
     intent_expires_at,
     intent_expiry_cutoff,
     intent_is_late,
+    is_human,
 )
 from trd.models.engine import STALE_INTENT_MINUTES
 from trd.repos import AccountRepo
-from trd.repos.engine import EngineConfigRepo, EnginePositionRepo, OrderIntentRepo
+from trd.repos.engine import (
+    EngineConfigRepo,
+    EngineHumanRepo,
+    EnginePositionRepo,
+    OrderIntentRepo,
+)
 from trd.services.fills import live_engine, mark_awaiting_approval, mark_submitted
 from trd.services.guard import CapTally, GuardService
 
@@ -55,6 +61,7 @@ class OutboxService:
         self.intents = OrderIntentRepo(conn)
         self.positions = EnginePositionRepo(conn)
         self.guards = GuardService(conn)
+        self.humans = EngineHumanRepo(conn)
 
     def _live(self) -> tuple[EngineConfig, Account]:
         return live_engine(
@@ -94,36 +101,58 @@ class OutboxService:
             for intent, instrument in actionable
             if intent.status == IntentStatus.PENDING and intent.created_at >= cutoff
         ]
+        # The human sleeve (SB-1742): the owner's own buys and the exits the
+        # engine runs on them. The engine's halt and caps are the engine's; the
+        # human sleeve's loss stop withholds its buys, never its exits.
+        human = self.humans.get(account.id)
+        human_halted = human is not None and human.halted
         if guard.halted:
+            orders: list[OutboxOrder] = []
+            withheld: list[WithheldOrder] = []
+            for intent, instrument in pending:
+                spec = _spec(intent, instrument, now)
+                if intent.side == Side.SELL and (
+                    is_manual_exit(intent.rule) or is_human(intent.strategy)
+                ):
+                    orders.append(spec)
+                elif intent.side == Side.BUY and is_human(intent.strategy):
+                    reason = self._human_withheld(intent, now, human_halted, include_stale)
+                    if reason is not None:
+                        withheld.append(WithheldOrder(order=spec, reason=reason))
+                    else:
+                        orders.append(spec)
             return Outbox(
                 account=account.name,
                 at=now,
                 halted=True,
                 halt_reason=guard.halt_reason,
-                orders=[
-                    _spec(intent, instrument, now)
-                    for intent, instrument in pending
-                    if intent.side == Side.SELL and is_manual_exit(intent.rule)
-                ],
+                orders=orders,
+                withheld=withheld,
             )
         # What is already committed without this outbox: today's buying minus the
         # pending buys about to be counted one by one, and the slots held by
         # positions and by buys the broker already has.
+        # Engine buys only: the caps are the engine's (SB-1742).
         pending_buys = sum(
             (
                 i.notional
                 for i, _ in pending
-                if i.side == Side.BUY and i.created_at.date() == now.date()
+                if i.side == Side.BUY
+                and i.created_at.date() == now.date()
+                and not is_human(i.strategy)
             ),
             Decimal(0),
         )
         placed_buys = sum(
-            1 for i, _ in actionable if i.side == Side.BUY and i.status != IntentStatus.PENDING
+            1
+            for i, _ in actionable
+            if i.side == Side.BUY and i.status != IntentStatus.PENDING and not is_human(i.strategy)
         )
         tally = CapTally(
             guard,
             self.intents.buy_notional_on(account.id, now.date()) - pending_buys,
-            len(self.positions.list_open(account.id)) + placed_buys,
+            sum(1 for p, _ in self.positions.list_open(account.id) if not is_human(p.strategy))
+            + placed_buys,
         )
 
         orders: list[OutboxOrder] = []
@@ -133,6 +162,13 @@ class OutboxService:
             spec = _spec(intent, instrument, now)
             if intent.side != Side.BUY:
                 orders.append(spec)
+                continue
+            if is_human(intent.strategy):
+                reason = self._human_withheld(intent, now, human_halted, include_stale)
+                if reason is not None:
+                    withheld.append(WithheldOrder(order=spec, reason=reason))
+                else:
+                    orders.append(spec)
                 continue
             if intent.created_at < stale_before:
                 stale = f"stale — sized off a quote from {intent.created_at:%H:%M}"
@@ -147,6 +183,19 @@ class OutboxService:
             tally.take(intent.notional)
             orders.append(spec)
         return Outbox(account=account.name, at=now, orders=orders, withheld=withheld)
+
+    @staticmethod
+    def _human_withheld(
+        intent: OrderIntent, now: datetime, human_halted: bool, include_stale: bool
+    ) -> str | None:
+        """Why a human buy is withheld, or None to hand it over. Its own loss stop
+        and the staleness rule every buy is under — never the engine's caps."""
+        if human_halted:
+            return "human sleeve halted by its loss stop — 'trd engine human resume'"
+        stale_before = now - timedelta(minutes=STALE_INTENT_MINUTES)
+        if intent.created_at < stale_before and not include_stale:
+            return f"stale — sized off a quote from {intent.created_at:%H:%M}"
+        return None
 
     def ack(
         self,

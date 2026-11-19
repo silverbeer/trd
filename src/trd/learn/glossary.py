@@ -887,6 +887,55 @@ _ENTRIES: list[GlossaryEntry] = [
         used_in=["trd engine close", "trd engine outbox", "trd engine report"],
     ),
     GlossaryEntry(
+        key="human-slot",
+        term="Human slot (trd engine human)",
+        category=Category.ENGINE,
+        definition=(
+            "A slot on the live engine where YOU choose the entry and the engine manages "
+            "the exit. 'trd engine human buy SYM' sizes an order to one human slot, plans "
+            "the stop and target from ATR exactly as an engine entry would, and hands it to "
+            "the live runner; you approve it in your broker app. From the fill on it is an "
+            "engine position like any other: stop, trailing stop, target, indicator and "
+            "time exits all apply, and 'trd engine close' works on it.\n\n"
+            "One capital, two sleeves. The human capital is ADDED to the engine's total, and "
+            "each sleeve keeps its own T+1 settled-cash ledger and its own bridge, so a human "
+            "buy never spends the engine's cash. The engine's slots, hard caps, kill switch "
+            "and loss stop are the engine's alone: a human loss never halts the engine, and "
+            "an engine halt never withholds a human order. The human sleeve has its own loss "
+            "stop, which halts human BUYS only — exits keep running.\n\n"
+            "A name has one owner at a time: the scan never buys a name in a human slot, and "
+            "a human buy of a name the engine holds is refused. Human trades are left out of "
+            "the per-strategy scorecard — the entry was yours, not a rule's."
+        ),
+        example=(
+            "trd engine human set --slots 2 --capital 1000 adds two $500 slots and raises "
+            "the total capital by $1,000. trd engine human buy NVDA --note 'post-earnings drift' "
+            "queues the order; the engine's 2R target and 10-session time exit apply unless "
+            "you 'let it run'."
+        ),
+        related=["let-run", "settlement", "kill-switch", "order-intent", "manual-close"],
+        used_in=["trd engine human", "trd engine outbox", "trd engine positions"],
+    ),
+    GlossaryEntry(
+        key="let-run",
+        term="Let it run (human slots)",
+        category=Category.ENGINE,
+        definition=(
+            "A flag on a human position that skips its profit target and its time exit. The "
+            "initial stop, the trailing stop and the indicator exit still apply, so a winner "
+            "leaves on the trail — which by then sits above the entry — and a loser still "
+            "stops out. 'trd engine human run SYM' sets it, '--off' clears it. Human slots "
+            "only: overriding a rule's exit on an engine position would blur what the rule "
+            "is measured on."
+        ),
+        example=(
+            "Your pick is at +1.8R and you think it has further to go. trd engine human run "
+            "NVDA: the 2R target no longer sells it; a 3xATR pullback from its high does."
+        ),
+        related=["human-slot", "r-multiple"],
+        used_in=["trd engine human run", "trd engine human"],
+    ),
+    GlossaryEntry(
         key="order-intent",
         term="Order intent (live engine)",
         category=Category.ENGINE,

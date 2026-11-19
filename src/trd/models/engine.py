@@ -404,6 +404,46 @@ class EngineGuard(BaseModel):
         return self.halted and self.halted_by == HaltCause.MAX_LOSS
 
 
+# Human slots (SB-1742). A human position is an engine_position with this
+# strategy: the owner chose the entry, the engine's exit rules manage it. Not a
+# registered strategy — no scan ever raises a signal for it.
+HUMAN_STRATEGY = "human"
+# The human sleeve's default loss stop, as a fraction of its capital — the same
+# fraction the engine's own guard defaults to.
+HUMAN_MAX_LOSS_FRACTION = Decimal("0.20")
+# Exit rules a "let it run" human position skips. The stop, the trail and the
+# indicator exit stay: a winner leaves on the trail, a loser still stops out.
+LET_RUN_SKIPS = frozenset({"target", "time", "scale_out"})
+
+
+def is_human(strategy: str | None) -> bool:
+    """Whether a position or intent is the owner's pick rather than a rule's."""
+    return strategy == HUMAN_STRATEGY
+
+
+class EngineHuman(BaseModel):
+    """A live engine's human sleeve: slots the owner fills, exits the engine runs.
+
+    `capital` is part of the engine config's total capital, not added to it at
+    read time; the engine sleeve is the rest. `size` is what one human buy
+    commits: the sleeve split evenly across its slots.
+    """
+
+    account_id: int
+    slots: int
+    capital: Decimal
+    bridge: Decimal | None = None
+    max_loss: Decimal | None = None
+    halted: bool = False
+    halt_reason: str | None = None
+    halted_at: datetime | None = None
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def size(self) -> Decimal:
+        return (self.capital / self.slots).quantize(Decimal("0.01")) if self.slots else Decimal(0)
+
+
 # Market temperature (SB-1538) — computed in trd.engine.temperature.
 
 
@@ -693,6 +733,8 @@ class EngineStatus(BaseModel):
     guard: EngineGuard | None = None
 
     open_positions: int
+    # Open human-slot positions (SB-1742), never in open_positions or capacity.
+    human_positions: int = 0
     closed_trades: int = 0
     committed: Decimal
     unrealized: Decimal

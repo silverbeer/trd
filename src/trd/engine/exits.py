@@ -531,9 +531,13 @@ def evaluate(
     params: dict[str, float],
     now: datetime,
     timeframe: str,
+    skip: frozenset[str] = frozenset(),
 ) -> ExitDecision | None:
-    """First rule to fire wins."""
+    """First rule to fire wins. Rules keyed in `skip` are not consulted — a
+    "let it run" human position skips its profit target and time exit (SB-1742)."""
     for rule in RULES:
+        if rule.key in skip:
+            continue
         decision = rule.check(position, bars, settled, price, params, now, timeframe)
         if decision is not None:
             return decision
