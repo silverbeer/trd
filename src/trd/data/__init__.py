@@ -7,7 +7,13 @@ cadence). Edit these files to broaden coverage; they are plain Python so the typ
 checker keeps them honest.
 """
 
-from trd.data.market_calendar import EconEvent, events_for_week
+from trd.data.market_calendar import (
+    EconEvent,
+    MarketClosure,
+    calendar_covers,
+    closures_for_week,
+    events_for_week,
+)
 from trd.data.universe import (
     COMMODITIES,
     FUTURES,
@@ -26,6 +32,9 @@ __all__ = [
     "UNIVERSE",
     "VIX_SYMBOL",
     "EconEvent",
+    "MarketClosure",
+    "calendar_covers",
+    "closures_for_week",
     "events_for_week",
     "name_for",
 ]

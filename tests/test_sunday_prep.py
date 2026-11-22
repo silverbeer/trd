@@ -153,6 +153,79 @@ def test_watchlist_bounded_and_seeded(briefing) -> None:
     assert any("Earnings" in w.catalyst for w in briefing.watchlist)
 
 
+# ------------------------------------------------------- short weeks (SB-1755)
+
+THANKSGIVING_SUNDAY = date(2026, 11, 22)
+
+
+def test_a_holiday_week_is_named_in_the_briefing(prep_provider) -> None:
+    b = SundayPrepService(prep_provider).build(THANKSGIVING_SUNDAY)
+    assert [(c.date, c.kind) for c in b.closures] == [
+        (date(2026, 11, 26), "closed"),
+        (date(2026, 11, 27), "early_close"),
+    ]
+    assert b.closures_checked
+    assert (
+        "A short week: the market is closed Thursday (Thanksgiving Day) and closes at "
+        "1:00 PM ET Friday (day after Thanksgiving)." in b.tone
+    )
+    assert any(r.startswith("Holiday week") for r in b.risks)
+    # The event the bug put on the holiday is on the day it is published.
+    assert all(e.date != date(2026, 11, 26) for e in b.econ_events)
+    claims = [e for e in b.econ_events if e.name == "Initial Jobless Claims"]
+    assert [e.date for e in claims] == [date(2026, 11, 25)]
+
+
+def test_a_full_week_says_nothing_about_closures(prep_provider) -> None:
+    b = SundayPrepService(prep_provider).build(date(2026, 11, 15))
+    assert b.closures == [] and b.closures_checked
+    assert "short week" not in b.tone.lower()
+    assert not any("Holiday" in r for r in b.risks)
+
+
+def test_a_week_past_the_holiday_table_says_it_was_not_checked(prep_provider) -> None:
+    b = SundayPrepService(prep_provider).build(date(2029, 1, 7))
+    assert b.closures == [] and not b.closures_checked
+    assert any("NOT checked" in r for r in b.risks)
+
+
+def test_every_renderer_names_the_closures(prep_provider, no_private_terms) -> None:
+    from rich.console import Console
+
+    from trd.cli.render import sunday_prep_renderables
+    from trd.notify.messages import sunday_prep_message
+    from trd.notify.privacy import guard
+
+    b = SundayPrepService(prep_provider).build(THANKSGIVING_SUNDAY)
+
+    text = sunday_prep_message(b)
+    assert "🏖 <b>Short week</b>" in text
+    assert "• <b>Thu</b> — market closed · Thanksgiving Day" in text
+    assert "• <b>Fri</b> — closes 1:00 PM ET · day after Thanksgiving" in text
+    assert "<b>Wed 8:30 AM ET</b> — Initial Jobless Claims" in text
+    guard(text)
+
+    md = sunday_prep_markdown(b)
+    assert "**Short week**" in md
+    assert "- 11/26: market is closed Thursday (Thanksgiving Day)" in md
+
+    console = Console(width=200, record=True, file=open("/dev/null", "w"))  # noqa: SIM115
+    for r in sunday_prep_renderables(b):
+        console.print(r)
+    assert "11/27 — market closes at 1:00 PM ET Friday" in console.export_text()
+
+
+def test_the_short_week_survives_a_message_too_long_to_fit(prep_provider) -> None:
+    from trd.notify.messages import TELEGRAM_MAX_CHARS, sunday_prep_message
+    from trd.services.sunday_prep import Theme as PrepTheme
+
+    b = SundayPrepService(prep_provider).build(THANKSGIVING_SUNDAY)
+    b.themes = [PrepTheme(title=f"theme {i}", why="x" * 300) for i in range(12)]
+    text = sunday_prep_message(b)
+    assert len(text) <= TELEGRAM_MAX_CHARS
+    assert "Short week" in text and "Themes" not in text
+
+
 def test_tone_and_coaching_present(briefing) -> None:
     assert briefing.tone
     assert "plan before the market opens" in briefing.mindset

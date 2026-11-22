@@ -71,7 +71,7 @@ from trd.services.plan import PlanStatus
 from trd.services.replay_match import ReplayMatchResult
 from trd.services.review import MIN_TRADES_FOR_FINDING, EnginePack, ReviewResult
 from trd.services.rotation import RotationReport, Stat
-from trd.services.sunday_prep import SundayPrepBriefing
+from trd.services.sunday_prep import SundayPrepBriefing, closure_phrase
 from trd.services.sweep import SweepResult, SweepRow
 from trd.timeframes import DAILY, sessions_to_bars
 
@@ -938,6 +938,9 @@ def sunday_prep_renderables(b: SundayPrepBriefing) -> list[RenderableType]:
         f"[bold]TRD Sunday Prep[/bold]  [dim]· week of {week}[/dim]\n\n{b.tone}"
     )
     out.append(Panel(header, border_style="cyan"))
+    if b.closures:
+        rows = "\n".join(f"  {c.date:%m/%d} — market {closure_phrase(c)}" for c in b.closures)
+        out.append(Text.from_markup(f"[bold yellow]Short week[/bold yellow]\n{rows}"))
 
     # 1. Futures
     ft = Table(title=None, expand=False)
@@ -1100,6 +1103,10 @@ def sunday_prep_markdown(b: SundayPrepBriefing) -> str:
     lines.append("")
     lines.append(b.tone)
     lines.append("")
+    if b.closures:
+        lines.append("**Short week**")
+        lines.extend(f"- {c.date:%m/%d}: market {closure_phrase(c)}" for c in b.closures)
+        lines.append("")
 
     lines.append("### 1. Futures Snapshot")
     lines.append("| Contract | Last | Change |")
