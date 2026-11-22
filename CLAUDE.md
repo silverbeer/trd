@@ -441,6 +441,39 @@ trd engine human resume               # lift the human loss-stop halt
                                       # engine halt never withholds a human order; the human loss
                                       # stop (default 20%) halts human BUYS only. One owner per
                                       # name. Left out of strategy_stats. Backup v13
+trd engine human brief [--date ISO] [--notify] [--json]
+                                      # post-close read for YOUR picks (SB-1754). READ-ONLY, no
+                                      # network, writes nothing — a screen, never an order.
+                                      # MARKET STATE: six bounce signals, each on/off/unknown with
+                                      # its numbers (VIX rolls over, capitulation bar, higher low,
+                                      # breadth thrust, leadership flip, RSI divergence) from
+                                      # stored SPY, ^VIX and the universe's daily bars.
+                                      # CANDIDATES: universe names 10%+ below their 200-session
+                                      # average that TURNED (reclaimed the 20-session average
+                                      # within 3 sessions, or a higher low + close through the
+                                      # prior high), most stretched first, with plan_entry's stop,
+                                      # target and size from one human slot. 'watching' = stretched,
+                                      # not turned. Set aside, with the reason: a name the engine
+                                      # or a human slot holds, one with an order in flight, and a
+                                      # series with a one-session move past -50%/+100% inside the
+                                      # 200 sessions (a split stored unadjusted, or a collapse).
+                                      # Flags: earnings inside the hold (max_sessions), sleeve room.
+                                      # --notify = PRIVATE alert chat, nothing on a date with no
+                                      # session. --json {message, sent, brief}. k3s: trd-human-brief,
+                                      # 16:45 ET weekdays, applied by --live. 'trd learn human-brief'
+trd engine human study [--horizon N] [--samples K] [--seed N] [--json]
+                                      # does 'stretched and turned' beat a random universe name
+                                      # bought the SAME DAY? Every fresh firing, paired, priced with
+                                      # stop_distance and walked by excursion/resolution. Same day
+                                      # on purpose: after a sell-off everything bounces. Edge ± SE,
+                                      # halves, by trigger, and split on the 4-year average where
+                                      # a name has 1,008 sessions. Read-only.
+                                      # MEASURED 2026-11-22, swing home (10y, 158 names, 2,283
+                                      # firings): -0.006R ±0.041, t -0.13 — NO EDGE; reclaim 0.000R,
+                                      # higher low -0.009R; below the 4-year average +0.068R ±0.059
+                                      # vs above +0.077R ±0.064 — the 4-year average is not
+                                      # selective. Live home (2y, 1,044 firings): +0.076R ±0.082,
+                                      # halves disagree. The brief prints this result on itself
 trd engine signals [-n 25] [-s KEY]   # every signal fired, taken or passed over, with its reason
 trd engine report                     # per-strategy scorecard: win%, avg win/loss, expectancy in R
                                       # (manual closes excluded — the owner's call, not the rule's)

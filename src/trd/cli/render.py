@@ -64,6 +64,7 @@ from trd.services.equity_curve import EquityCurve
 from trd.services.exit_whatif import WhatIfArm, WhatIfResult
 from trd.services.history import HistoryResult
 from trd.services.human import HumanBuy, HumanView
+from trd.services.human_brief import HumanBrief, Paired, StudyReport
 from trd.services.live_report import LiveReport
 from trd.services.movers import MoverRow
 from trd.services.outcomes import OutcomeSummary
@@ -4508,3 +4509,189 @@ def human_buy_lines(result: HumanBuy) -> list[str]:
     if result.backfilled:
         lines.append(f"[dim]Pulled {result.backfilled} bars of history for {result.symbol}.[/dim]")
     return lines
+
+
+# ----------------------------------------------------- human-slot brief (SB-1754)
+
+_STATE_MARK = {
+    True: "[green]✓ on[/green]",
+    False: "[dim]✗ off[/dim]",
+    None: "[yellow]? unknown[/yellow]",
+}
+
+
+def _pct(value: Decimal | None) -> str:
+    return "—" if value is None else f"{value:+.1f}%"
+
+
+def human_brief_renderables(brief: HumanBrief) -> list[RenderableType]:
+    """`trd engine human brief`: market state, then stretched names that turned."""
+    state = brief.state
+    if state.as_of is None:
+        return [Text("No S&P 500 bars stored in this home — run 'trd sync' first.")]
+    known = state.known_count
+    sleeve = brief.sleeve
+    if not sleeve.configured:
+        slots = "[dim]no human slots on this engine[/dim]"
+    elif sleeve.halted:
+        slots = "[red bold]human sleeve HALTED[/red bold] " + escape(sleeve.halt_reason or "")
+    else:
+        slots = (
+            f"human slots: room for [bold]{sleeve.free}[/bold] of {sleeve.slots}"
+            f" · {fmt_money(sleeve.size)} per slot"
+        )
+    share = state.on_count / known if known else 0
+    lines: list[RenderableType | None] = [
+        Text.from_markup(
+            f"bounce signals on [bold]{gauge(share, max(known, 1))}[/bold] "
+            f"{state.on_count} of {known}"
+            + (f" · {len(state.signals) - known} unknown" if known < len(state.signals) else "")
+        ),
+        Text.from_markup(
+            f"S&P 500 {fmt_money(state.spy_close)} · {_pct(state.spy_vs_200_pct)} vs 200-day"
+            f" · {_pct(state.spy_off_high_pct)} off high"
+            + (f" · VIX {state.vix:.1f}" if state.vix is not None else "")
+        ),
+        Text.from_markup(slots),
+    ]
+    out: list[RenderableType] = [
+        Text(""),
+        hero(
+            "Human-slot brief",
+            lines,
+            border="green" if state.on_count >= 4 else "yellow" if state.on_count >= 2 else "cyan",
+            subtitle=f"as of {state.as_of:%a %b %-d}",
+        ),
+    ]
+
+    signals = Table(title="🧭 Market state — is a bounce confirmed?", title_justify="left")
+    signals.add_column("Signal", style="bold")
+    signals.add_column("State")
+    signals.add_column("What the bars show")
+    signals.add_column("Meaning", style="dim")
+    for sig in state.signals:
+        signals.add_row(sig.name, _STATE_MARK[sig.on], escape(sig.detail), escape(sig.meaning))
+    out.append(signals)
+
+    title = (
+        f"🔎 Stretched and turned — {len(brief.candidates)} shown, "
+        f"{brief.stretched} of {brief.screened} names stretched"
+    )
+    if brief.candidates:
+        table = Table(title=title, title_justify="left")
+        table.add_column("Symbol", style="bold")
+        table.add_column("Close", justify="right")
+        table.add_column("vs 200d", justify="right")
+        table.add_column("Off high", justify="right")
+        table.add_column("Stop", justify="right")
+        table.add_column("Target", justify="right")
+        table.add_column("Risk", justify="right")
+        table.add_column("Earnings")
+        table.add_column("Why")
+        for c in brief.candidates:
+            earnings = "—"
+            if c.earnings_on is not None:
+                earnings = f"{c.earnings_on:%b %-d}"
+                if c.earnings_in_window:
+                    earnings = f"[yellow]⚠ {earnings} (in the hold)[/yellow]"
+            table.add_row(
+                c.symbol,
+                fmt_money(c.close),
+                _pct(c.stretch_200_pct),
+                _pct(c.off_high_pct),
+                fmt_money(c.stop_price),
+                fmt_money(c.target_price),
+                fmt_money(c.risk) if c.risk is not None else "—",
+                earnings,
+                escape(c.reason),
+            )
+        out.append(table)
+    else:
+        out.append(Text.from_markup(f"[bold]{title}[/bold]\n  [dim]None has turned yet.[/dim]"))
+
+    if brief.watching:
+        watch = Table(title="👀 Stretched, not turned — waiting", title_justify="left")
+        watch.add_column("Symbol", style="bold")
+        watch.add_column("Close", justify="right")
+        watch.add_column("vs 200d", justify="right")
+        watch.add_column("Off high", justify="right")
+        for w in brief.watching:
+            watch.add_row(
+                w.symbol, fmt_money(w.close), _pct(w.stretch_200_pct), _pct(w.off_high_pct)
+            )
+        out.append(watch)
+
+    if brief.excluded:
+        rows = "\n".join(f"  {escape(x.symbol)} — {escape(x.why)}" for x in brief.excluded)
+        out.append(Text.from_markup(f"[bold]Set aside[/bold]\n[dim]{rows}[/dim]"))
+    notes = [*brief.caveats]
+    if brief.short_history:
+        notes.append(
+            f"{brief.short_history} name(s) lack 200 sessions of bars and were not screened."
+        )
+    if brief.candidates:
+        notes.append("To act on one: trd engine human buy SYM (session hours only).")
+    out.append(Text.from_markup("\n".join(f"[dim]· {escape(n)}[/dim]" for n in notes)))
+    return out
+
+
+def _paired_row(p: Paired) -> tuple[str, str, str, str, str]:
+    mean = "—" if p.mean is None else f"{p.mean:+.3f}R"
+    return (
+        p.label,
+        str(p.count),
+        mean,
+        "—" if p.se is None else f"±{p.se:.3f}",
+        "—" if p.t is None else f"{p.t:+.2f}",
+    )
+
+
+def human_study_renderables(report: StudyReport) -> list[RenderableType]:
+    """`trd engine human study`: the candidate rule against random names, paired."""
+    edge = report.edge
+    if not report.rule.count:
+        return [Text("\n".join(report.caveats))]
+    verdict = (
+        "[green bold]an edge[/green bold] (|t| >= 2, both halves agree)"
+        if report.significant
+        else "[yellow bold]no measured edge[/yellow bold]"
+    )
+    lines: list[RenderableType | None] = [
+        Text.from_markup(
+            f"{verdict} — rule minus random name, same session: "
+            f"[bold]{_paired_row(edge)[2]}[/bold] {_paired_row(edge)[3]} (t {_paired_row(edge)[4]})"
+        ),
+        Text.from_markup(
+            f"{report.rule.count:,} fresh firings · {report.names} names · "
+            f"{report.first:%Y-%m-%d} → {report.last:%Y-%m-%d} · {report.horizon}-session hold · "
+            f"{report.samples} random names each (seed {report.seed})"
+        ),
+    ]
+    out: list[RenderableType] = [
+        Text(""),
+        hero(
+            "Stretched-and-turned study", lines, border="green" if report.significant else "yellow"
+        ),
+    ]
+    arms = Table(title="What each side did", title_justify="left")
+    for col in ("Side", "n", "Forward R", "MFE", "MAE", "2R first", "1R stop first"):
+        arms.add_column(col, justify="left" if col == "Side" else "right")
+    for label, arm in (("the rule", report.rule), ("random name", report.control)):
+        arms.add_row(
+            label,
+            f"{arm.count:,}",
+            f"{arm.forward_r:+.3f}" if arm.forward_r is not None else "—",
+            f"{arm.mfe_r:+.3f}" if arm.mfe_r is not None else "—",
+            f"{arm.mae_r:+.3f}" if arm.mae_r is not None else "—",
+            f"{arm.target_first_pct:.1f}%" if arm.target_first_pct is not None else "—",
+            f"{arm.stop_first_pct:.1f}%" if arm.stop_first_pct is not None else "—",
+        )
+    out.append(arms)
+    pairs = Table(title="Paired edge (rule minus control)", title_justify="left")
+    for col in ("Slice", "n", "Edge", "SE", "t"):
+        pairs.add_column(col, justify="left" if col == "Slice" else "right")
+    for p in (edge, report.net_edge, *report.halves, *report.by_trigger, *report.four_year):
+        pairs.add_row(*_paired_row(p))
+    out.append(pairs)
+    out.append(Text.from_markup("\n".join(f"[dim]· {escape(c)}[/dim]" for c in report.caveats)))
+    return out

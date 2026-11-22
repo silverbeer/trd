@@ -917,6 +917,79 @@ _ENTRIES: list[GlossaryEntry] = [
         used_in=["trd engine human", "trd engine outbox", "trd engine positions"],
     ),
     GlossaryEntry(
+        key="human-brief",
+        term="Human-slot brief (trd engine human brief)",
+        category=Category.ENGINE,
+        definition=(
+            "A post-close read for the entries YOU choose. Three blocks: the market state "
+            "(six bounce signals, each on, off or unknown), the stretched names that have "
+            "turned with the stop and target a human buy would get, and the flags that "
+            "should stop you — earnings inside the hold, a name that already has an owner, "
+            "no room in the sleeve.\n\n"
+            "It is a screen and never an order: nothing is written, and 'trd engine human "
+            "buy SYM' is still yours to run in session hours. It reads stored daily bars "
+            "only, so it describes the last close, not the next open."
+        ),
+        example=(
+            "After a 12% index sell-off the brief shows 0 of 6 signals on, 90 names "
+            "stretched and one turned. That reads as: the selling has not shown it is "
+            "done, and one name moved early."
+        ),
+        related=["bounce-signals", "stretched-and-turned", "human-slot"],
+        used_in=["trd engine human brief"],
+    ),
+    GlossaryEntry(
+        key="bounce-signals",
+        term="Bounce signals (market state)",
+        category=Category.ENGINE,
+        definition=(
+            "Six things that tend to show up before a sell-off turns, read from the last "
+            "few sessions of the S&P 500, the VIX and the engine's universe. None is a "
+            "forecast; each is a fact about bars already printed.\n\n"
+            "VIX rolls over: the index makes a new low but the VIX (the market's fear "
+            "gauge) does not make a new high — fear fading before price turns.\n"
+            "Capitulation bar: a gap down of 1% or more that closes green on 1.5x average "
+            "volume — forced sellers finished.\n"
+            "Higher low: a second sell-off holds above a low at least 3 sessions old, then "
+            "price closes through the prior session's high.\n"
+            "Breadth thrust: breadth is the share of names closing up. A washout (15% or "
+            "fewer) followed by a day when 80% or more rise.\n"
+            "Leadership flip: on an up day, the fifth of names that fell hardest over the "
+            "prior 10 sessions rises more than the fifth that held up best.\n"
+            "RSI divergence: price makes a lower low while RSI (a 0-100 momentum gauge) "
+            "makes a higher low — the selling is losing force."
+        ),
+        example=(
+            "A sharp bounce with 0 of 6 on is a bounce inside a sell-off. The same bounce "
+            "after a washout, a thrust and a higher low is one that has shown its work."
+        ),
+        related=["human-brief", "market-temperature", "rsi"],
+        used_in=["trd engine human brief"],
+    ),
+    GlossaryEntry(
+        key="stretched-and-turned",
+        term="Stretched and turned (candidate screen)",
+        category=Category.ENGINE,
+        definition=(
+            "The brief's candidate rule. Stretched: the close is 10% or more below the "
+            "name's own 200-session average. Turned: it closed back above its 20-session "
+            "average within 3 sessions, or it held a higher low and closed through the "
+            "prior session's high. Both must hold on the same close.\n\n"
+            "MEASURED 2026-11-22 over 10 years, 2,283 fresh firings: no edge over a "
+            "random universe name bought the same day (-0.006R, SE 0.041, t -0.13), "
+            "neither trigger better than the other, and being below the 4-year average "
+            "added nothing (+0.07R either side of it). So the screen says where to look "
+            "and nothing about what to buy. 'trd engine human study' re-runs the "
+            "measurement on any home."
+        ),
+        formula=(
+            "stretch = close / SMA(200) - 1 <= -10%, and (close > SMA(20) after a close at "
+            "or below it within 3 sessions, or a higher low with close > prior high)"
+        ),
+        related=["human-brief", "entry-edge", "passed-signals"],
+        used_in=["trd engine human brief", "trd engine human study"],
+    ),
+    GlossaryEntry(
         key="let-run",
         term="Let it run (human slots)",
         category=Category.ENGINE,

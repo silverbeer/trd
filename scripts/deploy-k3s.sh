@@ -491,6 +491,11 @@ if [[ "$LIVE_MODE" == true ]]; then
     sed -E -e "s#path: /Users/[^[:space:]]+#path: ${ENGINE_HOME}#" \
         k3s/trd-engine/live-report-cronjob.yaml | kubectl apply -f -
     echo -e "${GREEN}✅ Applied${NC} (trd-live-report, 16:20 ET weekdays → ${ENGINE_HOME}, private alert chat)"
+    # The human-slot brief (SB-1754): market state and the stretched names that
+    # turned, for the owner's own picks. Read-only; the live home only.
+    sed -E -e "s#path: /Users/[^[:space:]]+#path: ${ENGINE_HOME}#" \
+        k3s/trd-engine/human-brief-cronjob.yaml | kubectl apply -f -
+    echo -e "${GREEN}✅ Applied${NC} (trd-human-brief, 16:45 ET weekdays → ${ENGINE_HOME}, private alert chat)"
 fi
 echo ""
 

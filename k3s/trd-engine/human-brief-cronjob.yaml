@@ -1,0 +1,103 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: trd-human-brief
+  namespace: trd
+  labels:
+    app: trd
+    component: human-brief
+spec:
+  # 16:45 ET on weekdays: after the close sync (first queue tick past 16:05,
+  # retried each tick) has stored the settled bars, and after the day's other
+  # messages (the combined report, the live book, the review). The brief reads
+  # daily closes; run before the sync lands it would read the morning bar as
+  # the close.
+  #
+  # timeZone, so DST is handled and this does not silently become 15:45 in
+  # November — an hour when the market is still open and the bars are not final.
+  schedule: "45 16 * * 1-5"
+  timeZone: "America/New_York"
+
+  # One message, not two.
+  concurrencyPolicy: Forbid
+
+  # A late brief is still the day's brief. An hour of slack covers a node that
+  # was asleep at 16:45.
+  startingDeadlineSeconds: 3600
+
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      # One attempt. The command opens the database read-only and either sends
+      # or says why not; retrying into the same answer only adds a second send.
+      backoffLimit: 0
+      # A day, not an hour: a failed job was deleted with its logs
+      # before anyone looked (SB-1507). Successful ones are cheap to keep too.
+      ttlSecondsAfterFinished: 86400
+      template:
+        metadata:
+          labels:
+            app: trd
+            component: human-brief
+        spec:
+          restartPolicy: Never
+          containers:
+            - name: trd
+              image: trd:latest
+              imagePullPolicy: Never # locally built, imported with ctr
+              # Passthrough mode of the entrypoint: runs this trd subcommand only.
+              # READ-ONLY connection, no network, writes nothing: a screen for the
+              # owner's own picks, never an order (SB-1754). --notify goes to the
+              # PRIVATE live alert chat and the command refuses rather than falling
+              # back to the channel. Nothing is sent on a date with no session.
+              args:
+                - engine
+                - human
+                - brief
+                - --notify
+              env:
+                - name: TRD_DB_WAIT_SECONDS
+                  # Wait out a close sync still holding the writer lock (SB-1507):
+                  # its bars are the ones this job should read anyway.
+                  value: "1800"
+                - name: TRD_HOME
+                  value: /data
+                - name: TZ
+                  value: America/New_York
+                - name: NO_COLOR
+                  value: "1" # plain text in kubectl logs
+              envFrom:
+                # TELEGRAM_BOT_TOKEN plus TRD_LIVE_ALERT_CHAT_ID / TRD_BOT_ALLOWED_USER_IDS
+                # — the same secret the live scan reads its alert chat from.
+                - secretRef:
+                    name: trd-engine-telegram
+                    optional: true
+              resources:
+                requests:
+                  memory: "128Mi"
+                  cpu: "50m"
+                limits:
+                  memory: "512Mi"
+                  cpu: "500m"
+              securityContext:
+                runAsNonRoot: true
+                # Must match the uid that owns the engine home.
+                runAsUser: 1000
+                allowPrivilegeEscalation: false
+                capabilities:
+                  drop:
+                    - ALL
+              volumeMounts:
+                - name: trd-home
+                  mountPath: /data
+          volumes:
+            # The live home ONLY. EDIT for the machine you deploy to —
+            # deploy-k3s.sh --live rewrites it to ENGINE_HOME.
+            #
+            # `type: Directory`, never DirectoryOrCreate: a dead host share must
+            # fail the mount, not hand the pod an empty directory (SB-1054).
+            - name: trd-home
+              hostPath:
+                path: /Users/USERNAME/.trd-live
+                type: Directory
