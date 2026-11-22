@@ -1680,6 +1680,14 @@ def sunday_prep_message(briefing: SundayPrepBriefing) -> str:
     vix = f"{vol.vix:.2f}" if vol.vix is not None else "—"
     market += ["", f"{_prep_vix(vol.band)} <b>VIX {vix}</b> · {_h(vol.band)}", _h(vol.note)]
 
+    # Never dropped to fit: a closed session changes what every other line means.
+    closures: list[str] = []
+    if b.closures:
+        closures = ["", "🏖 <b>Short week</b>"]
+        for c in b.closures:
+            what = "market closed" if c.kind == "closed" else f"closes {_h(c.close_time_et)}"
+            closures.append(f"• <b>{c.date:%a}</b> — {what} · {_h(c.name)}")
+
     events: list[str] = []
     if b.econ_events:
         events = ["", "📅 <b>Big events</b>"]
@@ -1745,7 +1753,19 @@ def sunday_prep_message(briefing: SundayPrepBriefing) -> str:
     optional = [watch, themes, sectors, levels]
     while True:
         text = "\n".join(
-            [*head, *market, *events, *earnings, *sectors, *levels, *themes, *watch, *risks, *close]
+            [
+                *head,
+                *closures,
+                *market,
+                *events,
+                *earnings,
+                *sectors,
+                *levels,
+                *themes,
+                *watch,
+                *risks,
+                *close,
+            ]
         )
         if len(text) <= TELEGRAM_MAX_CHARS or not any(optional):
             return text

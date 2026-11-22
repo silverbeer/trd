@@ -20,6 +20,9 @@ from trd.data import (
     UNIVERSE,
     VIX_SYMBOL,
     EconEvent,
+    MarketClosure,
+    calendar_covers,
+    closures_for_week,
     events_for_week,
 )
 from trd.errors import ProviderError
@@ -102,6 +105,11 @@ class SundayPrepBriefing(BaseModel):
     futures: list[FuturesQuote]
     commodities: list[FuturesQuote]  # oil (WTI/Brent) + gold; reuses the quote-row shape
     econ_events: list[EconEvent]
+    # Sessions the market skips or cuts short this week (SB-1755). Empty means a
+    # full week only while `closures_checked` is true: past the end of the
+    # maintained holiday table nothing is known, and that is said, not assumed.
+    closures: list[MarketClosure] = []
+    closures_checked: bool = True
     earnings: list[EarningsItem]
     sector_leaders: list[SectorMove]
     sector_laggards: list[SectorMove]
@@ -115,6 +123,20 @@ class SundayPrepBriefing(BaseModel):
 
 
 # --- helpers ----------------------------------------------------------------
+
+
+def closure_phrase(c: MarketClosure) -> str:
+    """'is closed Thursday (Thanksgiving Day)' / 'closes at 1:00 PM ET Friday (...)'."""
+    if c.kind == "closed":
+        return f"is closed {c.day} ({c.name})"
+    return f"closes at {c.close_time_et} {c.day} ({c.name})"
+
+
+def short_week_sentence(closures: list[MarketClosure]) -> str:
+    """One sentence naming every closure of the week, or '' for a full week."""
+    if not closures:
+        return ""
+    return "A short week: the market " + " and ".join(closure_phrase(c) for c in closures) + "."
 
 
 def _dec(value: float | None, places: str = "0.01") -> Decimal | None:
@@ -391,8 +413,20 @@ class SundayPrepService:
         earnings: list[EarningsItem],
         vol: VolatilityRead,
         futures: list[FuturesQuote],
+        closures: list[MarketClosure],
+        closures_checked: bool,
     ) -> list[str]:
         risks: list[str] = []
+        if closures:
+            risks.append(
+                "Holiday week — fewer sessions and thinner volume; moves can overshoot "
+                "in both directions."
+            )
+        if not closures_checked:
+            risks.append(
+                "Holiday calendar not maintained for this week — closures and early "
+                "closes were NOT checked."
+            )
         if any("FOMC" in e.name for e in events):
             risks.append(
                 "FOMC decision — a hawkish surprise or hawkish dots can reprice risk fast."
@@ -470,6 +504,7 @@ class SundayPrepService:
         vol: VolatilityRead,
         leaders: list[SectorMove],
         events: list[EconEvent],
+        closures: list[MarketClosure],
     ) -> str:
         pcts = [float(f.change_pct) for f in futures if f.change_pct is not None]
         avg = sum(pcts) / len(pcts) if pcts else 0.0
@@ -496,6 +531,9 @@ class SundayPrepService:
             )
         else:
             clauses.append("A light macro calendar puts the focus on earnings and price action.")
+        short = short_week_sentence(closures)
+        if short:
+            clauses.append(short)
         return " ".join(clauses)
 
     # -- entry point ----------------------------------------------------------
@@ -508,11 +546,13 @@ class SundayPrepService:
         vol = self._volatility()
         key_levels = self._key_levels(reference)
         events = events_for_week(week_start, week_end)
+        closures = closures_for_week(week_start, week_end)
+        closures_checked = calendar_covers(week_start, week_end)
         earnings = self._earnings(week_start, week_end)
         themes = self._themes(leaders, events, earnings, vol)
-        risks = self._risks(events, earnings, vol, futures)
+        risks = self._risks(events, earnings, vol, futures, closures, closures_checked)
         watchlist = self._watchlist(leaders, laggards, earnings, key_levels, vol)
-        tone = self._tone(futures, vol, leaders, events)
+        tone = self._tone(futures, vol, leaders, events, closures)
         return SundayPrepBriefing(
             generated_for=reference,
             week_start=week_start,
@@ -521,6 +561,8 @@ class SundayPrepService:
             futures=futures,
             commodities=commodities,
             econ_events=events,
+            closures=closures,
+            closures_checked=closures_checked,
             earnings=earnings,
             sector_leaders=leaders,
             sector_laggards=laggards,
