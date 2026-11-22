@@ -47,6 +47,7 @@ from trd.notify.telegram import LIVE_LABEL
 from trd.services.benchmark import BENCHMARK
 from trd.services.daily_report import DailyReport, EngineDay, ExitEvent, TwinDivergence
 from trd.services.engine import ScanFill, ScanResult
+from trd.services.human_brief import HumanBrief
 from trd.services.ira_compare import AccountResult, CompareReport, WindowResult
 from trd.services.live_report import LivePosition, LiveReport
 from trd.services.review import EnginePack, ReviewResult
@@ -1855,3 +1856,73 @@ def _ira_verdict(report: CompareReport, pick: Pick, leaders: list[str]) -> str:
     if not rest or best is None:
         return f"  🏁 {head}: level"
     return f"  🏁 {head} ahead by {float(best - max(rest)):.1f} pts"
+
+
+# ----------------------------------------------------- human-slot brief (SB-1754)
+
+_BRIEF_MARK = {True: "✅", False: "▫️", None: "❔"}
+
+
+def _brief_pct(value: Decimal | None) -> str:
+    return "—" if value is None else f"{value:+.0f}%"
+
+
+def human_brief_message(brief: HumanBrief) -> str:
+    """The human-slot brief for the PRIVATE alert chat, Telegram HTML.
+
+    Market state first (it decides whether the list below is worth reading),
+    then the stretched names that turned with the plan a buy would get, then
+    what is still waiting and how much room the sleeve has. Public tickers and
+    the sleeve's own size only — no account, fund or firm is named.
+    """
+    state = brief.state
+    if state.as_of is None:
+        return "🧭 <b>Human-slot brief</b>\nNo S&P 500 bars stored — nothing to read."
+    known = state.known_count
+    lines = [
+        f"🧭 <b>Human-slot brief</b> · {state.as_of:%a %b %-d}",
+        f"<i>Bounce signals on: {state.on_count} of {known}</i>",
+        f"S&P 500 {state.spy_close:,.2f} · {_brief_pct(state.spy_vs_200_pct)} vs 200-day"
+        + (f" · VIX {state.vix:.1f}" if state.vix is not None else ""),
+        "",
+        "<b>Market state</b>",
+    ]
+    lines += [f"{_BRIEF_MARK[s.on]} <b>{_h(s.name)}</b> — {_h(s.detail)}" for s in state.signals]
+
+    lines += [
+        "",
+        f"<b>Stretched and turned</b> · {brief.stretched} of {brief.screened} names stretched",
+    ]
+    if not brief.candidates:
+        lines.append("None has turned yet.")
+    for c in brief.candidates:
+        plan = f"stop {c.stop_price:,.2f} · target {c.target_price:,.2f}"
+        if c.risk is not None:
+            plan += f" · risk ${c.risk:,.2f}"
+        lines.append(f"• <b>{_h(c.symbol)}</b> {c.close:,.2f} — {_h(c.reason)}")
+        lines.append(f"  {plan}")
+        if c.earnings_in_window and c.earnings_on is not None:
+            lines.append(f"  ⚠️ earnings {c.earnings_on:%a %b %-d}, inside the hold")
+    if brief.watching:
+        waiting = " · ".join(
+            f"{_h(w.symbol)} {_brief_pct(w.stretch_200_pct)}" for w in brief.watching
+        )
+        lines += ["", f"<b>Stretched, not turned</b>: {waiting}"]
+    if brief.excluded:
+        lines.append(f"<b>Set aside</b>: {', '.join(_h(x.symbol) for x in brief.excluded)}")
+
+    sleeve = brief.sleeve
+    lines.append("")
+    if not sleeve.configured:
+        lines.append("🪑 No human slots on this engine.")
+    elif sleeve.halted:
+        lines.append("🪑 Human sleeve <b>HALTED</b> — no buys until it is resumed.")
+    else:
+        size = f" · ${sleeve.size:,.2f} per slot" if sleeve.size is not None else ""
+        lines.append(f"🪑 Room for <b>{sleeve.free}</b> of {sleeve.slots} human slots{size}")
+    lines += [
+        "",
+        "<i>A screen, not a recommendation: measured, this rule has no edge over a random "
+        "name bought the same day. Nothing is ordered — to act: trd engine human buy SYM.</i>",
+    ]
+    return "\n".join(lines)

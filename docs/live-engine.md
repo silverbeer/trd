@@ -69,6 +69,7 @@ for it. An order call nothing asked for halts the engine.
 | runner stopped / orders stuck | private chat (watchdog) | `🟠 trd live engine needs a person` |
 | every weekday 16:16 | channel | daily report: **💵 LIVE (real money)** block first, then paper; live vs swing20 |
 | every weekday 16:20 | private chat | `💵 trd live — <date>`: the account (capital, worth, return, today's move, cash, orders, halt), then every open position — P&L, R, today's move, stop in force (↑ = trailing) and how far below, target, at risk — then the day's buys, exits and orders that never filled. `trd engine live-report`; CronJob `trd-live-report`, applied by `--live`. Nothing is sent on a market holiday |
+| every weekday 16:45 | private chat | `🧭 Human-slot brief`: six bounce signals on/off with their numbers, the universe names 10%+ below their 200-session average that have turned (with the stop and target a human buy would get), what is stretched and still falling, and room in the human sleeve. A screen, never an order — measured, it has no edge over a random name. `trd engine human brief`; CronJob `trd-human-brief`, applied by `--live`. Nothing is sent on a market holiday |
 
 `/status live` in the bot shows a halt first, then open intents, awaiting
 approval, settled cash and stuck intents.
@@ -423,6 +424,7 @@ trd engine status          # health, cash, halt, caps, intents
 trd engine intents         # every order request and what became of it
 trd engine positions       # open trades: entry, stop, target, R
 trd engine live-report     # the 16:20 message, printed here (no --notify)
+trd engine human brief     # the 16:45 brief for your own picks, printed here
 trd engine outbox          # what the runner would place right now
 trd engine close SYM       # sell one position by hand (you approve in the app)
 trd engine cash            # settled vs unsettled, bridge, buying power

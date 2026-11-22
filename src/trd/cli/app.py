@@ -66,8 +66,10 @@ from trd.cli.render import (
     fmt_signed_pct,
     forecast_table,
     history_table,
+    human_brief_renderables,
     human_buy_lines,
     human_renderables,
+    human_study_renderables,
     income_table,
     indicator_panel,
     live_report_renderables,
@@ -123,6 +125,7 @@ from trd.notify.messages import (
     fill_alert_message,
     fill_messages,
     halt_message,
+    human_brief_message,
     intent_message,
     ira_compare_message,
     live_report_message,
@@ -202,6 +205,7 @@ from trd.services.exit_nudge import minutes_waiting as nudge_minutes
 from trd.services.exit_nudge import save_state as save_nudge_state
 from trd.services.exit_whatif import ExitWhatIfService, parse_variants
 from trd.services.human import HumanService
+from trd.services.human_brief import STUDY_SAMPLES, STUDY_SEED, HumanBriefService
 from trd.services.indicators import seed_defaults
 from trd.services.ira_compare import IraCompareService
 from trd.services.live_report import live_report
@@ -4739,6 +4743,121 @@ def engine_human(ctx: typer.Context, as_json: JsonOpt = False) -> None:
         return
     for renderable in human_renderables(view):
         console.print(renderable)
+
+
+@human_app.command("brief")
+def engine_human_brief(
+    date_str: Annotated[
+        str | None,
+        typer.Option("--date", "-d", help="Session to read (YYYY-MM-DD). Default: today."),
+    ] = None,
+    notify: Annotated[
+        bool, typer.Option("--notify", help="Send it to the private live alert chat.")
+    ] = False,
+    as_json: JsonOpt = False,
+) -> None:
+    """Post-close read for your own picks: is a bounce confirmed, and which names turned.
+
+    Three blocks. MARKET STATE: six signals that tend to show before a sell-off
+    turns (VIX rolling over, a capitulation bar, a higher low, a breadth thrust,
+    a leadership flip, an RSI divergence), each on / off / unknown with its
+    numbers. CANDIDATES: universe names 10%+ below their 200-session average
+    that have turned, with the stop and target a human buy would get.
+    FLAGS: earnings inside the hold, a name that already has an owner, room in
+    the sleeve.
+
+    A screen, never an order — 'trd engine human buy SYM' is still yours to run.
+    READ-ONLY connection, no network. --notify goes to the private alert chat
+    and sends nothing on a date with no stored session. 'trd learn human-brief'.
+    """
+    _use_json(as_json)
+    on = (_parse_date(date_str) or datetime.now()).date()
+    db_path = get_settings().db_path
+    conn = None
+    try:
+        if not db_path.exists():
+            raise TrdError(f"No database at {db_path}. Run 'trd init' first.")
+        conn = connect_read_only(db_path)
+        brief = HumanBriefService(EngineService(conn, YFinanceProvider())).brief(on)
+    except TrdError as exc:
+        _fail(exc)
+        return
+    finally:
+        if conn is not None:
+            conn.close()
+
+    message = human_brief_message(brief)
+    sent = False
+    if notify and brief.market_open:
+        refused: list[str] = []
+        notifier = alert_notifier_from_env(error=refused.append)
+        if notifier is None:
+            _fail(TrdError(refused[0] if refused else "No TELEGRAM_BOT_TOKEN set."))
+            return
+        try:
+            notifier.send(message, html=True)
+        except TrdError as exc:  # NotifyError: delivery failed, token never shown
+            _fail(exc)
+            return
+        sent = True
+    if as_json:
+        _emit_json({"message": message, "sent": sent, "brief": brief.model_dump(mode="json")})
+        return
+    for part in human_brief_renderables(brief):
+        console.print(part)
+    if notify and not brief.market_open:
+        console.print("[dim]No session stored for this date — nothing sent.[/dim]")
+
+
+@human_app.command("study")
+def engine_human_study(
+    horizon: Annotated[
+        int | None,
+        typer.Option("--horizon", help="Sessions held. Default: the engine's max_sessions."),
+    ] = None,
+    samples: Annotated[
+        int, typer.Option("--samples", "-k", help="Random names drawn per firing.")
+    ] = STUDY_SAMPLES,
+    seed: Annotated[
+        int, typer.Option("--seed", help="Random seed — same seed, same draws, same answer.")
+    ] = STUDY_SEED,
+    as_json: JsonOpt = False,
+) -> None:
+    """Does 'stretched and turned' beat a random name bought the same day?
+
+    Every fresh firing of the brief's candidate rule in this home's stored
+    history, paired with random universe names on the same session, each priced
+    with the stop the engine would set and walked over the hold. Edge ± SE, by
+    halves, by trigger, and split on the 4-year average where a name has the
+    bars for it. |t| >= 2 with both halves agreeing is the bar. Read-only.
+    Deep history ('trd sync --years 10') makes it worth reading.
+    """
+    _use_json(as_json)
+    db_path = get_settings().db_path
+    conn = None
+    try:
+        if not db_path.exists():
+            raise TrdError(f"No database at {db_path}. Run 'trd init' first.")
+        if horizon is not None and horizon < 1:
+            raise TrdError("--horizon must be at least 1 session.")
+        if samples < 1:
+            raise TrdError("--samples must be at least 1.")
+        conn = connect_read_only(db_path)
+        with _spinner("Replaying the rule..."):
+            report = HumanBriefService(EngineService(conn, YFinanceProvider())).study(
+                horizon=horizon, samples=samples, seed=seed
+            )
+    except TrdError as exc:
+        _fail(exc)
+        return
+    finally:
+        if conn is not None:
+            conn.close()
+    if as_json:
+        _emit_json(report)
+        return
+    for part in human_study_renderables(report):
+        console.print(part)
 
 
 @human_app.command("set")
