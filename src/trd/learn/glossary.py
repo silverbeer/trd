@@ -1029,14 +1029,14 @@ _ENTRIES: list[GlossaryEntry] = [
             "cash in the settled-cash ledger; an open sell stops the engine asking to sell "
             "the same position twice. Each carries a ref id the broker uses to recognise a "
             "retry, so re-sending one cannot become two orders. With trade approvals on, the "
-            "broker answers with an approval that lapses at 16:00 ET that day — an intent "
-            "nobody approved in time ends as expired.\n\n"
+            "broker answers with an approval that lapses at the close that day (16:00 ET, "
+            "13:00 on a half-day) — an intent nobody approved in time ends as expired.\n\n"
             "'trd engine fills' resolves them from a snapshot of the broker's orders and "
             "approvals: a fill writes the txn at the broker's price and opens or closes the "
             "position; a rejection, cancellation, declined or lapsed approval ends the intent "
             "and releases what it held. An unplaced or unapproved intent from an earlier "
-            "session — or from today, once it is 16:00 ET — expires on its own; one the "
-            "broker holds an order for waits for the broker's answer. Placing intents at the "
+            "session — or from today, once the session has closed — expires on its own; one "
+            "the broker holds an order for waits for the broker's answer. Placing intents at the "
             "broker (the outbox) is not built yet."
         ),
         formula=(

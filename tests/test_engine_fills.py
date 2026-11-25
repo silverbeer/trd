@@ -465,6 +465,13 @@ def test_expiry_cutoff_is_midnight_before_the_close_and_tomorrow_after():
     assert intent_expiry_cutoff(datetime(2024, 9, 16, 16, 0)) == datetime(2024, 9, 17)
 
 
+def test_expiry_cutoff_on_an_early_close_is_one_oclock():
+    """The day after Thanksgiving closes at 13:00 (SB-1775): an approval raised
+    that morning lapses then, not at 16:00."""
+    assert intent_expiry_cutoff(datetime(2026, 11, 27, 12, 59)) == datetime(2026, 11, 27)
+    assert intent_expiry_cutoff(datetime(2026, 11, 27, 13, 0)) == datetime(2026, 11, 28)
+
+
 def test_expire_stale_at_the_close(engine, fills, conn, provider):
     intent = _buy_intent(engine, conn, provider)
     assert fills.expire_stale(datetime(2024, 9, 16, 15, 59)) == []

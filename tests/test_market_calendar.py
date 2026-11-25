@@ -4,7 +4,7 @@ The briefing for Thanksgiving week 2026 dated Initial Jobless Claims on the
 holiday itself and said nothing about the week being short.
 """
 
-from datetime import date
+from datetime import date, time
 
 from trd.data.market_calendar import (
     CALENDAR_THROUGH,
@@ -14,6 +14,8 @@ from trd.data.market_calendar import (
     closures_for_week,
     events_for_week,
     is_federal_holiday,
+    session_close,
+    session_close_minute,
 )
 
 THANKSGIVING_WEEK = (date(2026, 11, 23), date(2026, 11, 27))
@@ -98,3 +100,26 @@ def test_the_holiday_table_has_not_run_out() -> None:
     has to say 'not checked'. Extend MARKET_HOLIDAYS / EARLY_CLOSES from the
     exchange's published calendar and move CALENDAR_THROUGH."""
     assert (CALENDAR_THROUGH - date.today()).days > 90
+
+
+# ------------------------------------------------------------ session close (SB-1775)
+
+
+def test_the_day_after_thanksgiving_closes_at_one() -> None:
+    assert session_close(date(2026, 11, 27)) == time(13, 0)
+    assert session_close_minute(date(2026, 11, 27)) == 13 * 60
+
+
+def test_a_regular_session_closes_at_four() -> None:
+    assert session_close(date(2026, 11, 25)) == time(16, 0)
+    assert session_close_minute(date(2026, 11, 25)) == 16 * 60
+
+
+def test_every_early_close_in_the_table_closes_at_one() -> None:
+    assert {session_close(d) for d in EARLY_CLOSES} == {time(13, 0)}
+
+
+def test_a_half_day_outside_the_table_reads_as_a_full_session() -> None:
+    """Only the dates the table was read for are known: the day after
+    Thanksgiving 2025 was a half-day, but nothing here says so."""
+    assert session_close(date(2025, 11, 28)) == time(16, 0)

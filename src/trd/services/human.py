@@ -242,7 +242,8 @@ class HumanService:
         minute = at.hour * 60 + at.minute
         if at.weekday() > 4 or minute < SESSION_OPEN_MINUTE or at >= intent_expires_at(at):
             raise TrdError(
-                "Human buys are taken during the session only (09:30-16:00 ET, weekdays): "
+                "Human buys are taken during the session only (09:30 to the close — 16:00 "
+                "ET, 13:00 on a half-day — weekdays): "
                 "an order written outside it would be sized off a stale price and lapse "
                 "before the runner could place it."
             )

@@ -14,12 +14,13 @@ the original risk.
 
 from abc import ABC, abstractmethod
 from collections.abc import Sequence
-from datetime import datetime
+from datetime import date, datetime
 from decimal import ROUND_DOWN, Decimal
 from typing import ClassVar
 
 from pydantic import BaseModel, computed_field
 
+from trd.data.market_calendar import REGULAR_CLOSE, session_close, session_close_minute
 from trd.engine.base import indicator, last, prior
 from trd.models import Bar, EnginePosition
 from trd.timeframes import sessions_to_bars
@@ -399,6 +400,26 @@ class TimeExit(ExitRule):
         )
 
 
+# How long before a 13:00 early close a day engine goes flat. A 15:55 flat time on
+# a half-day is three hours after the bell: without this the position rode the
+# weekend (SB-1775). Five minutes is the margin 15:55 already keeps on 16:00.
+EARLY_CLOSE_FLAT_LEAD_MINUTES = 5
+
+
+def flat_at_on(flat_at: int, on: date) -> int:
+    """The HHMM a day engine goes flat on `on`: its `flat_at_minute`, pulled in to
+    five minutes before the bell on an early close — 12:55 on a 13:00 half-day.
+
+    A regular session returns `flat_at` untouched. 0 (swing) stays 0. Only the
+    early closes in the market calendar are known (`session_close`); a half-day
+    outside its range is treated as a full session.
+    """
+    if flat_at <= 0 or session_close(on) == REGULAR_CLOSE:
+        return flat_at
+    latest = session_close_minute(on) - EARLY_CLOSE_FLAT_LEAD_MINUTES
+    return min(flat_at, (latest // 60) * 100 + latest % 60)
+
+
 class SessionClose(ExitRule):
     key = "session_close"
     name = "Session Close"
@@ -418,7 +439,7 @@ class SessionClose(ExitRule):
         now: datetime,
         timeframe: str,
     ) -> ExitDecision | None:
-        flat_at = int(params.get("flat_at_minute", 0))
+        flat_at = flat_at_on(int(params.get("flat_at_minute", 0)), now.date())
         if flat_at <= 0:
             return None
         # A position still open from an earlier session should not exist on a day

@@ -187,6 +187,22 @@ def test_outbox_leaves_out_expired_intents_and_writes_nothing(engine, outbox, co
     assert _stored(conn, stale.id).status == IntentStatus.PENDING
 
 
+def test_on_an_early_close_the_outbox_works_to_the_one_oclock_bell(engine, outbox, conn, provider):
+    """The day after Thanksgiving closes at 13:00 (SB-1775): an intent expires
+    then, is late from 12:45, and is gone from the outbox after the bell."""
+    account_id = _live_engine(engine, conn, provider)
+    _write(conn, account_id, datetime(2026, 11, 27, 12, 44))
+    late = _write(conn, account_id, datetime(2026, 11, 27, 12, 45))
+
+    orders = outbox.pending(datetime(2026, 11, 27, 12, 52)).orders
+    assert [o.expires_at for o in orders] == [datetime(2026, 11, 27, 13, 0)] * 2
+    assert [o.late for o in orders] == [False, True]
+    assert orders[1].intent_id == late.id
+    assert orders[1].note is not None and "8 minute(s)" in orders[1].note
+    assert "13:00" in orders[1].note
+    assert outbox.pending(datetime(2026, 11, 27, 13, 1)).orders == []
+
+
 def test_outbox_flags_a_late_intent_and_keeps_it(engine, outbox, conn, provider):
     account_id = _live_engine(engine, conn, provider)
     _write(conn, account_id, datetime(2026, 10, 21, 15, 44))
@@ -367,6 +383,22 @@ def test_a_configured_label_is_kept_on_live_messages():
 
 def test_intent_message_never_rounds_the_size():
     assert "0.069421 sh" in intent_message(_row(quantity="0.069421"), LIVE_LABEL)
+
+
+def test_messages_name_an_early_close():
+    row = _row()
+    row = row.model_copy(
+        update={"intent": row.intent.model_copy(update={"created_at": datetime(2026, 11, 27, 10)})}
+    )
+    assert intent_message(row, LIVE_LABEL).splitlines()[0].endswith("expires 13:00")
+    ack = OutboxAck(
+        symbol="XYZ",
+        from_status=IntentStatus.PENDING,
+        to_status=IntentStatus.AWAITING_APPROVAL,
+        changed=True,
+        intent=row.intent,
+    )
+    assert approval_message(ack, LIVE_LABEL).splitlines()[0].endswith("expires 13:00 ET")
 
 
 def test_approval_message():

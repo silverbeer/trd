@@ -105,6 +105,7 @@ from trd.models import (
     IncomeKind,
     Side,
     SizingMode,
+    intent_expires_at,
 )
 from trd.models.alloc import AllocTarget, CashFlowKind, CashYield
 from trd.notify import alert_notifier_from_env, label_from_env, scan_alert_messages, scan_messages
@@ -4062,10 +4063,11 @@ def engine_outbox(
     to the broker's order tool: ref_id, symbol, side, quantity, type, time in
     force, market hours — plus what a person approving it wants to see.
 
-    Oldest first. An intent past its 16:00 ET expiry is left out. One written at
-    or after 15:45 ET is flagged late: an approval raised then has minutes to be
-    given. Read-only. Placing is the agent's job (docs/broker-mcp.md); record
-    what came back with 'trd engine outbox ack'.
+    Oldest first. An intent past its expiry (the close: 16:00 ET, 13:00 on a
+    half-day) is left out. One written in the last 15 minutes before it is flagged
+    late: an approval raised then has minutes to be given. Read-only. Placing is
+    the agent's job (docs/broker-mcp.md); record what came back with 'trd engine
+    outbox ack'.
 
     The guardrails apply here too: halted, nothing is emitted except manual
     closes ('trd engine close') and human-slot orders (`halted: true`);
@@ -5088,7 +5090,8 @@ def _print_manual_close(result: ManualClose) -> None:
             )
         console.print(
             "Nothing is sold yet. The live runner places it (pre-market: at the open); "
-            "then [bold]approve it in your broker app[/bold]. It expires at 16:00 ET today — "
+            "then [bold]approve it in your broker app[/bold]. It expires at "
+            f"{intent_expires_at(intent.created_at):%H:%M} ET today — "
             f"if it is not approved by then, run 'trd engine close {result.symbol}' again "
             "in the next session."
         )

@@ -120,7 +120,7 @@ def stuck_intents(intents: list[OrderIntent], now: datetime) -> int:
 
     SUBMITTED from an earlier session than the last STUCK_SUBMITTED_SESSIONS: a
     good-for-day order the broker should have filled or cancelled by its close.
-    AWAITING_APPROVAL past its 16:00 expiry: the approval has lapsed at the broker,
+    AWAITING_APPROVAL past its expiry at the close: the approval has lapsed at the broker,
     and the intent still holds its slot and cash until a scan or ingest sweeps it.
     Both mean the loop between trd and the broker has stopped turning.
     """

@@ -351,6 +351,14 @@ def test_a_lapse_refusal_never_quotes(engine, conn, provider, monkeypatch, at):
         engine.close("AAA", at=at)
 
 
+def test_a_close_after_an_early_close_is_refused(engine, conn, provider, monkeypatch):
+    """13:05 on the day after Thanksgiving is past the 13:00 bell (SB-1775)."""
+    _live_holding(engine, conn, provider, "AAA")
+    _no_network(engine, monkeypatch)
+    with pytest.raises(TrdError, match="past the 13:00 ET close"):
+        engine.close("AAA", at=datetime(2026, 11, 27, 13, 5))
+
+
 def test_no_price_refuses_before_any_write(engine, conn, provider, monkeypatch):
     _live_holding(engine, conn, provider, "AAA")
     lapsed = _sell_intent(engine, conn, "AAA", FRIDAY)

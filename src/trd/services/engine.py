@@ -28,6 +28,7 @@ import duckdb
 from pydantic import BaseModel, computed_field
 
 from trd.build import build_version
+from trd.data.market_calendar import REGULAR_CLOSE, session_close
 from trd.engine import DEFAULT_EXIT_PARAMS, EXIT_REGISTRY, evaluate_exits, missing_rules, regime
 from trd.engine import REGISTRY as STRATEGIES
 from trd.engine.bars import (
@@ -39,7 +40,7 @@ from trd.engine.bars import (
     validate_timeframe,
 )
 from trd.engine.base import StrategyContext, indicator, last
-from trd.engine.exits import MANUAL_EXIT_RULE, exit_quantity, is_manual_exit
+from trd.engine.exits import MANUAL_EXIT_RULE, exit_quantity, flat_at_on, is_manual_exit
 from trd.engine.regime import REGIME_SYMBOLS
 from trd.engine.settlement import CashLedger, Flow, ledger, unsettled_funding
 from trd.engine.temperature import market_temperature
@@ -131,6 +132,22 @@ def entry_opens_at(params: dict[str, float]) -> int | None:
     if delay <= 0:
         return None
     return SESSION_OPEN_MINUTE + delay
+
+
+def entry_cutoff(params: dict[str, float], on: date) -> int | None:
+    """Minute-of-day after which a day-mode engine stops opening trades on `on`.
+
+    Returns None when `flat_at_minute` is off, which is every swing engine.
+    ENTRY_CUTOFF_MINUTES before the flat time in force that day (`flat_at_on`), so
+    a 13:00 half-day stops entries at 12:25 rather than 15:25. Minute-of-day, not
+    HHMM: 15:55 minus 30 minutes is 15:25, and HHMM arithmetic would say 15:25 too
+    only by luck — 16:05 minus 30 would give 15:75. Shared by the live scanner, the
+    backtest and the edge study, so the three cannot disagree on a half-day.
+    """
+    flat_at = flat_at_on(int(params.get("flat_at_minute", 0)), on)
+    if flat_at <= 0:
+        return None
+    return (flat_at // 100) * 60 + (flat_at % 100) - ENTRY_CUTOFF_MINUTES
 
 
 # Ten liquid, heavily-covered names. Small enough to reason about by hand, which
@@ -970,20 +987,6 @@ class EngineService:
         BarSource, so nothing below has to ask which timeframe it is running."""
         return BarSource(self.prices, (config or self.config()).timeframe)
 
-    @staticmethod
-    def _entry_cutoff(params: dict[str, float]) -> int | None:
-        """Minute-of-day after which a day-mode engine stops opening trades.
-
-        Returns None when `flat_at_minute` is off, which is every swing engine.
-        Minute-of-day, not HHMM: 15:55 minus 30 minutes is 15:25, and HHMM
-        arithmetic would say 15:25 too only by luck — 16:05 minus 30 would give
-        15:75.
-        """
-        flat_at = int(params.get("flat_at_minute", 0))
-        if flat_at <= 0:
-            return None
-        return (flat_at // 100) * 60 + (flat_at % 100) - ENTRY_CUTOFF_MINUTES
-
     def _earnings_blackout(self, instrument_id: int, today: date, days: int) -> date | None:
         """The earnings date blocking a new entry, or None if the way is clear.
 
@@ -1087,10 +1090,11 @@ class EngineService:
         if config.is_live:
             # Before anything reads the in-flight set: a buy nobody placed or
             # approved before the close must stop holding its slot and its cash.
-            # Approvals lapse at 16:00 ET the day they are raised (measured).
+            # Approvals lapse at the close the day they are raised (measured), 13:00
+            # on a half-day.
             lapsed = self.intents.expire_before(account.id, intent_expiry_cutoff(now), now)
             # A buy the outbox withholds as stale would otherwise hold its name and
-            # its cash until 16:00; expired here, this pass can re-plan it fresh.
+            # its cash until the close; expired here, this pass can re-plan it fresh.
             lapsed += self.intents.expire_pending_buys_before(
                 account.id, now - timedelta(minutes=STALE_INTENT_MINUTES), now
             )
@@ -1442,12 +1446,25 @@ class EngineService:
         # Without this a day-mode engine can enter at 15:50 and be flattened at
         # 15:55 by session_close — the spread paid twice for five minutes of
         # exposure. Entries stop before the flat time, exits keep running.
-        cutoff = self._entry_cutoff(config.exit_params)
+        cutoff = entry_cutoff(config.exit_params, now.date())
         if cutoff is not None and (now.hour * 60 + now.minute) >= cutoff:
             result.capacity = max(0, config.max_positions - engine_held)
             result.skipped.append(
                 f"no new entries within {ENTRY_CUTOFF_MINUTES}m of the session close — "
                 "a fill now would be flattened before it could work"
+            )
+            return
+
+        # Past a half-day's bell nothing can fill at a price this session will still
+        # quote. The scan entrypoint runs to 16:00 on every weekday, so on a 13:00
+        # early close this is what stops three hours of entries off a closed market
+        # (SB-1775). Exits keep running: the daily bar settles at 16:00 on the clock.
+        # A regular session is left as it was: the entrypoint's own window ends it.
+        close = session_close(now.date())
+        if close != REGULAR_CLOSE and now.time().replace(second=0, microsecond=0) > close:
+            result.capacity = max(0, config.max_positions - engine_held)
+            result.skipped.append(
+                f"no new entries after the {close:%H:%M} close — the session is over"
             )
             return
 
@@ -2004,17 +2021,19 @@ class EngineService:
             return ManualClose(symbol=instrument.symbol, mode=config.mode, fill=fill)
 
         # An intent written after the close or on a weekend is stale the moment it
-        # exists: the 16:00 sweep would expire it before anything could place it.
+        # exists: the sweep at the close (16:00, 13:00 on a half-day) would expire it
+        # before anything could place it.
         if now.weekday() > 4:
             raise TrdError(
                 "The market is closed for the weekend — a sell written now would lapse "
                 "before it could be placed. Run 'trd engine close' on the next weekday."
             )
-        if now >= intent_expires_at(now):
+        closes = intent_expires_at(now)
+        if now >= closes:
             raise TrdError(
-                "It is past the 16:00 ET close — a sell written now would lapse before it "
-                "could be placed. Run 'trd engine close' tomorrow, before or during the "
-                "session."
+                f"It is past the {closes:%H:%M} ET close — a sell written now would lapse "
+                "before it could be placed. Run 'trd engine close' on the next session, "
+                "before or during it."
             )
 
         # An approval or a placement that lapsed at an earlier close must not be

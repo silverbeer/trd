@@ -71,10 +71,11 @@ class FillIngestService:
         """Expire open intents nothing at the broker took up before they lapsed.
 
         PENDING and AWAITING_APPROVAL only, created before this session, or today
-        once it is 16:00 ET — when a trade approval lapses (measured: an approval
-        raised in the morning carried expires_at 20:00Z). SUBMITTED is left alone:
-        the broker has an order, and only its answer resolves it. Expiring is what
-        releases the slot, the entry and the cash a stale buy was holding.
+        once it is the close (16:00 ET, 13:00 on a half-day) — when a trade approval
+        lapses (measured: an approval raised in the morning carried expires_at 20:00Z).
+        SUBMITTED is left alone: the broker has an order, and only its answer
+        resolves it. Expiring is what releases the slot, the entry and the cash a
+        stale buy was holding.
         """
         _, account = self._live()
         return self._expire(account, now)
