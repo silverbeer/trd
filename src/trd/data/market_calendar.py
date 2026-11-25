@@ -19,10 +19,11 @@ Three sources, in order of reliability:
    it is reported as unchecked (`calendar_covers`), never as a week with no holiday.
 
 All times are US Eastern. `events_for_week` merges the first three for a date window;
-`closures_for_week` answers the fourth.
+`closures_for_week` answers the fourth, and `session_close` is the bell the engine
+works to on a given day (SB-1775).
 """
 
-from datetime import date, timedelta
+from datetime import date, time, timedelta
 
 from pydantic import BaseModel
 
@@ -94,6 +95,10 @@ EARLY_CLOSES: dict[date, str] = {
 # The span the two tables above were read for. Outside it nothing is known.
 CALENDAR_FROM = date(2026, 1, 1)
 CALENDAR_THROUGH = date(2028, 12, 31)
+
+# The bell, ET. A regular session ends at 16:00; one in EARLY_CLOSES at 13:00.
+REGULAR_CLOSE = time(16, 0)
+EARLY_CLOSE = time(13, 0)
 
 # The one market holiday that is NOT a federal holiday: agencies publish as usual.
 _NOT_FEDERAL = "Good Friday"
@@ -181,6 +186,24 @@ def is_federal_holiday(d: date) -> bool:
         return True
     name = MARKET_HOLIDAYS.get(d)
     return name is not None and name != _NOT_FEDERAL
+
+
+def session_close(d: date) -> time:
+    """The instant the session on `d` ends, exchange-local: 13:00 on an early
+    close, 16:00 otherwise.
+
+    Only the dates in EARLY_CLOSES are known. A half-day outside CALENDAR_FROM ..
+    CALENDAR_THROUGH — a backtest over 2025's day after Thanksgiving, say — reads
+    as a full session, because nothing here says otherwise. A holiday reads as
+    16:00 too: there is no session to end, and nothing scans on one.
+    """
+    return EARLY_CLOSE if d in EARLY_CLOSES else REGULAR_CLOSE
+
+
+def session_close_minute(d: date) -> int:
+    """`session_close(d)` as minute-of-day: 780 on an early close, 960 otherwise."""
+    close = session_close(d)
+    return close.hour * 60 + close.minute
 
 
 def closures_for_week(start: date, end: date) -> list[MarketClosure]:

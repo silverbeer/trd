@@ -49,6 +49,15 @@ def test_silence_is_only_wrong_while_the_market_is_open() -> None:
     assert in_session(datetime(2026, 9, 13, 11, 30)) is False  # Sunday
 
 
+def test_an_early_close_ends_the_watch_at_one() -> None:
+    """The day after Thanksgiving closes at 13:00 (SB-1775): silence after it
+    is not an outage."""
+    assert in_session(datetime(2026, 11, 27, 13, 0)) is True
+    assert in_session(datetime(2026, 11, 27, 13, 1)) is False
+    assert in_session(datetime(2026, 11, 27, 15, 30)) is False
+    assert in_session(datetime(2026, 11, 25, 15, 30)) is True  # a full session
+
+
 def test_an_engine_that_stopped_mid_session_is_a_problem(tmp_path: Path) -> None:
     """The real failure, twice in three days: scans stop and everything else
     looks fine."""

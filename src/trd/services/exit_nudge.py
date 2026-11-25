@@ -27,6 +27,7 @@ from pathlib import Path
 import duckdb
 from pydantic import BaseModel
 
+from trd.data.market_calendar import session_close
 from trd.models import WaitingExit
 from trd.repos import AccountRepo
 from trd.repos.engine import EngineConfigRepo, OrderIntentRepo
@@ -40,7 +41,6 @@ STATE_FILENAME = ".exit-nudges.json"
 # An exit decided before the bell cannot reach the broker until the session
 # opens, so its wait is counted from the open — not from 07:41.
 SESSION_OPEN = time(9, 30)
-SESSION_CLOSE = time(16, 0)
 
 
 class ExitNudge(BaseModel):
@@ -67,7 +67,9 @@ def minutes_waiting(waiting: WaitingExit, now: datetime) -> int:
 
 
 def in_session(now: datetime) -> bool:
-    return now.weekday() < 5 and SESSION_OPEN <= now.time() <= SESSION_CLOSE
+    # The day's own close: an exit still waiting after 13:00 on a half-day has
+    # already lapsed, and a reminder to approve it would be a lie (SB-1775).
+    return now.weekday() < 5 and SESSION_OPEN <= now.time() <= session_close(now.date())
 
 
 def due_nudges(

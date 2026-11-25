@@ -34,6 +34,7 @@ from trd.repos import AccountRepo, OrderIntentRepo
 from trd.services.engine import ScanResult
 from trd.services.exit_nudge import (
     due_nudges,
+    in_session,
     load_state,
     minutes_waiting,
     save_state,
@@ -197,6 +198,16 @@ def test_the_reminder_says_where_it_is_stuck():
     assert "YOUR approval" in asked and "16:00" in asked
     unplaced = exit_waiting_message(_waiting(WED, IntentStatus.PENDING), 20)
     assert "not placed yet" in unplaced and "live runner" in unplaced
+
+
+def test_an_early_close_ends_the_reminders_at_one():
+    """The day after Thanksgiving closes at 13:00 (SB-1775): an exit still waiting
+    after it has lapsed, and the message says when it will."""
+    assert in_session(datetime(2026, 11, 27, 12, 59)) is True
+    assert in_session(datetime(2026, 11, 27, 13, 30)) is False
+    assert in_session(datetime(2026, 11, 25, 13, 30)) is True  # a full session
+    asked = exit_waiting_message(_waiting(datetime(2026, 11, 27, 10, 0)), 45)
+    assert "Lapses unfilled at 13:00 ET" in asked
 
 
 # ---------------------------------------------------------------- the watchdog

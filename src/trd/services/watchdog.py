@@ -35,12 +35,14 @@ from zoneinfo import ZoneInfo
 
 from pydantic import BaseModel, computed_field
 
+from trd.data.market_calendar import session_close
+
 MARKET_TZ = ZoneInfo("America/New_York")
 
-# The session, as clock minutes. Scans run 09:30-16:00; the first one lands a
-# minute or so after the bell, so the window opens with a little slack.
+# The session open, as HHMM. Scans run 09:30 to the close; the first one lands a
+# minute or so after the bell, so the window opens with a little slack. The close
+# is the day's own (`session_close`): 16:00, or 13:00 on an early close (SB-1775).
 SESSION_OPEN = 935
-SESSION_CLOSE = 1600
 
 # How long a silence has to last before it means something. Scans are every five
 # minutes, so fifteen is three missed passes — long enough that one slow yfinance
@@ -73,7 +75,9 @@ EXIT_WAIT_ALARM_MINUTES = 30
 def in_session(moment: datetime) -> bool:
     """Whether a scan is expected right now.
 
-    Weekday and inside the bell, in exchange-local time. Market holidays are not
+    Weekday and inside the bell, in exchange-local time — to 13:00 on an early
+    close: the scans run on to 16:00, but no order placed after the bell can fill
+    this session, so a silence then is not an outage (SB-1775). Holidays are not
     filtered: the cost of that is at most one wrong alert a year, and the cost of
     a calendar that silently goes stale is missing a real outage on a day it
     claims is a holiday.
@@ -87,7 +91,8 @@ def in_session(moment: datetime) -> bool:
     local = moment.astimezone(MARKET_TZ) if moment.tzinfo else moment
     if local.weekday() > 4:
         return False
-    return SESSION_OPEN <= local.hour * 100 + local.minute <= SESSION_CLOSE
+    close = session_close(local.date())
+    return SESSION_OPEN <= local.hour * 100 + local.minute <= close.hour * 100 + close.minute
 
 
 class EnginePulse(BaseModel):

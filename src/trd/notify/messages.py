@@ -41,6 +41,7 @@ from trd.models import (
     Side,
     StrategyStat,
     WaitingExit,
+    intent_expires_at,
 )
 from trd.models.alloc import AllocReport, BenchmarkScore, FundScore
 from trd.notify.telegram import LIVE_LABEL
@@ -296,7 +297,7 @@ def intent_message(row: OrderIntentRow, label: str | None = None) -> str:
         [
             f"{_live_head(label)} {_order_terms(intent, row.instrument.symbol)} — "
             f"{_why(intent)}. Waiting for the outbox; approve in your broker app when it "
-            "arrives, expires 16:00",
+            f"arrives, expires {intent_expires_at(intent.created_at):%H:%M}",
             intent.reason,
         ]
     )
@@ -309,7 +310,7 @@ def approval_message(ack: OutboxAck, label: str | None = None) -> str:
     return "\n".join(
         [
             f"{_live_head(label)} approve {_order_terms(intent, ack.symbol)} in your "
-            "broker app — expires 16:00 ET",
+            f"broker app — expires {intent_expires_at(intent.created_at):%H:%M} ET",
             f"{_why(intent)}: {intent.reason}",
         ]
     )
@@ -385,7 +386,7 @@ def exit_waiting_message(waiting: WaitingExit, minutes: int, label: str | None =
         [
             f"🚨 {_live_head(label)} {_why_rule(waiting.rule).upper()} waiting {minutes} min — "
             f"{_h(waiting.symbol)} @ {_money(waiting.ref_price)} when decided",
-            f"{where}. Lapses unfilled at 16:00 ET.",
+            f"{where}. Lapses unfilled at {intent_expires_at(waiting.since):%H:%M} ET.",
             f"Why: {_h(waiting.reason)}",
         ]
     )

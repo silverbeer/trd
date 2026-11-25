@@ -23,7 +23,7 @@ from trd.models import (
 )
 from trd.repos import AccountRepo, EarningsRepo, InstrumentRepo, PriceRepo, TransactionRepo
 from trd.services import EngineService
-from trd.services.engine import DEFAULT_ENGINE_ACCOUNT
+from trd.services.engine import DEFAULT_ENGINE_ACCOUNT, entry_cutoff
 from trd.timeframes import DAILY
 
 from .conftest import FakeProvider
@@ -847,6 +847,57 @@ def test_the_stop_still_wins_at_the_bell():
         _position(), bars, bars, Decimal("80"), DAY_PARAMS, datetime(2024, 9, 16, 15, 55), DAILY
     )
     assert decision is not None and decision.rule == "stop"
+
+
+# The day after Thanksgiving 2026: the bell is at 13:00 (SB-1775).
+HALF_DAY = date(2026, 11, 27)
+
+
+def test_session_close_fires_before_an_early_close():
+    """A 15:55 flat time is three hours after a 13:00 bell; on a half-day the
+    engine goes flat at 12:55 instead, or the position rides the weekend."""
+    bars = make_bars(uptrend())
+    rule = exit_rules.SessionClose()
+    today = _position(opened_at=datetime(2026, 11, 27, 9, 35))
+    before = datetime(2026, 11, 27, 12, 54)
+    assert rule.check(today, bars, bars, Decimal("101"), DAY_PARAMS, before, DAILY) is None
+    hit = rule.check(
+        today, bars, bars, Decimal("101"), DAY_PARAMS, datetime(2026, 11, 27, 12, 55), DAILY
+    )
+    assert hit is not None and hit.rule == "session_close"
+    assert "12:55" in hit.reason
+
+
+def test_flat_time_on_a_half_day_is_the_earlier_of_the_two():
+    assert exit_rules.flat_at_on(1555, HALF_DAY) == 1255
+    assert exit_rules.flat_at_on(1130, HALF_DAY) == 1130  # already before the bell
+    assert exit_rules.flat_at_on(0, HALF_DAY) == 0  # swing stays swing
+    # A regular session keeps the configured time, whatever it is.
+    assert exit_rules.flat_at_on(1555, date(2026, 11, 25)) == 1555
+    assert exit_rules.flat_at_on(1559, date(2026, 11, 25)) == 1559
+
+
+def test_entry_cutoff_follows_the_half_day_flat_time():
+    params = {"flat_at_minute": 1555.0}
+    assert entry_cutoff(params, date(2026, 11, 25)) == 15 * 60 + 25
+    assert entry_cutoff(params, HALF_DAY) == 12 * 60 + 25
+    assert entry_cutoff({}, HALF_DAY) is None
+
+
+def test_no_new_entries_after_an_early_close(engine, provider, conn):
+    """The scan runs on to 16:00 on the clock; past a 13:00 bell it manages the
+    book but buys nothing."""
+    bars = make_bars(uptrend())
+    seed(conn, "AAA", bars)
+    provider.add_symbol("AAA", price=str(float(bars[-1].close) * 0.998))
+    engine.init(symbols=["AAA"], strategies=["momentum"], position_size=Decimal("10000"))
+
+    after = engine.scan(at=datetime(2026, 11, 27, 13, 5))
+    assert after.opened == []
+    assert any("after the 13:00 close" in line for line in after.skipped)
+
+    before = engine.scan(at=datetime(2026, 11, 27, 12, 55))
+    assert len(before.opened) == 1
 
 
 def test_no_new_entries_inside_the_cutoff(engine, provider, conn):

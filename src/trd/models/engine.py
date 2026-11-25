@@ -4,6 +4,7 @@ from enum import StrEnum
 
 from pydantic import BaseModel, computed_field
 
+from trd.data.market_calendar import session_close, session_close_minute
 from trd.models.core import Instrument, Side
 from trd.timeframes import INTRADAY_MINUTES, day_mode_on_daily_bars
 
@@ -251,47 +252,50 @@ OPEN_INTENT_STATUSES = (
 # answer (filled, cancelled, rejected) may resolve it.
 EXPIRABLE_INTENT_STATUSES = (IntentStatus.PENDING, IntentStatus.AWAITING_APPROVAL)
 
-# Minute-of-day (ET) an unplaced or unapproved intent stops being actionable. A
-# trade approval lapses at the 16:00 close of the day it was raised (measured
+# An unplaced or unapproved intent stops being actionable at the close of its
+# session: 16:00 ET, or 13:00 on an early close (`session_close`, SB-1775). A
+# trade approval lapses at the close of the day it was raised (measured
 # 2026-10-21: expires_at 20:00Z on an approval created that morning), and a
 # pending intent nobody placed by the close was sized on a session that is over.
-INTENT_EXPIRY_MINUTE = 16 * 60
 
 
 def intent_expiry_cutoff(now: datetime) -> datetime:
     """Open intents created before this instant are stale at `now`.
 
     Before the close it is today's midnight: anything from an earlier session has
-    lapsed, today's are still live. From 16:00 it is tomorrow's midnight, so the
-    day's own intents lapse too. Naive exchange-local, like every trd timestamp.
+    lapsed, today's are still live. From the close (16:00, 13:00 on a half-day) it
+    is tomorrow's midnight, so the day's own intents lapse too. Naive
+    exchange-local, like every trd timestamp.
     """
     midnight = datetime.combine(now.date(), datetime.min.time())
-    if now.hour * 60 + now.minute >= INTENT_EXPIRY_MINUTE:
+    if now.hour * 60 + now.minute >= session_close_minute(now.date()):
         return midnight + timedelta(days=1)
     return midnight
 
 
-# Minute-of-day (ET) from which a new intent is "late": placed now, an approval
-# has minutes, not hours, before the 16:00 expiry above takes it.
-INTENT_LATE_MINUTE = 15 * 60 + 45
+# Minutes before the close from which a new intent is "late": placed now, an
+# approval has minutes, not hours, before the expiry above takes it. 15:45 on a
+# regular session, 12:45 on a half-day.
+INTENT_LATE_LEAD_MINUTES = 15
 
 # A pending buy older than this was sized off a quote from a different market.
 # The outbox withholds it and the next live scan expires it, so the slot and the
-# cash it reserved go back to a fresh plan instead of sitting idle until 16:00.
+# cash it reserved go back to a fresh plan instead of sitting idle until the close.
 # Sells are exempt: their size is the position, not a quote.
 STALE_INTENT_MINUTES = 30
 
 
 def intent_expires_at(created_at: datetime) -> datetime:
-    """The instant an intent stops being actionable: the 16:00 close of the session
-    it was written in. The same boundary `intent_expiry_cutoff` sweeps on."""
-    midnight = datetime.combine(created_at.date(), datetime.min.time())
-    return midnight + timedelta(minutes=INTENT_EXPIRY_MINUTE)
+    """The instant an intent stops being actionable: the close of the session it
+    was written in (16:00, 13:00 on a half-day). The same boundary
+    `intent_expiry_cutoff` sweeps on."""
+    return datetime.combine(created_at.date(), session_close(created_at.date()))
 
 
 def intent_is_late(created_at: datetime) -> bool:
     """Written so close to the close that an approval may not be given in time."""
-    return created_at.hour * 60 + created_at.minute >= INTENT_LATE_MINUTE
+    late_from = session_close_minute(created_at.date()) - INTENT_LATE_LEAD_MINUTES
+    return created_at.hour * 60 + created_at.minute >= late_from
 
 
 class OrderIntent(BaseModel):

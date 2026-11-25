@@ -65,7 +65,7 @@ from trd.models import (
 from trd.repos import EarningsRepo, InstrumentRepo, PriceRepo, WatchlistRepo
 from trd.repos.engine import EngineConfigRepo
 from trd.services.engine import (
-    ENTRY_CUTOFF_MINUTES,
+    entry_cutoff,
     entry_opens_at,
     plan_entry,
     strategy_stats,
@@ -484,11 +484,6 @@ def simulate(
             "have. Re-run the engine on an intraday timeframe, or backtest a swing "
             "configuration instead."
         )
-    # Mirrors the live entry cutoff: a fill minutes before the bell is flattened
-    # by session_close before it can work, and pays the spread twice doing it.
-    entry_cutoff = (
-        (flat_at // 100) * 60 + (flat_at % 100) - ENTRY_CUTOFF_MINUTES if flat_at else None
-    )
     # Mirrors the live opening delay, through the same helper.
     entry_opens = entry_opens_at(exit_params) if source.is_intraday else None
     unknown = [k for k in strategies if k not in STRATEGIES]
@@ -761,7 +756,11 @@ def simulate(
                 entries_today, budget_session = 0, today
             capacity = min(capacity, max(0, max_entries_per_day - entries_today))
         minute = stamp.hour * 60 + stamp.minute
-        too_late = entry_cutoff is not None and minute >= entry_cutoff
+        # Mirrors the live entry cutoff, through the same helper: a fill minutes
+        # before the bell is flattened by session_close before it can work, and
+        # pays the spread twice doing it. Per session, so a half-day stops earlier.
+        cutoff = entry_cutoff(exit_params, today)
+        too_late = cutoff is not None and minute >= cutoff
         too_early = entry_opens is not None and minute < entry_opens
         # Same gate the live scanner runs, over the prefix up to today — the
         # slice is the lookahead guarantee. Shared code, so the two cannot drift.

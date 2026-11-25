@@ -37,7 +37,7 @@ from trd.errors import TrdError
 from trd.models import Bar, EngineConfig, EngineSignal, SignalOutcome
 from trd.repos import PriceRepo
 from trd.repos.engine import EngineConfigRepo, EngineSignalRepo
-from trd.services.engine import ENTRY_CUTOFF_MINUTES, entry_opens_at
+from trd.services.engine import entry_cutoff, entry_opens_at
 from trd.services.outcomes import follow_through_bars, risk_series, signal_outcome
 from trd.timeframes import SESSION_OPEN_MINUTE
 
@@ -137,8 +137,7 @@ def eligible_bars(
     to size from.
     """
     opens = entry_opens_at(params) or SESSION_OPEN_MINUTE
-    flat_at = int(params.get("flat_at_minute", 0))
-    cutoff = (flat_at // 100) * 60 + flat_at % 100 - ENTRY_CUTOFF_MINUTES if flat_at else None
+    cutoff = entry_cutoff(params, session)
     out = []
     for i, bar in enumerate(bars):
         stamp = source.stamp(bar)

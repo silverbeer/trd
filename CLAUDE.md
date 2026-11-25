@@ -228,6 +228,10 @@ trd engine init [--account NAME] [--size 1000] [--max 5] [--symbols A,B,...] [--
                                                  # --timeframe is the bar width the rules run on;
                                                  # a day engine (--flat-at) is refused on 1d bars,
                                                  # where a 2xATR stop can't be reached before the bell
+                                                 # EARLY CLOSE (SB-1775): on a 13:00 half-day
+                                                 # (market_calendar.session_close) flat = min(flat-at,
+                                                 # 12:55), entries stop 30m before; dates outside
+                                                 # the calendar's table read as 16:00 (backtests too)
                                                  # --regime-* gate NEW ENTRIES on the market, not the
                                                  # name: no buys while SPY is under its N-day or VIX
                                                  # is over V. Exits keep running. BOTH OFF BY DEFAULT
@@ -255,6 +259,9 @@ trd engine scan [--paper/--no-paper] [--json] [--exits-only]
                                       # carried them into a -3R Monday gap past a stop that had no
                                       # scan to fire in. A forced scan proves the deploy; it never
                                       # takes a position
+                                      # Past the day's close (13:00 on a half-day, SB-1775) a scan
+                                      # takes no entries; the entrypoint still runs it to 16:00
+                                      # for exits, since a daily bar settles at 16:00 on the clock
 trd engine monitor [--interval 60] [--passes N] # live view on a terminal: book stays still, clock/
                                       # capacity/activity move. Piped or --ndjson falls back to scrolling
 trd engine intents [--status S] [--json]
@@ -287,7 +294,8 @@ trd engine fills SNAPSHOT.json [--notify] [--json]
                                       # Idempotent: keyed on intent status + broker_order_id, so
                                       # re-ingesting a snapshot writes nothing. Then sweeps:
                                       # pending/awaiting_approval from an earlier session, or
-                                      # today's once it is 16:00 ET (approvals lapse at the close),
+                                      # today's once it is the close (16:00 ET; 13:00 on an early
+                                      # close — session_close, SB-1775; approvals lapse then),
                                       # → expired. Submitted never expires. A live scan runs the
                                       # same sweep first, so a stale buy stops holding its slot.
                                       # 'trd sell'/'trd buy' on a name with an open intent is refused
@@ -299,10 +307,11 @@ trd engine outbox [--include-stale] [--json]
                                       # passes straight to place_equity_order: intent_id, ref_id,
                                       # symbol, side, quantity (6dp string, rounded down), type
                                       # market, time_in_force gfd, market_hours regular_hours, plus
-                                      # ref_price, notional, reason, created_at, expires_at (16:00
-                                      # ET of its session). Oldest first; already-expired ones left
-                                      # out (not swept — read-only connection). Written at/after
-                                      # 15:45 ET = "late": true + a note: minutes left to approve.
+                                      # ref_price, notional, reason, created_at, expires_at (the
+                                      # close of its session: 16:00 ET, 13:00 on a half-day). Oldest
+                                      # first; already-expired ones left out (not swept — read-only
+                                      # connection). Written in the 15 min before the close (15:45,
+                                      # 12:45 on a half-day) = "late": true + a note: minutes left.
                                       # Refused on paper. Runbook: docs/broker-mcp.md
                                       # "Draining the outbox"
                                       # GUARDRAILS (SB-1377), applied again here against the caps
@@ -413,7 +422,8 @@ trd engine close SYM [--reason TEXT] [--rm] [--notify] [--json]
                                       # a second order; a partial one, one submitted/awaiting
                                       # approval, an open buy, or an open manual close refuses.
                                       # Every refusal (and the quote) before any write. Refused after
-                                      # 16:00 ET and at weekends (it would lapse unplaced). Sweeps
+                                      # the close (16:00 ET, 13:00 on a half-day) and at weekends
+                                      # (it would lapse unplaced). Sweeps
                                       # only THIS name's lapsed intents; the rest are the scan's, so
                                       # its expired-exit alert still fires. --rm = also 'engine rm'.
                                       # --notify: paper → channel, live → PRIVATE alert chat. Never
@@ -884,7 +894,8 @@ trd engine watchdog [--engines ...] [--max-age 15] [--repeat 60] [--notify] [--j
                                       # so launchd/cron can act without parsing. Silence out of
                                       # hours is correct and never reported; an unchanged alert
                                       # repeats at most hourly; recovery is announced only to
-                                      # whoever heard the alarm.
+                                      # whoever heard the alarm. The window ends at the day's
+                                      # close: 13:00 on an early close (SB-1775).
                                       # Live engines also alarm (same file, same dedupe) on
                                       # stuck_intents > 0 — SUBMITTED past its session, or an
                                       # approval past 16:00 unswept — and on a loss-stop halt

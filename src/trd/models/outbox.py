@@ -37,10 +37,11 @@ class OutboxOrder(BaseModel):
     rule: str | None = None  # the exit rule, on a sell
     reason: str
     created_at: datetime
-    # The 16:00 ET close of the intent's session: an approval lapses then, and an
-    # intent nobody placed is swept as expired.
+    # The close of the intent's session (16:00 ET, 13:00 on a half-day): an
+    # approval lapses then, and an intent nobody placed is swept as expired.
     expires_at: datetime
-    # Written at or after 15:45 ET: placed now, an approval has minutes to land.
+    # Written in the last 15 minutes before that close: placed now, an approval
+    # has minutes to land.
     late: bool = False
     note: str | None = None
 
