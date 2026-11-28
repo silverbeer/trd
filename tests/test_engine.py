@@ -26,7 +26,7 @@ from trd.services import EngineService
 from trd.services.engine import DEFAULT_ENGINE_ACCOUNT, entry_cutoff
 from trd.timeframes import DAILY
 
-from .conftest import FakeProvider
+from .conftest import FakeProvider, mid_session
 
 # ----------------------------------------------------------------- bar helpers
 
@@ -464,7 +464,7 @@ def test_init_rejects_unknown_strategies(engine):
 
 def test_scan_without_config_is_a_clean_error(engine):
     with pytest.raises(TrdError, match="No engine configured"):
-        engine.scan()
+        engine.scan(at=mid_session())
 
 
 def test_scan_opens_a_position_and_records_a_txn(engine, provider, conn):
@@ -1068,14 +1068,14 @@ def test_scan_refuses_when_the_build_lacks_a_configured_rule(engine, provider, m
         lambda params: [("flat_at_minute", "session_close")],
     )
     with pytest.raises(TrdError, match="cannot honour the configured rule set"):
-        engine.scan()
+        engine.scan(at=mid_session())
 
 
 def test_scan_is_unaffected_when_every_configured_rule_is_present(engine, provider):
     """The guard must not become a reason a healthy day engine stops trading."""
     provider.add_symbol("AAA", price="100")
     engine.init(symbols=["AAA"], exit_params={"flat_at_minute": 1555.0}, timeframe="5m")
-    result = engine.scan()  # must not raise
+    result = engine.scan(at=mid_session())  # must not raise
     assert result.scanned == 1
 
 
@@ -1181,7 +1181,7 @@ def test_scan_uses_prefetched_quotes_without_calling_the_provider(engine, provid
         raise AssertionError("scan must not fetch quotes when they were handed in")
 
     monkeypatch.setattr(engine.provider, "get_quotes", fail)
-    result = engine.scan(paper=True, quotes={})
+    result = engine.scan(at=mid_session(), paper=True, quotes={})
     assert result.scanned == 1
 
 
@@ -1189,7 +1189,7 @@ def test_scan_still_fetches_its_own_quotes_when_none_are_given(engine, provider)
     """Omitting the argument must behave exactly as before."""
     provider.add_symbol("AAA", price="100")
     engine.init(symbols=["AAA"], strategies=["breakout"])
-    assert engine.scan(paper=True).scanned == 1
+    assert engine.scan(at=mid_session(), paper=True).scanned == 1
 
 
 # ------------------------------------------------------------------- status
@@ -1309,7 +1309,7 @@ def test_status_counts_scans(engine, provider):
     assert engine.status().last_scan is None
     assert engine.status().scans_today == 0
 
-    engine.scan(paper=True)
+    engine.scan(at=mid_session(), paper=True)
     status = engine.status()
     assert status.last_scan is not None
     assert status.scans_today == 1

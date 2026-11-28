@@ -17,7 +17,7 @@ from decimal import Decimal
 import duckdb
 import pytest
 
-from tests.conftest import FakeProvider
+from tests.conftest import FakeProvider, mid_session
 from tests.test_engine import make_bars, seed, uptrend
 from trd.engine import regime
 from trd.errors import TrdError
@@ -144,7 +144,7 @@ def test_a_broken_tape_takes_no_entry(engine, conn, provider) -> None:
         exit_params={"regime_sma": 50.0},
     )
 
-    result = engine.scan()
+    result = engine.scan(at=mid_session())
 
     assert result.opened == []
     assert any("no new entries while the whole tape" in line for line in result.skipped)
@@ -161,7 +161,7 @@ def test_a_healthy_tape_still_trades(engine, conn, provider) -> None:
         exit_params={"regime_sma": 50.0},
     )
 
-    assert len(engine.scan().opened) == 1
+    assert len(engine.scan(at=mid_session()).opened) == 1
 
 
 def test_no_regime_bars_does_not_stop_trading(engine, conn, provider) -> None:
@@ -172,7 +172,7 @@ def test_no_regime_bars_does_not_stop_trading(engine, conn, provider) -> None:
         position_size=Decimal("10000"),
         exit_params={"regime_sma": 50.0},
     )
-    assert len(engine.scan().opened) == 1
+    assert len(engine.scan(at=mid_session()).opened) == 1
 
 
 def test_exits_still_run_while_entries_are_blocked(engine, conn, provider) -> None:
@@ -185,14 +185,14 @@ def test_exits_still_run_while_entries_are_blocked(engine, conn, provider) -> No
         position_size=Decimal("10000"),
         exit_params={"regime_sma": 50.0},
     )
-    assert len(engine.scan().opened) == 1
+    assert len(engine.scan(at=mid_session()).opened) == 1
     position = engine.position_rows(open_only=True)[0].position
 
     # Tape breaks *and* the held name drops through its stop, on the same pass.
     seed(conn, "SPY", make_bars([200.0] * 59 + [150.0]))
     provider.add_symbol("AAA", price=str(float(position.stop_price) * 0.99), volume=1_200_000)
 
-    result = engine.scan()
+    result = engine.scan(at=mid_session())
 
     assert len(result.closed) == 1
     assert result.closed[0].rule == "stop"

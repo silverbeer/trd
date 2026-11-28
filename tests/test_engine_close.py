@@ -34,7 +34,7 @@ from trd.services.exit_whatif import compare
 from trd.services.outcomes import OutcomeService
 from trd.services.review import engine_pack, review
 
-from .conftest import FakeProvider
+from .conftest import FakeProvider, mid_session
 from .test_engine import make_bars, seed, uptrend
 from .test_engine_fills import _order, _snap
 from .test_engine_live import MONDAY, _filled_position, _live, _names
@@ -75,10 +75,10 @@ def test_paper_close_sells_at_the_quote_and_closes_manual(engine, conn, provider
     seed(conn, "AAA", bars)
     provider.add_symbol("AAA", price=str(float(bars[-1].close) * 0.998), volume=1_200_000)
     engine.init(symbols=["AAA"], strategies=["momentum"], position_size=D("10000"))
-    assert len(engine.scan().opened) == 1
+    assert len(engine.scan(at=mid_session()).opened) == 1
     provider.add_symbol("AAA", price="123.45")
 
-    result = engine.close("aaa", reason="before the event")
+    result = engine.close("aaa", reason="before the event", at=mid_session() + timedelta(minutes=5))
 
     assert result.mode == EngineMode.PAPER and result.intent is None
     assert result.fill is not None and result.fill.rule == MANUAL_EXIT_RULE
@@ -492,7 +492,7 @@ def _paper_holding_cli(cli_env: FakeProvider) -> None:
     seed(conn, "AAA", bars)
     cli_env.add_symbol("AAA", price=str(float(bars[-1].close) * 0.998), volume=1_200_000)
     engine.init(symbols=["AAA"], strategies=["momentum"], position_size=D("10000"))
-    assert len(engine.scan().opened) == 1
+    assert len(engine.scan(at=mid_session()).opened) == 1
     cli_env.add_symbol("AAA", price="123.45")
     conn.close()
 

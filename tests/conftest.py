@@ -1,5 +1,5 @@
 from collections.abc import Sequence
-from datetime import date, timedelta
+from datetime import date, datetime, time, timedelta
 from decimal import Decimal
 from pathlib import Path
 
@@ -202,6 +202,19 @@ def months_ago(n: int, day: int = 15, today: date | None = None) -> date:
     today = today or date.today()
     index = today.year * 12 + (today.month - 1) - n
     return date(index // 12, index % 12 + 1, day)
+
+
+def mid_session() -> datetime:
+    """10:00 today: the instant a scan fixture runs at, whatever the wall clock says.
+
+    A scan on the wall clock decides by the time of day. Past a half-day's 13:00
+    close it takes no entries (SB-1775), so every fixture that expects a scan to
+    open a position failed after 13:00 on 2026-11-27 — 60 tests, on main and in CI
+    — and passed again after midnight (SB-1825). Today's date, not a fixed one:
+    the fake bars are dated back from `date.today()`, and a scan dated before them
+    would read them as the future.
+    """
+    return datetime.combine(date.today(), time(10, 0))
 
 
 def seed_bars(

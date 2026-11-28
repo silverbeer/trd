@@ -14,7 +14,7 @@ import duckdb
 import pytest
 from typer.testing import CliRunner
 
-from tests.conftest import FakeProvider
+from tests.conftest import FakeProvider, mid_session
 from tests.test_engine import make_bars, seed, uptrend
 from trd.cli.app import app
 from trd.models import EnginePosition, PositionStatus
@@ -171,7 +171,7 @@ def engine(conn: duckdb.DuckDBPyConnection, provider: FakeProvider) -> EngineSer
     provider.add_symbol("AAA", price=str(float(bars[-1].close) * 0.998), volume=1_200_000)
     service = EngineService(conn, provider)
     service.init(symbols=["AAA"], strategies=["momentum"], position_size=Decimal("10000"))
-    assert len(service.scan().opened) == 1
+    assert len(service.scan(at=mid_session()).opened) == 1
     return service
 
 
@@ -434,7 +434,7 @@ def _home(tmp_path, name: str, provider: FakeProvider, closes: list[float] | Non
         provider.add_symbol("AAA", price=str(float(bars[-1].close) * 0.998), volume=1_200_000)
         service = EngineService(conn, provider)
         service.init(symbols=["AAA"], strategies=["momentum"], position_size=Decimal("10000"))
-        service.scan()
+        service.scan(at=mid_session())
     finally:
         if conn is not None:
             conn.close()

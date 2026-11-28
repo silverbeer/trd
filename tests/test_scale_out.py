@@ -18,7 +18,7 @@ from decimal import Decimal
 import duckdb
 import pytest
 
-from tests.conftest import FakeProvider
+from tests.conftest import FakeProvider, mid_session
 from tests.test_engine import make_bars, seed, uptrend
 from trd.engine.exits import DEFAULT_EXIT_PARAMS, ExitDecision, evaluate, exit_quantity
 from trd.models import EnginePosition, PositionStatus
@@ -198,7 +198,7 @@ def engine(conn: duckdb.DuckDBPyConnection, provider: FakeProvider) -> EngineSer
     provider.add_symbol("AAA", price=str(float(bars[-1].close) * 0.998), volume=1_200_000)
     service = EngineService(conn, provider)
     service.init(symbols=["AAA"], strategies=["momentum"], position_size=Decimal("10000"))
-    assert len(service.scan().opened) == 1
+    assert len(service.scan(at=mid_session()).opened) == 1
     return service
 
 
@@ -223,7 +223,7 @@ def test_the_live_scanner_books_a_partial_without_ending_the_trade(
     # Price through the target.
     provider.add_symbol("AAA", price=str(float(held.target_price) * 1.01), volume=1_200_000)
 
-    result = engine.scan()
+    result = engine.scan(at=mid_session())
     assert len(result.closed) == 1
     fill = result.closed[0]
     assert fill.rule == "scale_out"
