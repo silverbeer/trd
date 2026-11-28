@@ -40,7 +40,7 @@ from trd.services.commands import (
     pending,
 )
 
-from .conftest import FakeProvider
+from .conftest import FakeProvider, mid_session
 
 
 class FakeTransport:
@@ -716,7 +716,7 @@ def test_the_cli_rm_leaves_an_open_position_alone(queue_env):
     """Dropping a name stops new entries. The trade already on keeps its stop,
     its target and its exit rules, and closes on the rules that opened it."""
     service, engine, _home, _provider = queue_env
-    engine.scan(paper=True)
+    engine.scan(at=mid_session(), paper=True)
     account = engine.account()
     held = {i.symbol for _, i in engine.positions.list_open(account.id)}
 
@@ -756,7 +756,7 @@ def test_an_index_already_in_a_universe_is_skipped_not_fatal(queue_env):
     service.watchlists.add("^VIX", engine.config().watchlist)
 
     assert "^VIX" not in [i.symbol for i in engine.universe()]
-    engine.scan(paper=True)  # must not raise
+    engine.scan(at=mid_session(), paper=True)  # must not raise
 
 
 # ------------------------------------- SB-806: the three silences that cost a setup

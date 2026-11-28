@@ -23,7 +23,7 @@ from decimal import Decimal
 import duckdb
 import pytest
 
-from tests.conftest import FakeProvider
+from tests.conftest import FakeProvider, mid_session
 from tests.test_engine import make_bars, seed, uptrend
 from trd.errors import EnginePositionConflictError
 from trd.models import AccountType, Side
@@ -40,7 +40,7 @@ def engine_with_position(
     provider.add_symbol("AAA", price=str(float(bars[-1].close) * 0.998), volume=1_200_000)
     engine = EngineService(conn, provider)
     engine.init(symbols=["AAA"], strategies=["momentum"], position_size=Decimal("10000"))
-    opened = engine.scan()
+    opened = engine.scan(at=mid_session())
     assert len(opened.opened) == 1
     return engine, PortfolioService(conn, provider), engine.account().name
 
@@ -119,7 +119,7 @@ def test_the_engine_itself_is_unaffected(engine_with_position, conn) -> None:
     engine.provider.add_symbol(
         "AAA", price=str(float(position.stop_price) * 0.99), volume=1_200_000
     )
-    result = engine.scan()
+    result = engine.scan(at=mid_session())
 
     assert len(result.closed) == 1
     assert result.closed[0].rule == "stop"

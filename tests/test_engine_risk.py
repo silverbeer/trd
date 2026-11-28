@@ -17,7 +17,7 @@ from decimal import Decimal
 import duckdb
 import pytest
 
-from tests.conftest import FakeProvider
+from tests.conftest import FakeProvider, mid_session
 from tests.test_engine import make_bars, seed, uptrend
 from trd.cli.render import (
     engine_positions_summary,
@@ -37,7 +37,7 @@ def held(conn: duckdb.DuckDBPyConnection, provider: FakeProvider) -> EngineServi
     provider.add_symbol("AAA", price=str(float(bars[-1].close) * 0.998), volume=1_200_000)
     engine = EngineService(conn, provider)
     engine.init(symbols=["AAA"], strategies=["momentum"], position_size=Decimal("10000"))
-    assert len(engine.scan().opened) == 1
+    assert len(engine.scan(at=mid_session()).opened) == 1
     return engine
 
 

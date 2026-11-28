@@ -16,7 +16,7 @@ from decimal import ROUND_DOWN, Decimal
 import duckdb
 import pytest
 
-from tests.conftest import FakeProvider
+from tests.conftest import FakeProvider, mid_session
 from tests.test_engine import make_bars, seed, uptrend
 from trd.errors import TrdError
 from trd.models import PositionStatus
@@ -31,7 +31,7 @@ def held(conn: duckdb.DuckDBPyConnection, provider: FakeProvider) -> EngineServi
     provider.add_symbol("AAA", price=str(float(bars[-1].close) * 0.998), volume=1_200_000)
     engine = EngineService(conn, provider)
     engine.init(symbols=["AAA"], strategies=["momentum"], position_size=Decimal("10000"))
-    assert len(engine.scan().opened) == 1
+    assert len(engine.scan(at=mid_session()).opened) == 1
     return engine
 
 
@@ -138,7 +138,7 @@ def test_the_engine_then_exits_only_the_remainder(held) -> None:
     remaining = _position(held).remaining_quantity
 
     held.provider.add_symbol("AAA", price=str(float(position.stop_price) * 0.99), volume=1_200_000)
-    result = held.scan()
+    result = held.scan(at=mid_session())
 
     assert len(result.closed) == 1
     assert result.closed[0].quantity == remaining
@@ -150,7 +150,7 @@ def test_books_balance_after_a_trim_and_an_exit(held, conn) -> None:
     position = _position(held)
     held.trim("AAA", pct=Decimal("60"), price=Decimal("300"))
     held.provider.add_symbol("AAA", price=str(float(position.stop_price) * 0.99), volume=1_200_000)
-    held.scan()
+    held.scan(at=mid_session())
 
     row = conn.execute(
         """SELECT sum(CASE WHEN t.side = 'buy' THEN t.quantity ELSE -t.quantity END)

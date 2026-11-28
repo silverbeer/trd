@@ -26,7 +26,7 @@ from pydantic_ai.messages import ModelResponse, TextPart, ToolCallPart
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 from pydantic_ai.models.test import TestModel
 
-from tests.conftest import FakeProvider
+from tests.conftest import FakeProvider, mid_session
 from tests.test_engine import make_bars, seed, uptrend
 from trd.agents.review_agent import (
     DEFAULT_MODEL,
@@ -298,7 +298,7 @@ def test_cli_without_the_extra_keeps_the_deterministic_review(
     cli_env.add_symbol("AAA", price=str(float(bars[-1].close) * 0.998), volume=1_200_000)
     service = EngineService(conn, cli_env)
     service.init(symbols=["AAA"], strategies=["momentum"], position_size=Decimal("10000"))
-    service.scan()
+    service.scan(at=mid_session())
     trade = service.position_rows()[0].position
     service.positions.close(
         trade.id,

@@ -16,7 +16,7 @@ import duckdb
 import pytest
 from typer.testing import CliRunner
 
-from tests.conftest import FakeProvider
+from tests.conftest import FakeProvider, mid_session
 from tests.test_engine import make_bars, seed, uptrend
 from trd.cli.app import app
 from trd.engine.bars import BarSource
@@ -290,7 +290,7 @@ def engine(conn: duckdb.DuckDBPyConnection, provider: FakeProvider) -> EngineSer
     provider.add_symbol("AAA", price=str(float(bars[-1].close) * 0.998), volume=1_200_000)
     service = EngineService(conn, provider)
     service.init(symbols=["AAA"], strategies=["momentum"], position_size=Decimal("10000"))
-    assert len(service.scan().opened) == 1
+    assert len(service.scan(at=mid_session()).opened) == 1
     return service
 
 
@@ -402,7 +402,7 @@ def test_cli_backfills_and_emits_json(cli_env: FakeProvider, tmp_path) -> None:
     cli_env.add_symbol("AAA", price=str(float(bars[-1].close) * 0.998), volume=1_200_000)
     service = EngineService(conn, cli_env)
     service.init(symbols=["AAA"], strategies=["momentum"], position_size=Decimal("10000"))
-    service.scan()
+    service.scan(at=mid_session())
     trade = service.position_rows()[0].position
     service.positions.close(
         trade.id, trade.opened_at + timedelta(days=3), trade.entry_price * 2, "target", "target"

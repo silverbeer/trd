@@ -37,6 +37,7 @@ dev = [
     # In dev, not in the runtime install: the review agent's tests must run in CI,
     # and they run against pydantic-ai's own test models — never a provider.
     "pydantic-ai-slim[anthropic]>=2.40",
+    "time-machine>=3.6.0",
 ]
 
 [build-system]
