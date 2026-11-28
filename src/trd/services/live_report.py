@@ -25,7 +25,7 @@ from pydantic import BaseModel, computed_field
 from trd.errors import TrdError
 from trd.models import IntentStatus, MarketTemperature, PositionRow, Side
 from trd.services.daily_report import EngineDay, ExitEvent, engine_day
-from trd.services.engine import EngineService
+from trd.services.engine import EngineService, trail_fields
 
 # How far back to look for the session before the one being reported. A long
 # weekend plus a holiday is four days; this leaves room without reading history.
@@ -201,7 +201,12 @@ def live_report(service: EngineService, name: str, on: date) -> LiveReport:
     for position, instrument in service.positions.list_open(account.id):
         dated = service.prices.latest_close_dated(instrument.id)
         marked_on, mark = dated if dated is not None else (None, None)
-        row = PositionRow(position=position, instrument=instrument, price=mark)
+        row = PositionRow(
+            position=position,
+            instrument=instrument,
+            price=mark,
+            **trail_fields(config.exit_params),
+        )
         opened_today = position.opened_at.date() == on
         base: Decimal | None = None
         if marked_on == on:

@@ -174,3 +174,32 @@ def test_cli_set_requires_a_reason(cli_env):
     assert runner.invoke(app, ["engine", "init", "--symbols", "AAA"]).exit_code == 0
     res = runner.invoke(app, ["engine", "config", "set", "-p", "trail_atr_mult=1.5"])
     assert res.exit_code != 0
+
+
+def test_the_positions_view_shows_the_configured_trail(engine, provider, conn):  # noqa: F811
+    """SB-1826: the stop a view shows is the stop TrailingStop fires at. It was
+    hardcoded at 3 x ATR, so a live engine set to 1.5 sold at 122.5 while
+    'engine positions' and 'live-report' still printed 115."""
+    _paper(engine, provider)
+    _open_a_trade(engine, conn)
+    pos = engine.positions.list_open(engine.account().id)[0][0]
+    engine.positions.touch(pos.id, Decimal("130"), 3, date(2026, 8, 4))
+
+    assert engine.position_rows()[0].stop_in_force == Decimal("115")  # 130 - 3 x 5
+    EngineConfigService(conn).set({"trail_atr_mult": 1.5}, "tighter", NOW)
+    row = engine.position_rows()[0]
+    assert row.stop_in_force == Decimal("122.5")  # 130 - 1.5 x 5
+    # mark 100 sits under the new stop: nothing protected below it, so risk is floored at 0
+    assert row.risk_at_stop == Decimal(0)
+
+
+def test_the_view_keeps_the_initial_stop_until_the_trail_activates(engine, provider, conn):  # noqa: F811
+    _paper(engine, provider)
+    _open_a_trade(engine, conn)  # entry 100, stop 90, 1R = 10
+    pos = engine.positions.list_open(engine.account().id)[0][0]
+    engine.positions.touch(pos.id, Decimal("115"), 3, date(2026, 8, 4))
+    EngineConfigService(conn).set({"trail_atr_mult": 1.0, "trail_activate_r": 2}, "x", NOW)
+    # peaked at +1.5R, activation needs +2R: TrailingStop does not fire, the view agrees
+    assert engine.position_rows()[0].stop_in_force == Decimal("90")
+    engine.positions.touch(pos.id, Decimal("125"), 4, date(2026, 8, 5))
+    assert engine.position_rows()[0].stop_in_force == Decimal("120")  # 125 - 1 x 5
