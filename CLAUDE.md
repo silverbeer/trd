@@ -388,6 +388,20 @@ trd engine guard [--max-order D] [--max-daily D] [--max-positions N] [--max-loss
                                       # max_loss), checked on every live scan and fill ingest;
                                       # --notify alerts the ALERT chat once. A cap cannot be set to
                                       # 0 (off) — set it as high as you mean it
+trd engine config [--json]            # every exit param: value, default, what a change reaches
+trd engine config set -p KEY=V [-p ...] --reason TEXT [--json]
+                                      # change exit params on the RUNNING engine (SB-1824): the
+                                      # exit_params bag on the same config row, in place — no
+                                      # re-init, no migration. 'open positions' params (trail,
+                                      # activation, max_sessions, rsi_exit, indicator grace)
+                                      # reach trades already on at the next scan; stop_atr_mult/
+                                      # target_r reach NEW entries only (stored at entry).
+                                      # Backtest-only knobs (rotate_min_score, max_per_symbol)
+                                      # refused. --reason required; each change appended to
+                                      # TRD_HOME/engine-config-changes.jsonl. Measure first with
+                                      # what-if. MEASURED 2026-11-27, swing (181 real entries):
+                                      # trail_atr_mult 1.5 +0.045R t=2.0, capture 10% -> 21%,
+                                      # both halves +; 1.25 likewise; live (34) noise
 trd engine positions [--all]          # open trades: entry, stop (↑ = trailing in force), risk, target, R
                                       # risk = (mark − stop in force) × remaining qty, floored at 0 —
                                       # what this trade loses from here, not what it committed
