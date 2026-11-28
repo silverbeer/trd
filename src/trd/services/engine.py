@@ -328,6 +328,15 @@ class EntryPlan(BaseModel):
 MAX_EXPOSURE_MULTIPLE = Decimal(20)
 
 
+def trail_fields(exit_params: dict[str, float]) -> dict[str, Decimal]:
+    """The trail params a PositionRow needs, from an engine's exit params, so the
+    stop a view shows is the one TrailingStop fires at (SB-1826)."""
+    return {
+        "trail_atr_mult": Decimal(str(exit_params.get("trail_atr_mult", 3.0))),
+        "trail_activate_r": Decimal(str(exit_params.get("trail_activate_r", 0.0))),
+    }
+
+
 def stop_distance(atr: Decimal, exit_params: dict[str, float]) -> Decimal:
     """How far below the entry the initial stop sits: ATR times the configured
     multiple, which is also 1R.
@@ -2151,11 +2160,12 @@ class EngineService:
         )
         if quotes is None:
             quotes = self._quotes(sorted({i.symbol for _, i in pairs}))
+        trail = trail_fields(self.config().exit_params)
         rows: list[PositionRow] = []
         for position, instrument in pairs:
             quote = quotes.get(instrument.symbol)
             price = quote.price if quote is not None else self.prices.latest_close(instrument.id)
-            rows.append(PositionRow(position=position, instrument=instrument, price=price))
+            rows.append(PositionRow(position=position, instrument=instrument, price=price, **trail))
         return rows
 
     def status(self, db_path: str = "") -> EngineStatus:
@@ -2197,7 +2207,12 @@ class EngineService:
             unrealized += position.pnl_at(close) or Decimal(0)
             # Same object the positions table renders, so the total and the
             # per-position column can never disagree about what a stop is worth.
-            row = PositionRow(position=position, instrument=instrument, price=close)
+            row = PositionRow(
+                position=position,
+                instrument=instrument,
+                price=close,
+                **trail_fields(config.exit_params),
+            )
             risk += row.risk_at_stop or Decimal(0)
 
         # Booked cash from closed trades *and* from partial exits on positions

@@ -523,6 +523,11 @@ class PositionRow(BaseModel):
     position: EnginePosition
     instrument: Instrument
     price: Decimal | None = None
+    # The engine's trail params (SB-1826). Defaults are DEFAULT_EXIT_PARAMS'; a
+    # builder passes the config's so the stop shown is the stop that fires — the
+    # trail is changeable on a running engine ('trd engine config set').
+    trail_atr_mult: Decimal = Decimal("3")
+    trail_activate_r: Decimal = Decimal("0")
 
     @computed_field  # type: ignore[prop-decorator]
     @property
@@ -535,8 +540,14 @@ class PositionRow(BaseModel):
     @computed_field  # type: ignore[prop-decorator]
     @property
     def trail_stop(self) -> Decimal:
-        """Where the chandelier stop currently sits. Never below the initial stop."""
-        return self.position.trail_high - self.position.atr_at_entry * Decimal("3")
+        """Where the chandelier stop currently sits, or the initial stop while the
+        trail is not yet active (trail_activate_r) — same rule as TrailingStop."""
+        p = self.position
+        if self.trail_activate_r > 0 and p.trail_high < (
+            p.entry_price + p.risk_per_share * self.trail_activate_r
+        ):
+            return p.stop_price
+        return p.trail_high - p.atr_at_entry * self.trail_atr_mult
 
     @computed_field  # type: ignore[prop-decorator]
     @property
