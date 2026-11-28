@@ -191,6 +191,7 @@ from trd.services.engine import (
     ScanResult,
     scan_events,
 )
+from trd.services.engine_config import EngineConfigService, ParamScope
 from trd.services.engine_performance import engine_performance
 from trd.services.exit_nudge import AFTER_MINUTES as NUDGE_AFTER
 from trd.services.exit_nudge import EVERY_MINUTES as NUDGE_EVERY
@@ -3895,6 +3896,99 @@ def engine_guard(
         return
     for renderable in engine_guard_renderables(guard):
         console.print(renderable)
+
+
+config_app = typer.Typer(
+    help="This engine's exit params: show them, or change one on the running engine.",
+)
+engine_app.add_typer(config_app, name="config")
+
+
+def _config_service() -> EngineConfigService:
+    return EngineConfigService(connect(get_settings().db_path))
+
+
+@config_app.callback(invoke_without_command=True)
+def engine_config(ctx: typer.Context, as_json: JsonOpt = False) -> None:
+    """Every exit param: its value, the default, and what a change reaches.
+
+    'open positions' params are read on every pass, so a change reaches the
+    trades already on. 'new entries only' are fixed on a position at entry (its
+    stop and target are stored). Change one with 'trd engine config set'.
+    """
+    if ctx.invoked_subcommand is not None:
+        return
+    _use_json(as_json)
+    service = _config_service()
+    try:
+        view = service.show()
+    except TrdError as exc:
+        _fail(exc)
+        return
+    finally:
+        service.conn.close()
+    if as_json:
+        _emit_json(view)
+        return
+    table = Table(title=f"Exit params — {view.mode} engine, {view.timeframe} bars")
+    table.add_column("Param")
+    table.add_column("Value", justify="right")
+    table.add_column("Default", justify="right", style="dim")
+    table.add_column("Reaches", style="dim")
+    for p in view.params:
+        value = f"[bold yellow]{p.value:g}[/bold yellow]" if p.changed else f"{p.value:g}"
+        table.add_row(p.key, value, f"{p.default:g}", p.scope.value)
+    console.print(table)
+    console.print(
+        "[dim]Yellow = changed from the default. "
+        "'trd engine config set -p KEY=V --reason ...'[/dim]"
+    )
+
+
+@config_app.command("set")
+def engine_config_set(
+    params: Annotated[
+        list[str],
+        typer.Option("--param", "-p", help="KEY=VALUE, e.g. -p trail_atr_mult=1.5. Repeatable."),
+    ],
+    reason: Annotated[
+        str, typer.Option("--reason", help="Why — written to the audit log. Required.")
+    ],
+    as_json: JsonOpt = False,
+) -> None:
+    """Change exit params on the running engine, in place (SB-1824).
+
+    Only the exit-param bag changes: same config, account, universe and mode,
+    no re-init. The next scan reads the new values; 'open positions' params
+    reach every trade already on. Backtest-only knobs are refused. Each change
+    is appended to TRD_HOME/engine-config-changes.jsonl with the reason.
+    Measure first: 'trd engine what-if -p KEY=V1,V2'.
+    """
+    _use_json(as_json)
+    values = _parse_params(params)
+    settings = get_settings()
+    service = _config_service()
+    try:
+        change = service.set(values, reason, datetime.now(), audit_dir=settings.home)
+    except TrdError as exc:
+        _fail(exc)
+        return
+    finally:
+        service.conn.close()
+    if as_json:
+        _emit_json(change)
+        return
+    if not change.changes:
+        console.print("No change: every value is already set.")
+        return
+    for c in change.changes:
+        console.print(
+            f"[bold]{c.key}[/bold] {c.old:g} → [bold yellow]{c.new:g}[/bold yellow]"
+            f"  [dim]({c.scope.value})[/dim]"
+        )
+    if change.open_positions and any(c.scope == ParamScope.OPEN for c in change.changes):
+        console.print(f"Reaches on the next scan: {', '.join(change.open_positions)}")
+    console.print(f"[dim]Logged to {change.audit_path} — {change.reason}[/dim]")
 
 
 @engine_app.command("reconcile")
